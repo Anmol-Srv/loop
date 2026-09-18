@@ -3,9 +3,9 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-#[tokio::test]
-async fn health_returns_ok_envelope() {
-    let app = acp_server::app::app();
+#[sqlx::test]
+async fn health_returns_ok_envelope(pool: sqlx::PgPool) {
+    let app = acp_server::app::app(acp_server::db::AppState { db: pool });
 
     let response = app
         .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())

@@ -1,6 +1,7 @@
 use axum::{routing::get, Router};
 use serde::Serialize;
 
+use crate::db::AppState;
 use crate::response::ApiResponse;
 
 #[derive(Serialize)]
@@ -9,7 +10,7 @@ pub struct HealthData {
     pub status: &'static str,
 }
 
-pub fn routes() -> Router {
+pub fn routes() -> Router<AppState> {
     Router::new().route("/health", get(health))
 }
 
