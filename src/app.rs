@@ -6,5 +6,6 @@ use crate::routes;
 pub fn app(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::routes())
+        .merge(routes::user::project::routes())
         .with_state(state)
 }

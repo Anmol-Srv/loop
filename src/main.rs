@@ -2,6 +2,7 @@ use acp_server::{app::app, config::Config, db};
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
     tracing_subscriber::fmt::init();
 
     let config = Config::from_env().expect("missing required environment variables");
