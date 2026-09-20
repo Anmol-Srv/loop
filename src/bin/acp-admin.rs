@@ -18,6 +18,9 @@ struct Cli {
 enum Command {
     /// Add a person who can own credentials
     AddPerson { email: String, name: String },
+    /// Mint a session for a person, bypassing the password. The §7 escape
+    /// hatch: for scripts, and for the day the password path is broken.
+    Session { email: String },
     /// Mint an agent credential and print it once
     Mint {
         label: String,
@@ -72,6 +75,18 @@ async fn main() {
                 .await
                 .expect("insert failed");
             println!("person ready: {email}");
+        }
+        Command::Session { email } => {
+            match token::mint_session(&state, &email).await {
+                Ok((raw, row)) => {
+                    println!("session for {} (expires {})", row.label, row.expires_at);
+                    println!("{raw}");
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Command::Mint { label, owner, scopes, days } => {
             match token::mint_agent(&state, &label, &owner, scopes, days).await {

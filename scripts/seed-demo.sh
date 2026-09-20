@@ -7,8 +7,12 @@ cd "$(dirname "$0")/.."
 BASE=${ACP_URL:-http://localhost:8080}
 psql -p 5433 -d acp_dev -qc "TRUNCATE artifact, change, run_log_line, task, phase, project, job CASCADE;"
 
-./target/debug/acp-admin add-person anmol@airtribe.live Anmol >/dev/null
-H=$(./target/debug/acp-admin mint laptop --owner anmol@airtribe.live --scopes read,write         | sed -n 2p)
+psql -p 5433 -d acp_dev -qc "DELETE FROM setup_code; DELETE FROM credential; DELETE FROM person;"
+
+# A human session comes from a person, not from a minted agent: since the auth
+# work, `mint` means an agent credential and agents cannot hold write.
+./target/debug/acp-admin bootstrap-admin anmol@airtribe.live Anmol >/dev/null 2>&1 || true
+H=$(./target/debug/acp-admin session anmol@airtribe.live | sed -n 2p)
 A=$(./target/debug/acp-admin mint hermes --owner anmol@airtribe.live --scopes read,claim,propose | sed -n 2p)
 
 api() { curl -sS -X "$1" "$BASE$2" -H "authorization: Bearer $3" -H 'content-type: application/json' ${4:+-d "$4"}; }
@@ -64,7 +68,7 @@ api POST "/api/user/artifacts" "$A" \
 echo
 echo "seeded."
 echo "  project  $PID"
-echo "  human token (read,write):  $H"
-echo "  agent token 'hermes':      $A"
+echo "  human session (read,write,admin):  $H"
+echo "  agent token 'hermes':              $A"
 echo
 echo "open http://localhost:8080/login and paste the human token"
