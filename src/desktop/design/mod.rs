@@ -1,9 +1,10 @@
 //! The design system: tokens, the egui theme built from them, and the widget
 //! layer every view is written against.
 
+pub mod shell;
 pub mod theme;
 pub mod tokens;
 pub mod widgets;
 
-pub use tokens::{colour, radius, space, status_colour, status_label, text, ROW_HEIGHT};
+pub use tokens::{colour, pad, radius, size, space, status_colour, status_label, text};
 pub use widgets as w;

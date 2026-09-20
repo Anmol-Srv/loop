@@ -5,8 +5,8 @@
 //! drift. Delete once no view imports it.
 
 pub use crate::desktop::design::tokens::colour::{
-    ACCENT, AGENT, CANVAS as BG, LINE, SURFACE as PANEL, TEXT, TEXT_MUTED as MUTED,
-    BLOCKED as DANGER, DONE as OK, REVIEW as WARN,
+    ACCENT, AGENT, CANVAS as BG, DANGER, LINE, OK, SURFACE as PANEL, TEXT,
+    TEXT_MUTED as MUTED, WARN,
 };
 pub use crate::desktop::design::tokens::status_colour as status;
 pub use crate::desktop::design::widgets::{id as id_label, pill};

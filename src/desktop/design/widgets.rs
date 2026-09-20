@@ -5,7 +5,7 @@
 
 use egui::{Color32, Response, RichText, Sense, Ui, Vec2};
 
-use super::tokens::{colour, radius, space, text, ROW_HEIGHT};
+use super::tokens::{colour, pad, radius, size, space, text};
 
 // ---------------------------------------------------------------- text
 
@@ -69,7 +69,7 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerRespon
         .fill(colour::SURFACE)
         .stroke(egui::Stroke::new(1.0, colour::LINE))
         .corner_radius(radius::MD)
-        .inner_margin(egui::Margin::symmetric(space::LG as i8, space::MD as i8))
+        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
         .show(ui, add)
 }
 
@@ -85,7 +85,7 @@ pub fn rule(ui: &mut Ui) {
 /// Hover tints the background rather than moving anything.
 pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
     let w = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(w, ROW_HEIGHT), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(w, size::ROW), Sense::click());
 
     if response.hovered() {
         ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_HOVER);
@@ -111,7 +111,7 @@ pub fn primary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     let button = egui::Button::new(text)
         .fill(if enabled { colour::ACCENT } else { colour::ACCENT.gamma_multiply(0.4) })
         .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, 26.0));
+        .min_size(Vec2::new(0.0, size::CONTROL));
     ui.add_enabled(enabled, button)
 }
 
@@ -120,18 +120,18 @@ pub fn secondary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
         .fill(colour::SURFACE)
         .stroke(egui::Stroke::new(1.0, colour::LINE))
         .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, 26.0));
+        .min_size(Vec2::new(0.0, size::CONTROL));
     ui.add_enabled(enabled, button)
 }
 
 /// Destructive, and deliberately not a filled red block — outlined, so it
 /// reads as available rather than urged.
 pub fn danger(ui: &mut Ui, label: &str, enabled: bool) -> Response {
-    let button = egui::Button::new(RichText::new(label).size(text::BODY).color(colour::BLOCKED))
+    let button = egui::Button::new(RichText::new(label).size(text::BODY).color(colour::DANGER))
         .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::BLOCKED.gamma_multiply(0.5)))
+        .stroke(egui::Stroke::new(1.0, colour::DANGER.gamma_multiply(0.5)))
         .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, 26.0));
+        .min_size(Vec2::new(0.0, size::CONTROL));
     ui.add_enabled(enabled, button)
 }
 
@@ -151,10 +151,10 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool) -> Resp
         caption(ui, label);
         ui.add_space(space::XXS);
         ui.add_sized(
-            [ui.available_width(), 26.0],
+            [ui.available_width(), size::CONTROL],
             egui::TextEdit::singleline(value)
                 .password(secret)
-                .margin(egui::Margin::symmetric(space::SM as i8, space::XS as i8)),
+                .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         )
     })
     .inner
@@ -182,11 +182,11 @@ pub fn loading(ui: &mut Ui, what: &str) {
 
 pub fn error(ui: &mut Ui, message: &str) {
     egui::Frame::new()
-        .fill(colour::BLOCKED.gamma_multiply(0.06))
-        .stroke(egui::Stroke::new(1.0, colour::BLOCKED.gamma_multiply(0.30)))
+        .fill(colour::DANGER.gamma_multiply(0.06))
+        .stroke(egui::Stroke::new(1.0, colour::DANGER.gamma_multiply(0.30)))
         .corner_radius(radius::SM)
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
+        .inner_margin(egui::Margin::symmetric(pad::BUTTON.0 as i8, pad::BUTTON.1 as i8))
         .show(ui, |ui| {
-            ui.label(RichText::new(message).size(text::SMALL).color(colour::BLOCKED));
+            ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER));
         });
 }

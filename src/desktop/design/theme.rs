@@ -4,58 +4,67 @@ use egui::{FontData, FontDefinitions, FontFamily, Stroke};
 
 use super::tokens::{colour, radius, space, text};
 
-/// macOS ships SF Pro and SF Mono as plain .ttf, which egui can parse. Using
-/// them is most of what makes the app look native rather than generic — the
-/// stock egui font is the single biggest tell.
+/// Inter for the interface, JetBrains Mono for ids and the run log, Phosphor
+/// for icons. All compiled in rather than read from the system: the app starts
+/// offline and renders identically on every machine, which a system font cannot
+/// promise across macOS versions.
 ///
-/// Best effort: if a face is missing or unparseable on some machine we keep the
-/// default rather than refusing to start.
+/// Both faces are SIL Open Font License; see `assets/fonts/LICENSE.md`.
 fn install_fonts(ctx: &egui::Context) {
-    const SANS: &str = "/System/Library/Fonts/SFNS.ttf";
-    const MONO: &str = "/System/Library/Fonts/SFNSMono.ttf";
-
     let mut fonts = FontDefinitions::default();
-    let mut loaded_sans = false;
 
-    if let Ok(bytes) = std::fs::read(SANS) {
-        fonts.font_data.insert("sf".into(), FontData::from_owned(bytes).into());
+    let mut add = |name: &str, bytes: &'static [u8]| {
         fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .insert(0, "sf".into());
-        loaded_sans = true;
-    }
+            .font_data
+            .insert(name.to_owned(), FontData::from_static(bytes).into());
+    };
+    add("inter", include_bytes!("../../../assets/fonts/Inter-Regular.ttf"));
+    add("inter-medium", include_bytes!("../../../assets/fonts/Inter-Medium.ttf"));
+    add("inter-semibold", include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"));
+    add("mono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
 
-    if let Ok(bytes) = std::fs::read(MONO) {
-        fonts.font_data.insert("sf-mono".into(), FontData::from_owned(bytes).into());
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .insert(0, "sf-mono".into());
-    }
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "inter".into());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "mono".into());
 
-    // Icons, so we never reach for an emoji.
+    // Named families, so a widget can ask for weight without a second lookup.
+    fonts
+        .families
+        .insert(FontFamily::Name(MEDIUM.into()), vec!["inter-medium".into()]);
+    fonts
+        .families
+        .insert(FontFamily::Name(SEMIBOLD.into()), vec!["inter-semibold".into()]);
+
+    // Icons, so nothing ever reaches for an emoji.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Thin);
 
-    if !loaded_sans {
-        tracing::debug!("system font unavailable; using the egui default");
-    }
     ctx.set_fonts(fonts);
 }
+
+/// Weight families. `FontFamily::Name(MEDIUM.into())` in a `FontId`.
+pub const MEDIUM: &str = "inter-medium";
+pub const SEMIBOLD: &str = "inter-semibold";
 
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
 
-    let mut v = egui::Visuals::light();
+    let mut v = egui::Visuals::dark();
     v.panel_fill = colour::CANVAS;
     v.window_fill = colour::SURFACE;
     v.extreme_bg_color = colour::SURFACE;
     v.faint_bg_color = colour::SURFACE_HOVER;
+    v.code_bg_color = colour::INSET;
+    v.window_stroke = Stroke::new(1.0, colour::LINE);
     v.override_text_color = Some(colour::TEXT);
     v.hyperlink_color = colour::ACCENT;
-    v.selection.bg_fill = colour::ACCENT.gamma_multiply(0.18);
+    v.selection.bg_fill = colour::ACCENT.gamma_multiply(0.35);
     v.selection.stroke = Stroke::new(1.0, colour::ACCENT);
 
     // Hairlines everywhere. Nothing in this app needs a heavy border.
@@ -65,9 +74,24 @@ pub fn install(ctx: &egui::Context) {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, colour::LINE);
     v.widgets.active.bg_stroke = Stroke::new(1.0, colour::ACCENT);
 
+    v.widgets.noninteractive.bg_fill = colour::SURFACE;
+    v.widgets.noninteractive.weak_bg_fill = colour::SURFACE;
     v.widgets.inactive.bg_fill = colour::SURFACE;
+    v.widgets.inactive.weak_bg_fill = colour::SURFACE;
     v.widgets.hovered.bg_fill = colour::SURFACE_HOVER;
-    v.widgets.active.bg_fill = colour::SURFACE_HOVER;
+    v.widgets.hovered.weak_bg_fill = colour::SURFACE_HOVER;
+    v.widgets.active.bg_fill = colour::SURFACE_ACTIVE;
+    v.widgets.active.weak_bg_fill = colour::SURFACE_ACTIVE;
+
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+    ] {
+        w.fg_stroke = Stroke::new(1.0, colour::TEXT);
+    }
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, colour::TEXT_MUTED);
 
     let r = egui::CornerRadius::same(radius::SM);
     for w in [
@@ -88,8 +112,9 @@ pub fn install(ctx: &egui::Context) {
 
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(space::SM, space::SM);
-        s.spacing.button_padding = egui::vec2(space::MD, space::SM);
-        s.spacing.interact_size.y = 24.0;
+        s.spacing.menu_margin = egui::Margin::same(space::XS as i8);
+        s.spacing.button_padding = egui::vec2(super::tokens::pad::BUTTON.0, super::tokens::pad::BUTTON.1);
+        s.spacing.interact_size.y = super::tokens::size::CONTROL;
         s.spacing.scroll.bar_width = 8.0;
 
         use egui::{FontId, TextStyle};

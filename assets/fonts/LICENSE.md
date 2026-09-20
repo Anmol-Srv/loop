@@ -1,0 +1,8 @@
+Inter and JetBrains Mono are both licensed under the SIL Open Font License 1.1,
+which permits bundling inside an application.
+
+- Inter — https://fonts.google.com/specimen/Inter
+- JetBrains Mono — https://fonts.google.com/specimen/JetBrains+Mono
+
+Vendored rather than fetched at runtime so the app starts offline and renders
+identically on every machine.
