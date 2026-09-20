@@ -35,10 +35,17 @@ pub mod colour {
     pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1D, 0x1D, 0x20);
     pub const LINE_STRONG: Color32 = Color32::from_rgb(0x35, 0x35, 0x3A);
 
-    // ---- text
+    // ---- text. Five levels, the way bencho.dev layers its ink scale: one
+    // ---- step is rarely the right amount of de-emphasis.
     pub const TEXT: Color32 = Color32::from_rgb(0xED, 0xED, 0xEF);
+    /// Secondary: a value next to its label.
+    pub const TEXT_2: Color32 = Color32::from_rgb(0xBD, 0xBD, 0xC4);
+    /// Muted: labels, metadata.
     pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8C, 0x8C, 0x94);
-    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5C, 0x5C, 0x63);
+    /// Faint: timestamps, ids.
+    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x72);
+    /// Disabled.
+    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x4C, 0x4C, 0x53);
 
     /// The one accent: a light pink. Light enough that a filled control needs
     /// dark text on it, which is why `ON_ACCENT` is near-black.
@@ -58,13 +65,26 @@ pub mod colour {
     /// Card fill. Deliberately weak: at 5% white the surface reads as lifted
     /// without becoming a grey slab.
     pub const GLASS: Color32 = Color32::from_rgba_premultiplied(0x0D, 0x0D, 0x0D, 0x0D);
-    pub const GLASS_HOVER: Color32 = Color32::from_rgba_premultiplied(0x16, 0x16, 0x16, 0x16);
-    /// The hairline around glass. Brighter than an opaque border would be,
-    /// because it is doing the work of the missing shadow.
-    pub const GLASS_LINE: Color32 = Color32::from_rgba_premultiplied(0x1F, 0x1F, 0x1F, 0x1F);
-    /// A one-pixel highlight along the top edge — the thing that reads as
-    /// "glass" rather than "translucent rectangle".
-    pub const GLASS_SHEEN: Color32 = Color32::from_rgba_premultiplied(0x2B, 0x2B, 0x2B, 0x2B);
+    /// Hover lifts the fill. bencho.dev caps its equivalent (`--lift-max`) at
+    /// .06; the same restraint applies — hover should be felt, not announced.
+    pub const GLASS_HOVER: Color32 = Color32::from_rgba_premultiplied(0x1A, 0x1A, 0x1A, 0x1A);
+    pub const GLASS_ACTIVE: Color32 = Color32::from_rgba_premultiplied(0x24, 0x24, 0x24, 0x24);
+
+    // ---- the glass edge, as a gradient rather than one flat stroke.
+    //
+    // Real glass catches light on its top edge and loses it toward the bottom.
+    // bencho.dev encodes exactly this as --edge-hi .75 / --edge-far .42 /
+    // --edge-lo .18, and it is the difference between "glass" and "translucent
+    // rectangle". Three tones, brightest on top.
+    /// Top edge, catching the light.
+    pub const EDGE_HI: Color32 = Color32::from_rgba_premultiplied(0x40, 0x40, 0x40, 0x40);
+    /// The sides.
+    pub const EDGE_MID: Color32 = Color32::from_rgba_premultiplied(0x1C, 0x1C, 0x1C, 0x1C);
+    /// Bottom edge, in shadow.
+    pub const EDGE_LO: Color32 = Color32::from_rgba_premultiplied(0x0E, 0x0E, 0x0E, 0x0E);
+    /// Every edge brightens on hover — the lift is in the rim, not a shadow.
+    pub const EDGE_HI_HOVER: Color32 = Color32::from_rgba_premultiplied(0x5E, 0x5E, 0x5E, 0x5E);
+    pub const EDGE_MID_HOVER: Color32 = Color32::from_rgba_premultiplied(0x2E, 0x2E, 0x2E, 0x2E);
 
     // ---- state. Used as a dot, a pill or a thin rule; never a filled block.
     pub const OK: Color32 = Color32::from_rgb(0x3E, 0xCF, 0x8E);
@@ -138,10 +158,13 @@ pub mod text {
 }
 
 /// Slight curve, never round.
+/// Slight curve, never round — except pills, which are fully round.
+/// bencho.dev leans harder on both ends (28px cards, 999px pills); we keep the
+/// cards tighter because this is a dense board, not a gallery.
 pub mod radius {
-    pub const SM: u8 = 5;
-    pub const MD: u8 = 7;
-    pub const LG: u8 = 10;
+    pub const SM: u8 = 6;
+    pub const MD: u8 = 10;
+    pub const LG: u8 = 14;
     pub const PILL: u8 = 99;
 }
 

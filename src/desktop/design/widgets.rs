@@ -62,36 +62,82 @@ pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
 
 // ---------------------------------------------------------------- surfaces
 
-/// A glass card: a translucent lift off the canvas rather than an opaque
-/// block, so the sidebar wash shows through it.
+/// The glass edge: three strokes, brightest on top.
 ///
-/// egui cannot blur what is behind a surface, so "glass" here is three cheap
-/// cues that read the same way: a weak white fill, a brighter-than-usual
-/// hairline doing the work of the missing shadow, and a one-pixel sheen along
-/// the top edge. The sheen is what sells it — without it this is just a
-/// translucent rectangle.
-pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
-    let out = egui::Frame::new()
-        .fill(colour::GLASS)
-        .stroke(egui::Stroke::new(1.0, colour::GLASS_LINE))
-        .corner_radius(radius::MD)
-        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-        .show(ui, add);
+/// Real glass catches light along its upper rim and loses it toward the
+/// bottom. One flat border cannot say that, which is why a translucent
+/// rectangle never quite reads as glass. bencho.dev encodes the same idea as
+/// `--edge-hi .75 / --edge-far .42 / --edge-lo .18`; this is that, adapted for
+/// a dark surface where the light is weaker.
+pub fn glass_edge(ui: &Ui, rect: egui::Rect, r: f32, hovered: bool) {
+    let (hi, mid, lo) = if hovered {
+        (colour::EDGE_HI_HOVER, colour::EDGE_MID_HOVER, colour::EDGE_MID)
+    } else {
+        (colour::EDGE_HI, colour::EDGE_MID, colour::EDGE_LO)
+    };
+    let p = ui.painter();
 
-    sheen(ui, out.response.rect);
-    out
-}
-
-/// The highlight along a surface's top edge, inset so it follows the corner.
-pub fn sheen(ui: &Ui, rect: egui::Rect) {
-    let r = radius::MD as f32;
-    ui.painter().line_segment(
+    // Sides and bottom carry the dim tone; the rounded rect gives the corners.
+    p.rect_stroke(rect, r, egui::Stroke::new(1.0, mid), egui::StrokeKind::Inside);
+    p.line_segment(
+        [
+            egui::pos2(rect.left() + r, rect.bottom() - 0.5),
+            egui::pos2(rect.right() - r, rect.bottom() - 0.5),
+        ],
+        egui::Stroke::new(1.0, lo),
+    );
+    // The top rim, catching the light. This is the line that sells it.
+    p.line_segment(
         [
             egui::pos2(rect.left() + r, rect.top() + 0.5),
             egui::pos2(rect.right() - r, rect.top() + 0.5),
         ],
-        egui::Stroke::new(1.0, colour::GLASS_SHEEN),
+        egui::Stroke::new(1.0, hi),
     );
+}
+
+/// A glass card. Translucent, so the sidebar wash shows through, with the
+/// gradient rim above doing the work a shadow would do elsewhere.
+pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+    glass_panel(ui, false, add)
+}
+
+/// A glass card that responds to the pointer. Hover lifts the fill a little
+/// and brightens the rim — felt, not announced.
+pub fn glass_panel<R>(
+    ui: &mut Ui,
+    hovered: bool,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let fill = if hovered { colour::GLASS_HOVER } else { colour::GLASS };
+    let out = egui::Frame::new()
+        .fill(fill)
+        .corner_radius(radius::MD)
+        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+        .show(ui, add);
+
+    glass_edge(ui, out.response.rect, radius::MD as f32, hovered);
+    out
+}
+
+/// A card whose whole surface is clickable, hover included.
+pub fn card_button<R>(
+    ui: &mut Ui,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> (Response, R) {
+    let id = ui.next_auto_id();
+    // Hover state comes from the previous frame: we must know it before
+    // painting, but the rect only exists after. One frame of lag is invisible.
+    let hovered = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+
+    let out = glass_panel(ui, hovered, add);
+    let response = out.response.interact(egui::Sense::click());
+
+    ui.ctx().data_mut(|d| d.insert_temp(id, response.hovered()));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    (response, out.inner)
 }
 
 /// A vertical gradient. egui has no gradient primitive, so this is a two-
@@ -170,12 +216,28 @@ pub fn danger(ui: &mut Ui, label: &str, enabled: bool) -> Response {
 }
 
 /// Text-only, for tertiary navigation like "back".
+///
+/// Deliberately not accent-coloured. The accent is a fill colour here — pink
+/// text on a dark ground reads as decoration and competes with the status
+/// colours that actually carry meaning.
 pub fn link(ui: &mut Ui, label: &str) -> Response {
-    ui.add(egui::Button::new(
-        RichText::new(label).size(text::SMALL).color(colour::ACCENT),
-    )
-    .fill(Color32::TRANSPARENT)
-    .stroke(egui::Stroke::NONE))
+    let response = ui.add(
+        egui::Button::new(RichText::new(label).size(text::SMALL).color(colour::TEXT_MUTED))
+            .fill(Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE),
+    );
+    if response.hovered() {
+        // Brighten rather than recolour.
+        ui.painter().text(
+            response.rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(text::SMALL),
+            colour::TEXT,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
 }
 
 /// A labelled input. The label sits above in caption type, which keeps forms

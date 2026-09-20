@@ -5,7 +5,7 @@
 
 use egui_phosphor::thin as icon;
 
-use crate::desktop::design::{colour, shell, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, shell, space, widgets as w};
 use crate::desktop::{views, App, Tab};
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -45,24 +45,30 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let mut sign_out = false;
     let mut refresh = false;
+    let me = signed_in_as.clone();
     let clicked = shell::sidebar(ui, &items, |ui| {
-        if w::link(ui, "Sign out").clicked() {
-            sign_out = true;
-        }
-        if w::link(ui, "Refresh").clicked() {
-            refresh = true;
+        ui.add_space(space::XS);
+        if !me.is_empty() {
+            // Click the avatar to spring out the actions.
+            let actions = [
+                avatar::Action { icon: icon::ARROWS_CLOCKWISE, label: "Refresh", tint: None },
+                avatar::Action { icon: icon::USER, label: &me, tint: None },
+                avatar::Action {
+                    icon: icon::SIGN_OUT,
+                    label: "Sign out",
+                    tint: Some(colour::DANGER),
+                },
+            ];
+            let a = avatar::Avatar { seed: &me, size: 34.0, actions: &actions };
+            ui.vertical_centered(|ui| match avatar::show(ui, &a) {
+                Some(0) => refresh = true,
+                Some(2) => sign_out = true,
+                _ => {}
+            });
         }
         if read_only {
-            w::pill(ui, "read only", colour::TEXT_MUTED);
+            ui.vertical_centered(|ui| w::pill(ui, "read only", colour::TEXT_MUTED));
         }
-        if !signed_in_as.is_empty() {
-            ui.label(
-                egui::RichText::new(signed_in_as)
-                    .size(text::CAPTION)
-                    .color(colour::TEXT_FAINT),
-            );
-        }
-        ui.add_space(space::XS);
     });
 
     if sign_out {
