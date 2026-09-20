@@ -5,9 +5,11 @@
 
 use std::collections::HashMap;
 
+use egui_phosphor::thin as icon;
 use serde_json::Value;
 
-use crate::desktop::{theme, App};
+use crate::desktop::design::{colour, space, status_colour, status_label, text, widgets as w};
+use crate::desktop::App;
 
 const STATUSES: [&str; 6] = ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
 const KINDS: [&str; 2] = ["human", "agent"];
@@ -53,17 +55,18 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    heading(ui, "Projects");
+    w::title(ui, "Projects");
+    ui.add_space(space::MD);
 
     if let Some(err) = error {
-        ui.colored_label(theme::DANGER, err);
+        w::error(ui, &err);
         return;
     }
     if list.is_empty() {
         if loading {
-            ui.spinner();
+            w::loading(ui, "projects");
         } else {
-            muted(ui, "No projects yet.");
+            w::empty(ui, "No projects yet.");
         }
         return;
     }
@@ -76,27 +79,28 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         let status = str_at(p, "status").to_string();
         let counts = progress.get(&id).copied();
 
-        let hit = card(ui, true, |ui| {
+        let (hit, _) = w::card_button(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&name).size(14.0).strong());
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(&key).monospace().size(11.0).color(theme::MUTED));
+                w::heading(ui, &name);
+                ui.add_space(space::SM);
+                w::caption(ui, &key);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    theme::pill(ui, &status, theme::status(&status));
+                    w::pill(ui, status_label(&status), status_colour(&status));
                 });
             });
-            ui.add_space(3.0);
+            ui.add_space(space::XXS);
             match counts {
-                Some((done, total)) => muted(ui, &format!("{done} of {total} phases done")),
-                None => muted(ui, "phases loading"),
+                Some((done, total)) => w::muted(ui, &format!("{done} of {total} phases done")),
+                None => w::muted(ui, "phases loading"),
             }
         });
 
         if hit.clicked() {
             open = Some(id);
         }
-        ui.add_space(8.0);
+        ui.add_space(space::SM);
     }
 
     if let Some(id) = open {
@@ -154,46 +158,46 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut filters_changed = false;
 
     ui.horizontal(|ui| {
-        if ui.small_button("Projects").clicked() {
+        if w::link(ui, &format!("{} Projects", icon::ARROW_LEFT)).clicked() {
             back = true;
         }
-        ui.add_space(10.0);
+        ui.add_space(space::SM);
         match &title {
             Some((name, key)) => {
-                ui.label(egui::RichText::new(name).size(17.0).strong());
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(key).monospace().size(11.0).color(theme::MUTED));
+                w::title(ui, name);
+                ui.add_space(space::SM);
+                w::caption(ui, key);
             }
-            None => {
-                ui.label(egui::RichText::new("Project").size(17.0).strong());
-            }
+            None => w::title(ui, "Project"),
         }
     });
 
-    ui.add_space(12.0);
+    ui.add_space(space::MD);
     ui.horizontal(|ui| {
-        filters_changed |= filter(ui, "board:filter:status", "Any status", &STATUSES, &mut app.board.status);
-        ui.add_space(6.0);
-        filters_changed |= filter(ui, "board:filter:kind", "Anyone", &KINDS, &mut app.board.assignee_kind);
+        filters_changed |=
+            filter(ui, "board:filter:status", "Any status", &STATUSES, &mut app.board.status);
+        ui.add_space(space::SM);
+        filters_changed |=
+            filter(ui, "board:filter:kind", "Anyone", &KINDS, &mut app.board.assignee_kind);
 
         if app.board.status.is_some() || app.board.assignee_kind.is_some() {
-            ui.add_space(6.0);
-            if ui.small_button("Clear").clicked() {
+            ui.add_space(space::SM);
+            if w::secondary(ui, "Clear", true).clicked() {
                 app.board.status = None;
                 app.board.assignee_kind = None;
                 filters_changed = true;
             }
         }
     });
-    ui.add_space(14.0);
+    ui.add_space(space::LG);
 
     if let Some(err) = phases_error {
-        ui.colored_label(theme::DANGER, err);
+        w::error(ui, &err);
     } else if phases.is_empty() {
         if phases_loading {
-            ui.spinner();
+            w::loading(ui, "phases");
         } else {
-            muted(ui, "This project has no phases yet.");
+            w::empty(ui, "This project has no phases yet.");
         }
     } else {
         for p in &phases {
@@ -202,50 +206,26 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             let list = by_phase.get(phase_id).unwrap_or(&empty);
             let done = list.iter().filter(|t| str_at(t, "status") == "done").count();
 
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{:02}", p.get("position").and_then(Value::as_i64).unwrap_or(0)))
-                        .monospace()
-                        .size(11.0)
-                        .color(theme::MUTED),
-                );
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(str_at(p, "name")).size(14.0).strong());
-                ui.add_space(6.0);
-                let st = str_at(p, "status");
-                theme::pill(ui, st, theme::status(st));
-                if p.get("gate").and_then(Value::as_bool).unwrap_or(false) {
-                    theme::pill(ui, "gate", theme::WARN);
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    muted(ui, &format!("{done}/{} done", list.len()));
-                });
-            });
-
-            ui.add_space(6.0);
+            phase_header(ui, p, done, list.len());
+            ui.add_space(space::SM);
 
             if let Some(err) = &tasks_error {
-                ui.colored_label(theme::DANGER, err.as_str());
+                w::error(ui, err);
             } else if list.is_empty() {
                 if tasks_loading {
-                    ui.spinner();
+                    w::loading(ui, "tasks");
                 } else {
-                    ui.horizontal(|ui| {
-                        ui.add_space(14.0);
-                        muted(ui, "No tasks in this phase.");
-                    });
+                    w::empty(ui, "No tasks in this phase.");
                 }
             } else {
                 for t in list {
                     if let Some(id) = task_row(ui, t) {
                         open_task = Some(id);
                     }
-                    ui.add_space(5.0);
                 }
             }
 
-            ui.add_space(20.0);
+            ui.add_space(space::XL);
         }
     }
 
@@ -260,6 +240,34 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 }
 
+/// The header above a phase's tasks: its number, name, state and progress.
+fn phase_header(ui: &mut egui::Ui, p: &Value, done: usize, total: usize) {
+    let position = p.get("position").and_then(Value::as_i64).unwrap_or(0);
+    let status = str_at(p, "status");
+
+    ui.horizontal(|ui| {
+        // Hand-painted: a monospaced ordinal, so phase numbers line up in a
+        // column. No widget covers "small mono figure" yet.
+        ui.label(
+            egui::RichText::new(format!("{position:02}"))
+                .monospace()
+                .size(text::CAPTION)
+                .color(colour::TEXT_FAINT),
+        );
+        ui.add_space(space::SM);
+        w::heading(ui, str_at(p, "name"));
+        ui.add_space(space::SM);
+        w::pill(ui, status_label(status), status_colour(status));
+        if p.get("gate").and_then(Value::as_bool).unwrap_or(false) {
+            w::pill(ui, "gate", colour::WARN);
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            w::muted(ui, &format!("{done}/{total} done"));
+        });
+    });
+}
+
 /// One task. Returns its id when clicked.
 fn task_row(ui: &mut egui::Ui, t: &Value) -> Option<String> {
     let status = str_at(t, "status").to_string();
@@ -270,81 +278,38 @@ fn task_row(ui: &mut egui::Ui, t: &Value) -> Option<String> {
     let title = str_at(t, "title").to_string();
     let priority = t.get("priority").and_then(Value::as_i64).unwrap_or(0);
 
-    let hit = card(ui, true, |ui| {
-        ui.horizontal(|ui| {
-            ui.add_space(6.0);
-            dot(ui, theme::status(&status));
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(&title).size(13.0));
+    let hit = w::row(ui, |ui| {
+        w::dot(ui, status_colour(&status));
+        ui.add_space(space::XS);
+        w::body(ui, &title);
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                theme::id_label(ui, &id);
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("P{priority}")).size(11.0).color(theme::MUTED));
-                ui.add_space(4.0);
-                theme::pill(ui, &status, theme::status(&status));
-                if is_agent {
-                    let label = if claimed.is_empty() {
-                        "agent".to_string()
-                    } else {
-                        format!("agent · {claimed}")
-                    };
-                    theme::pill(ui, &label, theme::AGENT);
-                } else if kind == "human" {
-                    theme::pill(ui, "human", theme::MUTED);
-                }
-            });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            w::id(ui, &id);
+            ui.add_space(space::SM);
+            w::caption(ui, &format!("P{priority}"));
+            ui.add_space(space::SM);
+            w::muted(ui, status_label(&status));
+            ui.add_space(space::SM);
+            // The one pill on a task row: delegated work is what you scan for.
+            if is_agent {
+                let label = if claimed.is_empty() {
+                    "agent".to_string()
+                } else {
+                    format!("agent · {claimed}")
+                };
+                w::pill(ui, &label, colour::AGENT);
+            } else if kind == "human" {
+                // The task JSON carries `assigneePersonId`, not an email, so
+                // there is no seed for an avatar. Name the kind instead.
+                w::muted(ui, "human");
+            }
         });
     });
-
-    // Delegated work has to read at a glance, so it gets a spine of its own.
-    if is_agent {
-        let spine = egui::Rect::from_min_size(hit.rect.min, egui::vec2(3.0, hit.rect.height()));
-        ui.painter().rect_filled(spine, 2.0, theme::AGENT);
-    }
 
     hit.clicked().then_some(id)
 }
 
 // ---------------------------------------------------------------------- pieces
-
-/// A bordered full-width row. Clickable ones outline on hover rather than
-/// shifting colour, which keeps the page still as the pointer crosses it.
-fn card(ui: &mut egui::Ui, clickable: bool, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
-    let inner = egui::Frame::new()
-        .fill(theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(14, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui);
-        });
-
-    if !clickable {
-        return inner.response;
-    }
-
-    let response = inner
-        .response
-        .interact(egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if response.hovered() {
-        ui.painter().rect_stroke(
-            response.rect,
-            6.0,
-            egui::Stroke::new(1.0, theme::ACCENT),
-            egui::StrokeKind::Inside,
-        );
-    }
-    response
-}
-
-/// A fixed-width status marker, so every title in a list starts on the same x.
-fn dot(ui: &mut egui::Ui, colour: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 3.5, colour);
-}
 
 /// A one-of-many dropdown over `options`, `None` meaning any. Returns true when
 /// the selection changed.
@@ -356,31 +321,26 @@ fn filter(
     slot: &mut Option<&'static str>,
 ) -> bool {
     let mut changed = false;
-    let selected = slot.unwrap_or(any_label).to_string();
+    let selected = status_label(slot.unwrap_or(any_label)).to_string();
     egui::ComboBox::from_id_salt(id)
-        .selected_text(egui::RichText::new(selected).size(12.0))
+        .selected_text(egui::RichText::new(selected).size(text::BODY))
         .show_ui(ui, |ui| {
-            if ui.selectable_label(slot.is_none(), any_label).clicked() && slot.is_some() {
+            let any = egui::RichText::new(any_label).size(text::BODY);
+            if ui.selectable_label(slot.is_none(), any).clicked() && slot.is_some() {
                 *slot = None;
                 changed = true;
             }
             for opt in options {
-                if ui.selectable_label(*slot == Some(*opt), *opt).clicked() && *slot != Some(*opt) {
+                let label = egui::RichText::new(status_label(opt)).size(text::BODY);
+                if ui.selectable_label(*slot == Some(*opt), label).clicked()
+                    && *slot != Some(*opt)
+                {
                     *slot = Some(*opt);
                     changed = true;
                 }
             }
         });
     changed
-}
-
-fn heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(17.0).strong());
-    ui.add_space(12.0);
-}
-
-fn muted(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(12.0).color(theme::MUTED));
 }
 
 fn array(v: Option<&Value>) -> Vec<Value> {
