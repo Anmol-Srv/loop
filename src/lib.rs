@@ -11,3 +11,6 @@ pub mod errors;
 pub mod jobs;
 pub mod middleware;
 pub mod cli;
+
+#[cfg(feature = "app")]
+pub mod desktop;

@@ -35,6 +35,17 @@ impl Client {
         self.send(reqwest::Method::GET, path, Value::Null).await
     }
 
+    /// Like `send`, but returns the unwrapped `data` payload as a `Result`
+    /// suitable for a UI to render. Same envelope rules as `send`.
+    pub async fn send_raw_result(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, String> {
+        self.send(method, path, body).await
+    }
+
     /// Send and return the raw body, without unwrapping any envelope. The MCP
     /// endpoint speaks JSON-RPC, which has no `{success, data}` wrapper.
     pub async fn send_raw(&self, method: reqwest::Method, path: &str, body: Value) -> Result<Value, String> {
