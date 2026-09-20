@@ -34,11 +34,21 @@ Or run it straight from cargo while developing:
 cargo run --features app --bin acp-app
 ```
 
-Sign in once by pasting a token; it is stored in the **macOS Keychain**, not a
-dotfile, because it grants write access to shared team state. `ACP_TOKEN` in the
-environment overrides the stored credential, which is useful for pointing the
-app at a scratch server. `ACP_URL` sets the server (default
+Sign in with your @airtribe.live email and password. The session is stored at
+`~/Library/Application Support/airtribe-control-plane/credentials` (mode 0600),
+shared with the CLI, so you sign in once for both.
+
+`ACP_TOKEN` in the environment overrides the stored credential, useful for
+pointing at a scratch server. `ACP_URL` sets the server (default
 `http://localhost:8080`).
+
+First time on a new account, you need a setup code from an admin:
+
+```bash
+acp setup --email you@airtribe.live      # prompts for the code and a password
+acp login                                # every time after that
+acp whoami
+```
 
 | Screen | What it shows |
 |---|---|

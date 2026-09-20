@@ -30,7 +30,6 @@ clap = { version = "4.6.7", features = ["derive"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "charset", "http2"] }
 eframe = { version = "0.36.2", optional = true }
 egui_extras = { version = "0.36.2", features = ["image"], optional = true }
-keyring = "4.2.0"
 egui = { version = "0.36.2", optional = true }
 argon2 = "0.6.0"
 rpassword = "7.5.4"

@@ -116,7 +116,7 @@ SET UP   POST /api/auth/setup {email, code, password}
 
 SIGN IN  POST /api/auth/login {email, password}
          → session credential, 30d sliding
-         → web: httpOnly cookie · app and CLI: macOS Keychain
+         → app and CLI: a 0600 file under Application Support (see below)
          → 5 failures locks the person for 15 minutes
 
 USE      resolve() — unchanged shape, one lookup
@@ -203,11 +203,26 @@ route, so no future code path can grant it by accident.
 
 | Surface | Change |
 |---|---|
-| Mac app | Login becomes email + password; a first-time path takes email, setup code and a new password. The session still lands in the Keychain. |
-| Web | The same two forms. The token-paste field is removed. |
+| Mac app | Login becomes email + password; a first-time path takes email, setup code and a new password. |
 | CLI | `acp login`, `acp logout`, `acp agent mint\|ls\|revoke`, `acp admin …`. |
 | acp-admin | Gains `seed-team`, `bootstrap-admin`, `invite`, `revoke-person`. Keeps direct database access. |
 | Agents / MCP | Unchanged. Same bearer token, same `resolve()`, same tools. |
+
+### Where the token is stored
+
+`~/Library/Application Support/airtribe-control-plane/credentials`, mode 0600,
+shared by the CLI and the app.
+
+The macOS Keychain was the first choice and was wrong in practice. Keychain
+access is gated on the binary's code signature, and an ad-hoc-signed binary gets
+a fresh identity (`acp_app-<build hash>`) on every rebuild. The result was macOS
+prompting for the login password on each launch, "Always Allow" never sticking,
+and the credential never actually persisting. A plain file is what `gh`, `aws`
+and `kubectl` use, and it survives a rebuild.
+
+Worth revisiting once there is a Developer ID signed, notarized build — at that
+point the identity is stable and the Keychain becomes strictly better. Only
+`src/cli/creds.rs` would change.
 
 ## 7. Migration
 
