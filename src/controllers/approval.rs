@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::controllers::{artifact, phase, project, task};
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
-use crate::models::change::Actor;
+use crate::models::change::{Actor, Outcome};
 
 const CHANGE_COLUMNS: &str = "id, actor, on_behalf_of, target_type, target_id, op, patch, state, applied_at, created_at";
 
@@ -60,13 +60,18 @@ pub async fn approve(state: &AppState, approver: &Actor, change_id: Uuid) -> App
         person_id: approver.person_id,
         can_apply: true,
     };
-    replay(state, &replay_actor, &change).await?;
+    let created = replay(state, &replay_actor, &change).await?;
 
+    // A `create` proposal's target_id was a placeholder; repoint it at the row
+    // that now exists so the audit trail leads somewhere.
     let approved: ChangeRow = sqlx::query_as(&format!(
-        "UPDATE change SET state = 'approved', applied_at = now() WHERE id = $1
+        "UPDATE change SET state = 'approved', applied_at = now(),
+                           target_id = COALESCE($2, target_id)
+         WHERE id = $1
          RETURNING {CHANGE_COLUMNS}"
     ))
     .bind(change_id)
+    .bind(created)
     .fetch_one(&mut *tx)
     .await?;
 
@@ -110,7 +115,10 @@ fn require_pending(change: &ChangeRow) -> AppResult<()> {
 ///
 /// Exhaustive over the seven mutating operations; anything else is a bug in
 /// whoever queued the row, so it errors rather than silently doing nothing.
-async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResult<()> {
+/// Replay a proposal. Returns the id of the row a `create` produced, so the
+/// caller can repoint `change.target_id` at the row that actually exists — the
+/// id recorded at proposal time was only a placeholder.
+async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResult<Option<Uuid>> {
     let p = &change.patch;
 
     let uuid_at = |k: &str| -> AppResult<Uuid> {
@@ -132,35 +140,41 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             .ok_or_else(|| AppError::Internal(format!("proposal is missing '{k}'")))
     };
 
-    match (change.target_type.as_str(), change.op.as_str()) {
-        ("project", "create") => {
-            project::create(state, actor, str_at("key")?, str_at("name")?).await?;
-        }
-        ("phase", "create") => {
-            phase::create(
-                state,
-                actor,
-                uuid_at("project_id")?,
-                str_at("name")?,
-                i32_at("position")?,
-                p.get("gate").and_then(Value::as_bool).unwrap_or(false),
-            )
-            .await?;
-        }
+    let created = match (change.target_type.as_str(), change.op.as_str()) {
+        ("project", "create") => match project::create(state, actor, str_at("key")?, str_at("name")?).await? {
+            Outcome::Applied { entity } => Some(entity.id),
+            Outcome::Proposed { .. } => None,
+        },
+        ("phase", "create") => match phase::create(
+            state,
+            actor,
+            uuid_at("project_id")?,
+            str_at("name")?,
+            i32_at("position")?,
+            p.get("gate").and_then(Value::as_bool).unwrap_or(false),
+        )
+        .await?
+        {
+            Outcome::Applied { entity } => Some(entity.id),
+            Outcome::Proposed { .. } => None,
+        },
         ("phase", "update") => {
             phase::set_status(state, actor, change.target_id, str_at("status")?).await?;
+            None
         }
-        ("task", "create") => {
-            task::create(
-                state,
-                actor,
-                uuid_at("phase_id")?,
-                str_at("title")?,
-                str_at("body")?,
-                i32_at("priority")?,
-            )
-            .await?;
-        }
+        ("task", "create") => match task::create(
+            state,
+            actor,
+            uuid_at("phase_id")?,
+            str_at("title")?,
+            str_at("body")?,
+            i32_at("priority")?,
+        )
+        .await?
+        {
+            Outcome::Applied { entity } => Some(entity.id),
+            Outcome::Proposed { .. } => None,
+        },
         ("task", "update") => {
             // Which key the patch carries says which controller made it.
             if p.get("status").is_some() {
@@ -175,21 +189,24 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             } else {
                 return Err(AppError::Internal("task update proposal has no recognised key".into()));
             }
+            None
         }
-        ("artifact", "create") => {
-            artifact::add(
-                state,
-                actor,
-                str_at("parent_type")?,
-                uuid_at("parent_id")?,
-                str_at("kind")?,
-                str_at("url")?,
-                str_at("title")?,
-            )
-            .await?;
-        }
+        ("artifact", "create") => match artifact::add(
+            state,
+            actor,
+            str_at("parent_type")?,
+            uuid_at("parent_id")?,
+            str_at("kind")?,
+            str_at("url")?,
+            str_at("title")?,
+        )
+        .await?
+        {
+            Outcome::Applied { entity } => Some(entity.id),
+            Outcome::Proposed { .. } => None,
+        },
         (t, o) => return Err(AppError::Internal(format!("cannot replay {t}/{o}"))),
-    }
+    };
 
-    Ok(())
+    Ok(created)
 }

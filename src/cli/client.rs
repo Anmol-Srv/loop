@@ -35,6 +35,22 @@ impl Client {
         self.send(reqwest::Method::GET, path, Value::Null).await
     }
 
+    /// Send and return the raw body, without unwrapping any envelope. The MCP
+    /// endpoint speaks JSON-RPC, which has no `{success, data}` wrapper.
+    pub async fn send_raw(&self, method: reqwest::Method, path: &str, body: Value) -> Result<Value, String> {
+        let mut request = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path))
+            .bearer_auth(&self.token);
+
+        if !body.is_null() {
+            request = request.json(&body);
+        }
+
+        let response = request.send().await.map_err(|e| format!("request failed: {e}"))?;
+        response.json().await.map_err(|e| format!("bad response body: {e}"))
+    }
+
     pub async fn send(&self, method: reqwest::Method, path: &str, body: Value) -> Result<Value, String> {
         let mut request = self
             .http
