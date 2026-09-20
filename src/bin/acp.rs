@@ -26,6 +26,12 @@ enum Command {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// List proposals waiting for approval
+    Pending,
+    /// Approve a pending proposal, replaying it
+    Approve { id: String },
+    /// Reject a pending proposal
+    Reject { id: String },
     /// Attach a PR, doc, or link to something
     Link {
         parent_type: String,
@@ -139,6 +145,13 @@ async fn main() {
                     json!({ "personEmail": to, "agentLabel": agent })).await
             }
         },
+        Command::Pending => client.get("/api/user/changes/pending").await,
+        Command::Approve { id } => {
+            client.send(reqwest::Method::POST, &format!("/api/user/changes/{id}/approve"), json!({})).await
+        }
+        Command::Reject { id } => {
+            client.send(reqwest::Method::POST, &format!("/api/user/changes/{id}/reject"), json!({})).await
+        }
         Command::Link { parent_type, parent_id, kind, url, title } => {
             client.send(reqwest::Method::POST, "/api/user/artifacts", json!({
                 "parentType": parent_type, "parentId": parent_id,
@@ -148,7 +161,19 @@ async fn main() {
     };
 
     match result {
-        Ok(data) => println!("{}", serde_json::to_string_pretty(&data).unwrap()),
+        // Mutations come back wrapped in an Outcome; unwrap it so the CLI
+        // prints the entity, or says plainly that a human has to approve.
+        Ok(data) => match data.get("status").and_then(serde_json::Value::as_str) {
+            Some("applied") => {
+                let entity = data.get("entity").cloned().unwrap_or(data);
+                println!("{}", serde_json::to_string_pretty(&entity).unwrap());
+            }
+            Some("proposed") => {
+                let id = data.get("changeId").and_then(serde_json::Value::as_str).unwrap_or("?");
+                println!("proposed: {id} (awaiting approval)");
+            }
+            _ => println!("{}", serde_json::to_string_pretty(&data).unwrap()),
+        },
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
