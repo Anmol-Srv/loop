@@ -124,11 +124,29 @@ Nine tables. Every view and report is a query over these.
 
 Every mutation, human or agent, writes a `change` row.
 
-- A human mutation inserts as `applied` in the same transaction as its effect.
-- An agent mutation inserts as `pending` and takes effect only on approval.
+- An actor holding `write` mutates directly: the effect and an `applied` change
+  row commit in the same transaction.
+- An actor holding only `propose` **does not mutate at all**. The controller
+  records the full intent in `change.patch` and returns
+  `{"status":"proposed","changeId":...}`. Approval replays that intent through
+  the same controller with an applying actor.
 
 History, undo, attribution, and the agent guardrail all derive from this one
 table rather than four separate mechanisms.
+
+**Implementation note (added 2026-09-20).** The first cut of this got it wrong:
+the controller performed the mutation and merely marked the change row
+`pending`, so a `propose`-scoped token really did change shared state. The
+regression test `propose_token_must_not_mutate_shared_state` exists to keep that
+from returning. Any future controller must short-circuit to `propose()` before
+its first write, not after.
+
+**Known debt.** Approval replays through controllers that own their own
+transactions, so a replay can succeed while the subsequent `state` flip fails.
+The result is a change stuck in `pending` whose effect already applied — visible
+in the inbox and recoverable by rejecting it, never silent. Closing the window
+means threading an optional transaction through all seven mutating controllers;
+deferred until something forces it.
 
 ### Artifacts are polymorphic by design
 
