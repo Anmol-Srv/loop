@@ -44,9 +44,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let read_only = !app.can_write();
 
     let mut sign_out = false;
+    let mut refresh = false;
     let clicked = shell::sidebar(ui, &items, |ui| {
         if w::link(ui, "Sign out").clicked() {
             sign_out = true;
+        }
+        if w::link(ui, "Refresh").clicked() {
+            refresh = true;
         }
         if read_only {
             w::pill(ui, "read only", colour::TEXT_MUTED);
@@ -65,6 +69,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         app.sign_out();
         return;
     }
+    if refresh {
+        if let Some(n) = app.net.as_mut() {
+            n.results.clear();
+        }
+    }
     match clicked {
         Some(0) => {
             app.tab = Tab::Board;
@@ -77,41 +86,14 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         _ => {}
     }
 
-    let (title, crumb) = if on_task {
-        ("Task", Some("Board"))
-    } else {
-        match app.tab {
-            Tab::Board if app.project.is_some() => ("Project", Some("Board")),
-            Tab::Board => ("Board", None),
-            Tab::Inbox => ("Inbox", None),
-        }
-    };
-
-    let mut refresh = false;
-    shell::content(
-        ui,
-        title,
-        crumb,
-        |ui| {
-            if w::secondary(ui, "Refresh", true).clicked() {
-                refresh = true;
+    shell::content(ui, |ui| {
+        if app.task.is_some() {
+            views::task::ui(app, ui);
+        } else {
+            match app.tab {
+                Tab::Board => views::board::ui(app, ui),
+                Tab::Inbox => views::inbox::ui(app, ui),
             }
-        },
-        |ui| {
-            if app.task.is_some() {
-                views::task::ui(app, ui);
-            } else {
-                match app.tab {
-                    Tab::Board => views::board::ui(app, ui),
-                    Tab::Inbox => views::inbox::ui(app, ui),
-                }
-            }
-        },
-    );
-
-    if refresh {
-        if let Some(n) = app.net.as_mut() {
-            n.results.clear();
         }
-    }
+    });
 }

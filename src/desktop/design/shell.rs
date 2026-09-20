@@ -116,46 +116,10 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
     response
 }
 
-/// The content area: a header strip, then the body, gutters and max width
-/// applied once so no view has to remember them.
-pub fn content(
-    ui: &mut Ui,
-    title: &str,
-    breadcrumb: Option<&str>,
-    actions: impl FnOnce(&mut Ui),
-    body: impl FnOnce(&mut Ui),
-) {
-    egui::Panel::top("content-header")
-        .exact_size(size::TOPBAR_H)
-        .frame(
-            egui::Frame::new()
-                .fill(colour::CANVAS)
-                .inner_margin(egui::Margin::symmetric(space::XL as i8, 0)),
-        )
-        .show(ui, |ui| {
-            ui.horizontal_centered(|ui| {
-                if let Some(crumb) = breadcrumb {
-                    ui.label(
-                        RichText::new(crumb).size(text::SMALL).color(colour::TEXT_FAINT),
-                    );
-                    ui.label(RichText::new("/").size(text::SMALL).color(colour::LINE_STRONG));
-                }
-                ui.label(
-                    RichText::new(title)
-                        .size(text::TITLE)
-                        .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), actions);
-            });
-        });
-
-    // A hairline under the header instead of a shadow.
-    egui::Panel::top("content-rule")
-        .exact_size(1.0)
-        .frame(egui::Frame::new().fill(colour::LINE_SOFT))
-        .show(ui, |_| {});
-
+/// The content area. No header strip: gutters and scrolling applied once, then
+/// the view owns everything inside. Each view carries its own heading and back
+/// control, so a shared header would only repeat them.
+pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
