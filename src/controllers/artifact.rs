@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::artifact::{Artifact, ARTIFACT_KINDS, PARENT_TYPES};
-use crate::models::change::{record, Actor, Op, TargetType};
+use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 
 const COLUMNS: &str = "id, parent_type, parent_id, kind, url, title, metadata, added_by, created_at";
 
@@ -16,7 +16,7 @@ pub async fn add(
     kind: String,
     url: String,
     title: String,
-) -> AppResult<Artifact> {
+) -> AppResult<Outcome<Artifact>> {
     if !PARENT_TYPES.contains(&parent_type.as_str()) {
         return Err(AppError::BadRequest(format!(
             "parentType must be one of {}", PARENT_TYPES.join(", ")
@@ -31,12 +31,24 @@ pub async fn add(
         return Err(AppError::BadRequest("url is required".into()));
     }
 
+    let id = Uuid::new_v4();
+    let patch = json!({
+        "parent_type": parent_type, "parent_id": parent_id,
+        "kind": kind, "url": url, "title": title
+    });
+
+    if !actor.can_apply {
+        let change_id = propose(&state.db, actor, TargetType::Artifact, id, Op::Create, patch).await?;
+        return Ok(Outcome::Proposed { change_id });
+    }
+
     let mut tx = state.db.begin().await?;
 
     let artifact: Artifact = sqlx::query_as(&format!(
-        "INSERT INTO artifact (parent_type, parent_id, kind, url, title, added_by)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING {COLUMNS}"
+        "INSERT INTO artifact (id, parent_type, parent_id, kind, url, title, added_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
     ))
+    .bind(id)
     .bind(&parent_type)
     .bind(parent_id)
     .bind(&kind)
@@ -46,11 +58,10 @@ pub async fn add(
     .fetch_one(&mut *tx)
     .await?;
 
-    record(&mut tx, actor, TargetType::Artifact, artifact.id, Op::Create,
-        json!({ "kind": kind, "url": url })).await?;
+    record(&mut tx, actor, TargetType::Artifact, artifact.id, Op::Create, patch).await?;
 
     tx.commit().await?;
-    Ok(artifact)
+    Ok(Outcome::Applied { entity: artifact })
 }
 
 pub async fn list(state: &AppState, parent_type: String, parent_id: Uuid) -> AppResult<Vec<Artifact>> {

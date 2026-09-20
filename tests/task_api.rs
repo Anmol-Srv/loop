@@ -71,22 +71,22 @@ async fn a_task_can_be_assigned_to_a_person_and_to_an_agent(pool: PgPool) {
     let response = acp_server::app::app(state.clone())
         .oneshot(req("POST", &format!("/api/user/phases/{phase_id}/tasks"), &token,
             Some(serde_json::json!({ "title": "migrate report" })))).await.unwrap();
-    let task_id = json_of(response).await["data"]["id"].as_str().unwrap().to_string();
+    let task_id = json_of(response).await["data"]["entity"]["id"].as_str().unwrap().to_string();
 
     let response = acp_server::app::app(state.clone())
         .oneshot(req("POST", &format!("/api/user/tasks/{task_id}/assign"), &token,
             Some(serde_json::json!({ "personEmail": "anmol@airtribe.live" })))).await.unwrap();
     let json = json_of(response).await;
-    assert_eq!(json["data"]["assigneeKind"], "human");
-    assert!(json["data"]["assigneePersonId"].is_string());
+    assert_eq!(json["data"]["entity"]["assigneeKind"], "human");
+    assert!(json["data"]["entity"]["assigneePersonId"].is_string());
 
     let response = acp_server::app::app(state.clone())
         .oneshot(req("POST", &format!("/api/user/tasks/{task_id}/assign"), &token,
             Some(serde_json::json!({ "agentLabel": "hermes" })))).await.unwrap();
     let json = json_of(response).await;
-    assert_eq!(json["data"]["assigneeKind"], "agent");
-    assert!(json["data"]["assigneePersonId"].is_null(), "switching to an agent clears the person");
-    assert!(json["data"]["assigneeTokenId"].is_string());
+    assert_eq!(json["data"]["entity"]["assigneeKind"], "agent");
+    assert!(json["data"]["entity"]["assigneePersonId"].is_null(), "switching to an agent clears the person");
+    assert!(json["data"]["entity"]["assigneeTokenId"].is_string());
 
     let response = acp_server::app::app(state)
         .oneshot(req("GET", "/api/user/tasks?assigneeKind=agent", &token, None)).await.unwrap();
@@ -101,7 +101,7 @@ async fn assigning_to_an_unknown_person_fails_and_records_nothing(pool: PgPool) 
     let response = acp_server::app::app(state.clone())
         .oneshot(req("POST", &format!("/api/user/phases/{phase_id}/tasks"), &token,
             Some(serde_json::json!({ "title": "x" })))).await.unwrap();
-    let task_id = json_of(response).await["data"]["id"].as_str().unwrap().to_string();
+    let task_id = json_of(response).await["data"]["entity"]["id"].as_str().unwrap().to_string();
 
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM change").fetch_one(&pool).await.unwrap();
 
@@ -122,7 +122,7 @@ async fn an_invalid_task_status_is_rejected(pool: PgPool) {
     let response = acp_server::app::app(state.clone())
         .oneshot(req("POST", &format!("/api/user/phases/{phase_id}/tasks"), &token,
             Some(serde_json::json!({ "title": "x" })))).await.unwrap();
-    let task_id = json_of(response).await["data"]["id"].as_str().unwrap().to_string();
+    let task_id = json_of(response).await["data"]["entity"]["id"].as_str().unwrap().to_string();
 
     let response = acp_server::app::app(state)
         .oneshot(req("PATCH", &format!("/api/user/tasks/{task_id}"), &token,

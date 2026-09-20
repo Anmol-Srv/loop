@@ -9,6 +9,7 @@ use crate::controllers::task::Assignee;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::middleware::auth::Caller;
+use crate::models::change::Outcome;
 use crate::models::task::{Task, TaskFilter};
 use crate::response::ApiResponse;
 
@@ -62,7 +63,7 @@ async fn create(
     Path(phase_id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<CreateTaskBody>,
-) -> AppResult<ApiResponse<Task>> {
+) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
     let task = controllers::task::create(&state, &caller.actor, phase_id, body.title, body.body, body.priority).await?;
     Ok(ApiResponse::ok(task))
@@ -89,7 +90,7 @@ async fn update(
     Path(id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<UpdateTaskBody>,
-) -> AppResult<ApiResponse<Task>> {
+) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
     Ok(ApiResponse::ok(controllers::task::set_status(&state, &caller.actor, id, body.status).await?))
 }
@@ -99,7 +100,7 @@ async fn assign(
     Path(id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<AssignBody>,
-) -> AppResult<ApiResponse<Task>> {
+) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
 
     let to = match (body.person_email, body.agent_label) {

@@ -43,7 +43,7 @@ async fn artifacts_attach_to_a_parent_and_list_back(pool: PgPool) {
             "kind": "pr", "url": "https://github.com/Anmol-Srv/loop/pull/1", "title": "P0"
         })))).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json_of(response).await["data"]["kind"], "pr");
+    assert_eq!(json_of(response).await["data"]["entity"]["kind"], "pr");
 
     let response = acp_server::app::app(state)
         .oneshot(req("GET", &format!("/api/user/artifacts?parentType=project&parentId={project_id}"), &token, None))

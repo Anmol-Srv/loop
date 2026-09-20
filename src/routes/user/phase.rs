@@ -8,6 +8,7 @@ use crate::controllers;
 use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::middleware::auth::Caller;
+use crate::models::change::Outcome;
 use crate::models::phase::Phase;
 use crate::response::ApiResponse;
 
@@ -37,7 +38,7 @@ async fn create(
     Path(project_id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<CreatePhaseBody>,
-) -> AppResult<ApiResponse<Phase>> {
+) -> AppResult<ApiResponse<Outcome<Phase>>> {
     caller.can_mutate()?;
     let phase = controllers::phase::create(&state, &caller.actor, project_id, body.name, body.position, body.gate).await?;
     Ok(ApiResponse::ok(phase))
@@ -57,7 +58,7 @@ async fn update(
     Path(id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<UpdatePhaseBody>,
-) -> AppResult<ApiResponse<Phase>> {
+) -> AppResult<ApiResponse<Outcome<Phase>>> {
     caller.can_mutate()?;
     Ok(ApiResponse::ok(controllers::phase::set_status(&state, &caller.actor, id, body.status).await?))
 }

@@ -7,6 +7,7 @@ use crate::controllers;
 use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::middleware::auth::Caller;
+use crate::models::change::Outcome;
 use crate::models::project::Project;
 use crate::response::ApiResponse;
 
@@ -25,7 +26,7 @@ async fn create(
     State(state): State<AppState>,
     caller: Caller,
     Json(body): Json<CreateProjectBody>,
-) -> AppResult<ApiResponse<Project>> {
+) -> AppResult<ApiResponse<Outcome<Project>>> {
     caller.can_mutate()?;
     let project = controllers::project::create(&state, &caller.actor, body.key, body.name).await?;
     Ok(ApiResponse::ok(project))

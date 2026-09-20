@@ -9,6 +9,7 @@ use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::middleware::auth::Caller;
 use crate::models::artifact::Artifact;
+use crate::models::change::Outcome;
 use crate::response::ApiResponse;
 
 #[derive(Deserialize)]
@@ -37,7 +38,7 @@ async fn add(
     State(state): State<AppState>,
     caller: Caller,
     Json(body): Json<AddArtifactBody>,
-) -> AppResult<ApiResponse<Artifact>> {
+) -> AppResult<ApiResponse<Outcome<Artifact>>> {
     caller.can_mutate()?;
     let artifact = controllers::artifact::add(
         &state, &caller.actor, body.parent_type, body.parent_id, body.kind, body.url, body.title,

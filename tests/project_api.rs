@@ -46,9 +46,10 @@ async fn creating_a_project_returns_it_and_records_one_change(pool: PgPool) {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(json["success"], true);
-    assert_eq!(json["data"]["key"], "acp");
-    assert_eq!(json["data"]["name"], "Control Plane");
-    assert_eq!(json["data"]["status"], "active");
+    assert_eq!(json["data"]["status"], "applied");
+    assert_eq!(json["data"]["entity"]["key"], "acp");
+    assert_eq!(json["data"]["entity"]["name"], "Control Plane");
+    assert_eq!(json["data"]["entity"]["status"], "active");
 
     let (count, target_type, op): (i64, String, String) = sqlx::query_as(
         "SELECT count(*) OVER (), target_type, op FROM change LIMIT 1",

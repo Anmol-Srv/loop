@@ -60,7 +60,7 @@ async fn phases_are_created_listed_in_order_and_updated(pool: PgPool) {
         .oneshot(req("PATCH", &format!("/api/user/phases/{phase_id}"), &token,
             Some(serde_json::json!({ "status": "active" }))))
         .await.unwrap();
-    assert_eq!(json_of(response).await["data"]["status"], "active");
+    assert_eq!(json_of(response).await["data"]["entity"]["status"], "active");
 
     let changes: i64 = sqlx::query_scalar("SELECT count(*) FROM change WHERE target_type = 'phase'")
         .fetch_one(&pool).await.unwrap();
@@ -95,7 +95,7 @@ async fn an_invalid_status_is_rejected(pool: PgPool) {
         .oneshot(req("POST", &format!("/api/user/projects/{project_id}/phases"), &token,
             Some(serde_json::json!({ "name": "Spec", "position": 1 }))))
         .await.unwrap();
-    let phase_id = json_of(response).await["data"]["id"].as_str().unwrap().to_string();
+    let phase_id = json_of(response).await["data"]["entity"]["id"].as_str().unwrap().to_string();
 
     let response = acp_server::app::app(state)
         .oneshot(req("PATCH", &format!("/api/user/phases/{phase_id}"), &token,
