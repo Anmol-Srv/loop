@@ -10,6 +10,10 @@ use egui::{Align, Layout, Response, RichText, Ui};
 use super::tokens::{colour, pad, radius, size, space, text};
 use super::widgets as w;
 
+/// Vertical room for the macOS traffic lights, which overlay the content when
+/// the title bar is hidden.
+const TRAFFIC_LIGHTS: f32 = 30.0;
+
 /// One entry in the sidebar. `badge` shows a count when non-zero.
 pub struct NavItem<'a> {
     pub icon: &'a str,
@@ -31,18 +35,9 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
                 .inner_margin(egui::Margin::symmetric(pad::SIDEBAR.0 as i8, pad::SIDEBAR.1 as i8)),
         )
         .show(ui, |ui| {
-            // Wordmark
-            ui.add_space(space::XS);
-            ui.horizontal(|ui| {
-                ui.add_space(space::XS);
-                ui.label(
-                    RichText::new("Control Plane")
-                        .size(text::HEADING)
-                        .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
-                );
-            });
-            ui.add_space(space::LG);
+            // The window has no title bar, so the traffic lights float over
+            // this corner. Leave them room rather than drawing under them.
+            ui.add_space(TRAFFIC_LIGHTS);
 
             for (i, item) in items.iter().enumerate() {
                 if nav_item(ui, item).clicked() {
@@ -168,10 +163,7 @@ pub fn content(
                 .inner_margin(egui::Margin::symmetric(pad::PAGE.0 as i8, pad::PAGE.1 as i8)),
         )
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_max_width(size::CONTENT_MAX);
-                body(ui);
-            });
+            egui::ScrollArea::vertical().show(ui, body);
         });
 }
 

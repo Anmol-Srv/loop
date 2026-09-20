@@ -117,8 +117,9 @@ pub mod size {
     pub const ROW: f32 = 30.0;
     pub const CONTROL: f32 = 28.0;
     pub const SIDEBAR_W: f32 = 212.0;
-    pub const TOPBAR_H: f32 = 48.0;
-    pub const CONTENT_MAX: f32 = 1100.0;
+    pub const TOPBAR_H: f32 = 44.0;
+    // No CONTENT_MAX: the body runs to the window edge. A centred measure suits
+    // prose; a board wants every pixel.
 }
 
 pub fn status_colour(status: &str) -> Color32 {
