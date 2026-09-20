@@ -157,6 +157,7 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
                 str_arg(&args, "title")?,
                 opt_str_arg(&args, "body").unwrap_or_default(),
                 args.get("priority").and_then(Value::as_i64).unwrap_or(2) as i32,
+                opt_str_arg(&args, "discipline"),
             )
             .await?,
         ),

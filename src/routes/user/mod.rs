@@ -7,3 +7,5 @@ pub mod work;
 pub mod run_log;
 pub mod me;
 pub mod agent;
+pub mod people;
+pub mod home;

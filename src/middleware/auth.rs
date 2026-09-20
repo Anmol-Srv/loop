@@ -26,6 +26,15 @@ impl Caller {
         }
     }
 
+    /// The person behind the credential. Every credential is owned by
+    /// somebody — an agent token included — so the personal endpoints work
+    /// for an agent acting on its owner's behalf.
+    pub fn person_id(&self) -> AppResult<uuid::Uuid> {
+        self.actor
+            .person_id
+            .ok_or_else(|| AppError::Forbidden("this credential is not tied to a person".into()))
+    }
+
     /// A mutation needs either `propose` (queues as pending) or `write`
     /// (applies immediately).
     pub fn can_mutate(&self) -> AppResult<()> {

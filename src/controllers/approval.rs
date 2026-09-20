@@ -35,6 +35,18 @@ pub async fn list_pending(state: &AppState) -> AppResult<Vec<ChangeRow>> {
     .await?)
 }
 
+/// Proposals an agent queued on one person's behalf: their inbox, and the
+/// only thing standing between an agent's intent and the board.
+pub async fn pending_for(state: &AppState, person_id: Uuid) -> AppResult<Vec<ChangeRow>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT {CHANGE_COLUMNS} FROM change
+          WHERE state = 'pending' AND on_behalf_of = $1 ORDER BY created_at"
+    ))
+    .bind(person_id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
 /// Replay the proposal, then flip it to `approved`.
 ///
 /// The `change` row is locked for the whole operation and its transition
@@ -169,6 +181,7 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             str_at("title")?,
             str_at("body")?,
             i32_at("priority")?,
+            p.get("discipline").and_then(Value::as_str).map(str::to_string),
         )
         .await?
         {
@@ -179,6 +192,23 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             // Which key the patch carries says which controller made it.
             if p.get("status").is_some() {
                 task::set_status(state, actor, change.target_id, str_at("status")?).await?;
+            } else if p.get("discipline").is_some() {
+                let d = p.get("discipline").and_then(Value::as_str).map(str::to_string);
+                task::set_discipline(state, actor, change.target_id, d).await?;
+            } else if let Some(blockers) = p.get("blocked_by").and_then(Value::as_array) {
+                let blockers = blockers
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| AppError::Internal("blocked_by holds a non-uuid".into()))
+                    })
+                    .collect::<AppResult<Vec<Uuid>>>()?;
+                task::set_blockers(state, actor, change.target_id, blockers).await?;
+            } else if p.get("claim_person_id").is_some() {
+                task::claim(state, actor, change.target_id, uuid_at("claim_person_id")?).await?;
+            } else if p.get("release_person_id").is_some() {
+                task::release(state, actor, change.target_id, uuid_at("release_person_id")?).await?;
             } else if let Some(label) = p.get("agent_label").and_then(Value::as_str) {
                 task::assign(state, actor, change.target_id, task::Assignee::Agent(label.into())).await?;
             } else if let Some(email) = p.get("person_email").and_then(Value::as_str) {

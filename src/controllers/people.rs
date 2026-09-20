@@ -2,8 +2,11 @@ use std::path::Path;
 
 use uuid::Uuid;
 
+use serde::Serialize;
+
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
+use crate::models::task::DISCIPLINES;
 use crate::models::{password, setup_code};
 
 const DOMAIN: &str = "@airtribe.live";
@@ -36,6 +39,56 @@ async fn find(state: &AppState, email: &str) -> AppResult<Person> {
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no person with email '{email}'")))
+}
+
+/// A person as the clients see them: who they are and what they can pick up.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonRow {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub disciplines: Vec<String>,
+}
+
+const PERSON_ROW_COLUMNS: &str = "id, email, name, role, disciplines";
+
+/// The team, for assignment pickers and avatars.
+pub async fn list(state: &AppState) -> AppResult<Vec<PersonRow>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT {PERSON_ROW_COLUMNS} FROM person WHERE deleted_at IS NULL ORDER BY name"
+    ))
+    .fetch_all(&state.db)
+    .await?)
+}
+
+/// Set your own disciplines. No `change` row: `change.target_type` covers the
+/// board (project, phase, task, artifact) and a person is not on the board —
+/// this is a profile setting, like a display name.
+pub async fn set_disciplines(
+    state: &AppState,
+    person_id: Uuid,
+    disciplines: Vec<String>,
+) -> AppResult<PersonRow> {
+    for d in &disciplines {
+        if !DISCIPLINES.contains(&d.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "unknown discipline '{d}'; expected one of {}",
+                DISCIPLINES.join(", ")
+            )));
+        }
+    }
+
+    sqlx::query_as(&format!(
+        "UPDATE person SET disciplines = $2, updated_at = now()
+          WHERE id = $1 AND deleted_at IS NULL RETURNING {PERSON_ROW_COLUMNS}"
+    ))
+    .bind(person_id)
+    .bind(&disciplines)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("person not found".into()))
 }
 
 /// Read `email,Name` (or bare `email`) lines and create members. Existing

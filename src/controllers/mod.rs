@@ -7,3 +7,4 @@ pub mod approval;
 pub mod work;
 pub mod run_log;
 pub mod people;
+pub mod home;

@@ -60,3 +60,63 @@ pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
 
     Ok(projects)
 }
+
+/// Done/total for a project, and the same split per discipline.
+///
+/// The flow strip and the home screen both want this, so it is one function
+/// with an optional project filter rather than two queries that could drift.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisciplineProgress {
+    pub discipline: String,
+    pub done: i64,
+    pub total: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectProgress {
+    pub id: Uuid,
+    pub key: String,
+    pub name: String,
+    pub status: String,
+    pub done: i64,
+    pub total: i64,
+    /// Only disciplines that actually have tasks. Unlabelled tasks count
+    /// towards the project total but belong to no discipline.
+    pub disciplines: Vec<DisciplineProgress>,
+}
+
+pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<ProjectProgress>> {
+    let rows: Vec<(Uuid, String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
+        "SELECT pr.id, pr.key, pr.name, pr.status, t.discipline,
+                count(t.id) AS total,
+                count(*) FILTER (WHERE t.status = 'done') AS done
+           FROM project pr
+           LEFT JOIN phase ph ON ph.project_id = pr.id
+           LEFT JOIN task t ON t.phase_id = ph.id
+          WHERE ($1::uuid IS NULL OR pr.id = $1)
+          GROUP BY pr.id, pr.key, pr.name, pr.status, t.discipline
+          ORDER BY pr.name, pr.id",
+    )
+    .bind(only)
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut out: Vec<ProjectProgress> = Vec::new();
+    for (id, key, name, status, discipline, total, done) in rows {
+        if out.last().map(|p| p.id) != Some(id) {
+            out.push(ProjectProgress {
+                id, key, name, status, done: 0, total: 0, disciplines: Vec::new(),
+            });
+        }
+        let project = out.last_mut().expect("just pushed");
+        project.done += done;
+        project.total += total;
+        if let Some(discipline) = discipline {
+            project.disciplines.push(DisciplineProgress { discipline, done, total });
+        }
+    }
+
+    Ok(out)
+}
