@@ -4,10 +4,14 @@
 //! that wants padding says `space::MD`, never `10.0`, so the scale changes in
 //! one place instead of forty.
 //!
-//! Dark, in the Linear register: near-black canvas, surfaces separated by a
-//! step of lightness rather than by shadow, hairline borders, one accent.
-//! Colour carries state and nothing else — that is what keeps a board with two
-//! hundred rows readable.
+//! Dark, in a twilight register: a blue-slate canvas rather than neutral
+//! black, surfaces separated by a step of lightness rather than by shadow,
+//! hairline borders, one soft accent. Colour carries state and nothing else —
+//! that is what keeps a board with two hundred rows readable.
+//!
+//! The palette is pulled from a dusk photograph: deep blue shadow, periwinkle
+//! light, a warm gold where the light catches. Nothing is fully saturated,
+//! which is what stops a dark interface looking like a neon sign.
 
 use egui::Color32;
 
@@ -16,49 +20,54 @@ pub mod colour {
 
     // ---- surfaces, each a step up in lightness. No shadows anywhere; depth
     // ---- is expressed by elevation of tone and a hairline.
-    /// The window. Near-black, not pure black — pure black flattens everything
-    /// stacked on it.
-    pub const CANVAS: Color32 = Color32::from_rgb(0x0B, 0x0B, 0x0C);
+    /// The window. Blue-slate, never pure black — the blue is what makes the
+    /// whole surface read as dusk rather than switched off.
+    pub const CANVAS: Color32 = Color32::from_rgb(0x0D, 0x11, 0x1A);
     /// The sidebar and other chrome that frames content.
-    pub const CHROME: Color32 = Color32::from_rgb(0x0F, 0x0F, 0x11);
+    pub const CHROME: Color32 = Color32::from_rgb(0x11, 0x16, 0x21);
     /// Cards and panels.
-    pub const SURFACE: Color32 = Color32::from_rgb(0x15, 0x15, 0x17);
+    pub const SURFACE: Color32 = Color32::from_rgb(0x17, 0x1D, 0x2A);
     /// A raised or hovered surface.
-    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1F);
+    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1E, 0x25, 0x34);
     /// Selected rows and pressed controls.
-    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x23, 0x23, 0x27);
+    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x26, 0x2E, 0x3F);
     /// Inputs, which sit *below* the surface they are on.
-    pub const INSET: Color32 = Color32::from_rgb(0x0D, 0x0D, 0x0F);
+    pub const INSET: Color32 = Color32::from_rgb(0x0A, 0x0E, 0x16);
 
     // ---- lines
-    pub const LINE: Color32 = Color32::from_rgb(0x27, 0x27, 0x2B);
-    pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1D, 0x1D, 0x20);
-    pub const LINE_STRONG: Color32 = Color32::from_rgb(0x35, 0x35, 0x3A);
+    pub const LINE: Color32 = Color32::from_rgb(0x28, 0x31, 0x43);
+    pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1C, 0x23, 0x31);
+    pub const LINE_STRONG: Color32 = Color32::from_rgb(0x38, 0x44, 0x5A);
 
     // ---- text. Five levels, the way bencho.dev layers its ink scale: one
     // ---- step is rarely the right amount of de-emphasis.
-    pub const TEXT: Color32 = Color32::from_rgb(0xED, 0xED, 0xEF);
+    pub const TEXT: Color32 = Color32::from_rgb(0xE9, 0xEC, 0xF4);
     /// Secondary: a value next to its label.
-    pub const TEXT_2: Color32 = Color32::from_rgb(0xBD, 0xBD, 0xC4);
+    pub const TEXT_2: Color32 = Color32::from_rgb(0xBC, 0xC4, 0xD8);
     /// Muted: labels, metadata.
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8C, 0x8C, 0x94);
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x96, 0xB0);
     /// Faint: timestamps, ids.
-    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x6A, 0x6A, 0x72);
+    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x66, 0x71, 0x8A);
     /// Disabled.
-    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x4C, 0x4C, 0x53);
+    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x48, 0x52, 0x68);
 
-    /// The one accent: a light pink. Light enough that a filled control needs
-    /// dark text on it, which is why `ON_ACCENT` is near-black.
-    pub const ACCENT: Color32 = Color32::from_rgb(0xF0, 0xA8, 0xC6);
-    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xF6, 0xBA, 0xD3);
-    /// A pink-tinted surface, for selected rows and quiet emphasis.
-    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x2B, 0x1E, 0x25);
-    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1A, 0x11, 0x15);
+    /// The one accent: periwinkle, the colour of the light on the horizon.
+    /// Light enough that a filled control takes dark text, which is why
+    /// `ON_ACCENT` is near-black.
+    pub const ACCENT: Color32 = Color32::from_rgb(0xA8, 0xB8, 0xE8);
+    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xBD, 0xCA, 0xF2);
+    /// A periwinkle-tinted surface, for selected rows and quiet emphasis.
+    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x1E, 0x26, 0x3D);
+    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x0F, 0x14, 0x22);
 
-    /// The sidebar wash: pink at the top, fading to nothing. Alpha, so it
-    /// tints whatever is under it rather than needing a matching opaque pair.
-    pub const WASH_TOP: Color32 = Color32::from_rgba_premultiplied(0x2A, 0x16, 0x20, 0xFF);
-    pub const WASH_BOTTOM: Color32 = Color32::from_rgba_premultiplied(0x0F, 0x0F, 0x11, 0xFF);
+    /// The warm counterpoint: gold where the light catches. Used sparingly —
+    /// a highlight, never a surface. Cool everywhere and it reads as cold.
+    pub const GLOW: Color32 = Color32::from_rgb(0xEA, 0xD6, 0xAE);
+
+    /// The sidebar wash: a lift of periwinkle at the top fading into the
+    /// chrome. Alpha-free pair, since a mesh interpolates the two directly.
+    pub const WASH_TOP: Color32 = Color32::from_rgba_premultiplied(0x24, 0x2E, 0x4A, 0xFF);
+    pub const WASH_BOTTOM: Color32 = Color32::from_rgba_premultiplied(0x11, 0x16, 0x21, 0xFF);
 
     // ---- glass. Cards are a translucent lift off the canvas rather than an
     // ---- opaque block, so the wash behind them shows through.
@@ -87,16 +96,18 @@ pub mod colour {
     pub const EDGE_MID_HOVER: Color32 = Color32::from_rgba_premultiplied(0x2E, 0x2E, 0x2E, 0x2E);
 
     // ---- state. Used as a dot, a pill or a thin rule; never a filled block.
-    pub const OK: Color32 = Color32::from_rgb(0x3E, 0xCF, 0x8E);
-    pub const WARN: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23);
-    pub const DANGER: Color32 = Color32::from_rgb(0xEF, 0x56, 0x4F);
-    pub const AGENT: Color32 = Color32::from_rgb(0xA7, 0x8B, 0xFA);
-    pub const IDLE: Color32 = Color32::from_rgb(0x6B, 0x6B, 0x73);
+    /// Desaturated to sit inside the dusk palette; a pure green would leap
+    /// off this ground.
+    pub const OK: Color32 = Color32::from_rgb(0x7F, 0xD4, 0xB0);
+    pub const WARN: Color32 = Color32::from_rgb(0xEA, 0xC1, 0x7E);
+    pub const DANGER: Color32 = Color32::from_rgb(0xE5, 0x8A, 0x8A);
+    pub const AGENT: Color32 = Color32::from_rgb(0xC0, 0xAE, 0xE8);
+    pub const IDLE: Color32 = Color32::from_rgb(0x6A, 0x74, 0x8C);
 
     /// The run log. Slightly darker than a card so it reads as a well.
-    pub const LOG_BG: Color32 = Color32::from_rgb(0x08, 0x08, 0x09);
-    pub const LOG_TEXT: Color32 = Color32::from_rgb(0xC9, 0xC9, 0xCF);
-    pub const LOG_SEQ: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x52);
+    pub const LOG_BG: Color32 = Color32::from_rgb(0x08, 0x0B, 0x12);
+    pub const LOG_TEXT: Color32 = Color32::from_rgb(0xC3, 0xCB, 0xDC);
+    pub const LOG_SEQ: Color32 = Color32::from_rgb(0x4A, 0x54, 0x6B);
 }
 
 /// A 4pt rhythm. Anything off the scale is a bug or a commented exception.
