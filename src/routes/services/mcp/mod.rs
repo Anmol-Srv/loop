@@ -193,6 +193,34 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
             )
             .await?,
         ),
+        // The lease is always taken under the caller's own label — there is no
+        // argument for it, so a worker cannot claim or heartbeat as someone else.
+        "work_claim" => to_value(
+            controllers::work::claim(state, &actor.label, opt_uuid_arg(&args, "taskId")?).await?,
+        ),
+        "work_heartbeat" => to_value(
+            controllers::work::heartbeat(state, &actor.label, uuid_arg(&args, "taskId")?).await?,
+        ),
+        "work_release" => to_value(
+            controllers::work::release(state, &actor.label, uuid_arg(&args, "taskId")?).await?,
+        ),
+        "run_log_append" => {
+            let lines = args
+                .get("lines")
+                .and_then(Value::as_array)
+                .ok_or_else(|| AppError::BadRequest("'lines' is required".into()))?
+                .iter()
+                .map(|l| {
+                    l.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| AppError::BadRequest("'lines' must be strings".into()))
+                })
+                .collect::<AppResult<Vec<String>>>()?;
+            to_value(
+                controllers::run_log::append(state, &actor.label, uuid_arg(&args, "taskId")?, lines)
+                    .await?,
+            )
+        }
         other => Err(AppError::BadRequest(format!("unknown tool '{other}'"))),
     }
 }

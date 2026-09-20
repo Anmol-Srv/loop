@@ -119,6 +119,42 @@ pub fn all() -> Vec<ToolDef> {
             ),
             doc: include_str!("docs/artifact_add.md"),
         },
+        ToolDef {
+            name: "work_claim",
+            description: "Lease the next task assigned to an agent, or a named one. Returns null \
+                          when nothing is claimable. See the doc for the claim/heartbeat/log/\
+                          propose/release loop.",
+            scope: "claim",
+            input_schema: schema(json!({ "taskId": uuid }), &[]),
+            doc: include_str!("docs/work_claim.md"),
+        },
+        ToolDef {
+            name: "work_heartbeat",
+            description: "Extend your lease on a task by another 5 minutes. Call while working.",
+            scope: "claim",
+            input_schema: schema(json!({ "taskId": uuid }), &["taskId"]),
+            doc: include_str!("docs/work_heartbeat.md"),
+        },
+        ToolDef {
+            name: "work_release",
+            description: "Drop your lease and return the task to 'open' for another worker.",
+            scope: "claim",
+            input_schema: schema(json!({ "taskId": uuid }), &["taskId"]),
+            doc: include_str!("docs/work_release.md"),
+        },
+        ToolDef {
+            name: "run_log_append",
+            description: "Append lines to a task's run log. Requires that you hold its lease.",
+            scope: "claim",
+            input_schema: schema(
+                json!({
+                    "taskId": uuid,
+                    "lines": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                }),
+                &["taskId", "lines"],
+            ),
+            doc: include_str!("docs/run_log_append.md"),
+        },
     ]
 }
 
