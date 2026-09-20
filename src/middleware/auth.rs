@@ -47,6 +47,23 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
 
     let can_apply = row.scopes.iter().any(|s| s == "write");
 
+    // Every resolve touches `last_used_at` so stale sessions are visible, but
+    // the expiry only slides once under 29 days — one write per person per
+    // day rather than one per poll from the Mac app. Agent credentials are
+    // minted with a deliberate lifetime and never slide.
+    sqlx::query(
+        "UPDATE credential
+            SET last_used_at = now(),
+                expires_at = CASE WHEN $2 AND expires_at < now() + interval '29 days'
+                                  THEN now() + interval '30 days'
+                                  ELSE expires_at END
+          WHERE id = $1",
+    )
+    .bind(row.id)
+    .bind(row.kind == "session")
+    .execute(db)
+    .await?;
+
     Ok(Caller {
         actor: Actor {
             label: row.label,
