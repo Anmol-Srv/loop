@@ -25,8 +25,7 @@ pub struct App {
     /// Set when a task is opened; takes over the central panel.
     pub task: Option<String>,
     pub scopes: Vec<String>,
-    pub token_input: String,
-    pub login_error: Option<String>,
+    pub login: views::login::State,
     pub board: views::board::State,
 }
 
@@ -40,8 +39,7 @@ impl App {
             project: None,
             task: None,
             scopes: Vec::new(),
-            token_input: String::new(),
-            login_error: None,
+            login: views::login::State::default(),
             board: views::board::State::default(),
         };
 
@@ -71,7 +69,9 @@ impl App {
         self.scopes.clear();
         self.project = None;
         self.task = None;
-        self.token_input.clear();
+        // Reset the whole login screen, error text included, so the next sign-in
+        // does not open on the last one's failure.
+        self.login = views::login::State::default();
     }
 
     fn absorb_identity(&mut self) {
@@ -92,8 +92,10 @@ impl App {
         if let Some(err) = net.error("__me") {
             let err = err.to_string();
             if err.contains("invalid") || err.contains("expired") || err.contains("missing") {
-                self.login_error = Some(err);
+                // Sign out first: it clears the login screen, and this one
+                // message is worth carrying back to it.
                 self.sign_out();
+                self.login.error = Some(err);
             }
         }
     }
