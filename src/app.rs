@@ -8,5 +8,6 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::health::routes())
         .merge(routes::user::project::routes())
         .merge(routes::user::phase::routes())
+        .merge(routes::user::task::routes())
         .with_state(state)
 }
