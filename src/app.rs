@@ -14,5 +14,9 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::user::work::routes())
         .merge(routes::user::run_log::routes())
         .merge(routes::services::mcp::routes())
+        .merge(routes::web::auth::routes())
+        .merge(routes::web::board::routes())
+        .merge(routes::web::inbox::routes())
+        .merge(routes::web::task::routes())
         .with_state(state)
 }
