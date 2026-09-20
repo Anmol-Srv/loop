@@ -50,7 +50,7 @@ per-identity bearer tokens and speak HTTPS.
 | Concern | Choice |
 |---|---|
 | HTTP | Axum |
-| Database | Postgres via `sqlx` (compile-time checked queries) |
+| Database | Postgres via `sqlx` (runtime-checked queries — see the note below) |
 | Migrations | `sqlx::migrate`, timestamped plain `.sql` files |
 | Background jobs | `job` table + Postgres `LISTEN/NOTIFY` |
 | Auth | Google Workspace OIDC (`hd=airtribe.live`); bearer tokens |
@@ -59,10 +59,22 @@ per-identity bearer tokens and speak HTTPS.
 Two deliberate departures from a literal mycohort translation, both to reduce
 maintained machinery:
 
-- **No ORM.** `sqlx` checks SQL against the real schema at compile time, so a
-  typo fails `cargo build`. Relations are explicit join queries in `models/`.
-  SeaORM would give Objection-style relations at the cost of a codegen layer
-  and worse diagnostics.
+- **No ORM.** Relations are explicit join queries in `models/`. SeaORM would
+  give Objection-style relations at the cost of a codegen layer and worse
+  diagnostics, and the join-by-hand style has been fine at this size.
+
+  **Correction (2026-09-20):** an earlier version of this section justified the
+  choice by saying sqlx checks SQL against the schema at compile time so a typo
+  fails `cargo build`. That is a real sqlx feature, but it requires the
+  `query!`/`query_as!` macros, and the codebase uses the runtime-checked
+  `query`/`query_as` functions in all 72 query sites. A typo surfaces as a
+  runtime error, not a build failure. The decision to skip an ORM stands on the
+  other grounds; the stated reason was wrong.
+
+  Adopting the macros is available and worth considering: it needs a
+  `.sqlx` offline cache committed to the repo (`cargo sqlx prepare`) and
+  regenerated whenever the schema changes, plus a reachable database or that
+  cache in CI. Deferred, not rejected.
 - **No Redis/BullMQ.** A `job` table plus `LISTEN/NOTIFY` removes a dependency,
   makes jobs transactional with the data that enqueued them, and leaves the
   queue inspectable with plain SQL.
