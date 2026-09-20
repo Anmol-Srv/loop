@@ -20,8 +20,11 @@ async fn pending(
     State(state): State<AppState>,
     caller: Caller,
 ) -> AppResult<ApiResponse<Vec<ChangeRow>>> {
-    // Only an approver should see the queue they are expected to act on.
-    caller.require("write")?;
+    // Reading the queue is not authority over it: anyone who can read the
+    // system can see what an agent has proposed. Only `approve`/`reject`
+    // require `write`. The web and native clients both render a no-buttons
+    // view for readers, which only works if they can fetch the list.
+    caller.require("read")?;
     Ok(ApiResponse::ok(approval::list_pending(&state).await?))
 }
 
