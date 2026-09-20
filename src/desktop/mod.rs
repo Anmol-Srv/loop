@@ -3,6 +3,7 @@
 //! Feature-gated behind `app` so the server binary does not carry a GUI stack:
 //!   cargo build --features app --bin acp-app
 
+pub mod design;
 pub mod net;
 pub mod theme;
 pub mod views;
@@ -31,7 +32,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::install(&cc.egui_ctx);
+        design::theme::install(&cc.egui_ctx);
 
         let mut app = Self {
             net: None,
