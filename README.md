@@ -13,9 +13,9 @@ Humans drive it from a CLI; agents get a scoped, audited surface of their own.
 |---|---|
 | P0 Backbone — schema, errors, `change` write path | done |
 | P1 Core & CLI — tokens, auth, phases, tasks, artifacts, `acp` | done |
-| P2 MCP — tool surface, approval queue | next |
-| P3 Delegation — claim-lease, run logs, job worker | planned |
-| P4 Web UI | planned |
+| P2 MCP — tool surface, approval queue | done |
+| P3 Delegation — claim-lease, run logs, job worker | done |
+| P4 Web UI | next |
 
 ## Setup
 
@@ -62,6 +62,36 @@ acp task assign <task-id> --agent hermes
 
 acp link task <task-id> --kind pr --url https://github.com/... --title "P1"
 ```
+
+## Delegating to an agent
+
+Assign a task to an agent and it becomes claimable. The server never reaches
+into a laptop; the laptop pulls.
+
+```bash
+acp task assign <task-id> --agent hermes
+```
+
+The agent then claims it under a five-minute lease, heartbeats while it works,
+streams run-log lines, and finishes by *proposing* a change. A laptop that
+sleeps or dies has its lease lapse and the task returns to the pool — there is
+no unlock command because a claim is a lease, not a lock.
+
+`scripts/rehearse-delegation.sh` drives that whole loop against a running
+server, including the cases that matter: a second worker cannot steal a live
+lease, a non-holder cannot write to the log, and an agent cannot approve its
+own proposal.
+
+## Connecting an agent over MCP
+
+```bash
+export ACP_TOKEN=<a read,claim,propose token>
+./target/debug/acp-mcp          # newline-delimited JSON-RPC on stdin/stdout
+```
+
+Point Hermes or Claude Code at that command. The shim holds the token, so the
+agent never sees it. Every tool ships a companion document at
+`acp://docs/<tool>`; `acp://docs/work_claim` describes the full working loop.
 
 ## How writes work
 
