@@ -24,6 +24,7 @@ pub struct Avatar<'a> {
     /// same colour everywhere in the app.
     pub seed: &'a str,
     pub size: f32,
+    /// Listed bottom-up: the first action sits nearest the avatar.
     pub actions: &'a [Action<'a>],
 }
 
@@ -75,73 +76,101 @@ fn from_hue(hue: f32, sat: f32, val: f32) -> Color32 {
 
 /// Draw the avatar. Returns the index of a clicked action, if any.
 ///
+/// Clicking opens a list of actions *above* the avatar, springing up out of
+/// it. Upward because the avatar lives at the foot of the sidebar, and a menu
+/// that opens off-screen is no menu at all.
+///
+/// The list floats in an `Area` rather than taking layout space, so opening it
+/// never reflows the sidebar underneath.
+///
 /// Open/closed state lives in egui's temp store keyed on the widget id, so a
 /// caller does not have to thread a bool through its own state.
 pub fn show(ui: &mut Ui, avatar: &Avatar<'_>) -> Option<usize> {
     let id = ui.make_persistent_id(("avatar", avatar.seed));
     let mut open = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
 
-    // The ring needs room even when closed, or opening would reflow the page.
-    let ring = avatar.size * 0.95;
-    let satellite = avatar.size * 0.62;
-    let extent = ring + satellite / 2.0 + 4.0;
-    let (area, _) = ui.allocate_exact_size(Vec2::splat(extent * 2.0), Sense::hover());
+    let (area, face_response) =
+        ui.allocate_exact_size(Vec2::splat(avatar.size), Sense::click());
     let centre = area.center();
 
-    // 0 closed, 1 fully open. egui drives the easing and repaints for us.
-    let t = ui.ctx().animate_bool_with_time(id, open, 0.18);
+    // 0 closed, 1 fully open. egui drives the easing and the repaints.
+    let t = ui.ctx().animate_bool_with_time(id, open, 0.16);
 
     let mut clicked = None;
 
     if t > 0.001 {
-        let count = avatar.actions.len().max(1) as f32;
-        for (i, action) in avatar.actions.iter().enumerate() {
-            // Start at twelve o'clock and go clockwise.
-            let angle = -std::f32::consts::FRAC_PI_2
-                + (i as f32 / count) * std::f32::consts::TAU;
-            let distance = ring * t;
-            let pos = centre + Vec2::new(angle.cos(), angle.sin()) * distance;
-            let size = satellite * t;
-            let rect = Rect::from_center_size(pos, Vec2::splat(size));
+        let row_h = 30.0;
+        let gap = 6.0;
+        let width = 152.0;
+        let count = avatar.actions.len() as f32;
+        let stack_h = count * row_h + (count - 1.0).max(0.0) * gap;
+        let travel = 8.0; // how far each row slides as it fades in
 
-            let response = ui
-                .interact(rect, id.with(i), Sense::click())
-                .on_hover_text(action.label);
-            let hovered = response.hovered();
+        let top_left = egui::pos2(
+            centre.x - width / 2.0,
+            area.top() - gap - stack_h + (1.0 - t) * travel,
+        );
 
-            let fg = action.tint.unwrap_or(colour::TEXT);
-            let fill = if hovered { colour::GLASS_ACTIVE } else { colour::GLASS_HOVER };
+        egui::Area::new(id.with("menu"))
+            .fixed_pos(top_left)
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(width);
+                // Rendered bottom-up: index 0 ends nearest the avatar, so the
+                // first action is closest to the cursor and anything
+                // destructive sits furthest from an accidental click.
+                for (i, action) in avatar.actions.iter().enumerate().rev() {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::new(width, row_h), Sense::click());
+                    let hovered = response.hovered();
 
-            let p = ui.painter();
-            p.circle_filled(pos, size / 2.0, fill);
-            p.circle_stroke(
-                pos,
-                size / 2.0,
-                egui::Stroke::new(1.0, if hovered { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }),
-            );
-            // Satellites fade in with the spring, so early frames are ghosts.
-            p.text(
-                pos,
-                Align2::CENTER_CENTER,
-                action.icon,
-                FontId::proportional(size * 0.42),
-                fg.gamma_multiply(t),
-            );
+                    let fill = if hovered { colour::GLASS_ACTIVE } else { colour::GLASS_HOVER };
+                    let p = ui.painter();
+                    p.rect_filled(rect, 8.0, fill.gamma_multiply(t));
+                    p.rect_stroke(
+                        rect,
+                        8.0,
+                        egui::Stroke::new(
+                            1.0,
+                            if hovered { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }
+                                .gamma_multiply(t),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
 
-            if hovered {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if response.clicked() {
-                clicked = Some(i);
-                open = false;
-            }
-        }
+                    let fg = action.tint.unwrap_or(colour::TEXT).gamma_multiply(t);
+                    p.text(
+                        egui::pos2(rect.left() + 11.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        action.icon,
+                        FontId::proportional(14.0),
+                        fg,
+                    );
+                    p.text(
+                        egui::pos2(rect.left() + 32.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        action.label,
+                        FontId::proportional(text::BODY),
+                        fg,
+                    );
+
+                    if hovered {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        clicked = Some(i);
+                        open = false;
+                    }
+                    if i > 0 {
+                        ui.add_space(gap);
+                    }
+                }
+            });
     }
 
-    // The avatar itself, painted last so it sits above the ring.
+    // The avatar itself.
     let face = Rect::from_center_size(centre, Vec2::splat(avatar.size));
-    let response = ui.interact(face, id.with("face"), Sense::click());
-
     let hue = hue_of(avatar.seed);
     let top = from_hue(hue, 0.42, 0.82);
     let bottom = from_hue((hue + 40.0) % 360.0, 0.52, 0.62);
@@ -149,6 +178,7 @@ pub fn show(ui: &mut Ui, avatar: &Avatar<'_>) -> Option<usize> {
     // A two-triangle mesh clipped to the circle: egui has no radial fill, and
     // a flat disc next to glass looks like a sticker.
     let p = ui.painter().with_clip_rect(face);
+    p.circle_filled(centre, avatar.size / 2.0, top);
     let mut mesh = egui::Mesh::default();
     mesh.colored_vertex(face.left_top(), top);
     mesh.colored_vertex(face.right_top(), top);
@@ -156,11 +186,9 @@ pub fn show(ui: &mut Ui, avatar: &Avatar<'_>) -> Option<usize> {
     mesh.colored_vertex(face.right_bottom(), bottom);
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(1, 2, 3);
-    p.circle_filled(centre, avatar.size / 2.0, top);
     p.add(egui::Shape::mesh(mesh));
 
     let p = ui.painter();
-    p.circle_filled(centre, avatar.size / 2.0 - 0.0, Color32::TRANSPARENT);
     p.circle_stroke(
         centre,
         avatar.size / 2.0,
@@ -174,17 +202,21 @@ pub fn show(ui: &mut Ui, avatar: &Avatar<'_>) -> Option<usize> {
         colour::ON_ACCENT,
     );
 
-    if response.hovered() {
+    if face_response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if response.clicked() {
+    if face_response.clicked() {
         open = !open;
     }
-    // Clicking anywhere else closes the ring, which is what every menu does.
-    if open && ui.input(|i| i.pointer.any_click()) && !response.clicked() && clicked.is_none() {
-        let pointer = ui.input(|i| i.pointer.interact_pos());
-        if let Some(pos) = pointer {
-            if centre.distance(pos) > ring + satellite {
+    // A click anywhere else closes it, which is what every menu does.
+    if open && clicked.is_none() && ui.input(|i| i.pointer.any_click()) && !face_response.clicked()
+    {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            let menu = Rect::from_min_size(
+                egui::pos2(centre.x - 80.0, area.top() - 160.0),
+                Vec2::new(160.0, 160.0),
+            );
+            if !menu.contains(pos) && !face.contains(pos) {
                 open = false;
             }
         }
