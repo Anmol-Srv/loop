@@ -33,6 +33,7 @@ egui_extras = { version = "0.36.2", features = ["image"], optional = true }
 keyring = "4.2.0"
 egui = { version = "0.36.2", optional = true }
 argon2 = "0.6.0"
+rpassword = "7.5.4"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
