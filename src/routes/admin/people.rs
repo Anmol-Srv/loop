@@ -39,6 +39,9 @@ pub struct Invite {
 pub struct PersonRole {
     pub email: String,
     pub role: String,
+    /// Sessions ended by the change. A role change only bites once the
+    /// credentials minted under the old role are gone.
+    pub sessions_ended: u64,
 }
 
 #[derive(Serialize)]
@@ -137,12 +140,26 @@ async fn role(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no person with email '{email}'")))?;
 
-    // ponytail: existing sessions keep the scopes they were minted with until
-    // they expire or sign out. Revoke the person's sessions here if a demotion
-    // ever needs to take effect immediately.
+    // Scopes are baked into a credential when it is minted, so a demotion has
+    // no effect on a session already in someone's Keychain. Ending their
+    // sessions is what makes the demotion real; they sign in again and get the
+    // scopes their new role grants. Agent credentials are left alone — they
+    // never carry `admin` in the first place.
+    let ended = sqlx::query(
+        "UPDATE credential SET revoked_at = now()
+          WHERE kind = 'session'
+            AND revoked_at IS NULL
+            AND owner_id = (SELECT id FROM person WHERE email = $1)",
+    )
+    .bind(&email)
+    .execute(&state.db)
+    .await?
+    .rows_affected();
+
     Ok(ApiResponse::ok(PersonRole {
         email,
         role: updated,
+        sessions_ended: ended,
     }))
 }
 
