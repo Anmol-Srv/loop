@@ -215,7 +215,7 @@ fn assigned_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) 
         w::dot(ui, status_colour(&status));
         ui.add_space(space::XS);
         w::discipline(ui, &discipline);
-        w::body(ui, &title);
+        w::row_title(ui, &title, TRAILING_ASSIGNED);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // A blocked row spends its right-hand side naming the blocker: the
@@ -224,8 +224,6 @@ fn assigned_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) 
                 w::blocked_by(ui, &waiting);
                 return;
             }
-            w::id(ui, &id);
-            ui.add_space(space::SM);
             w::muted(ui, &meta);
             if is_agent {
                 ui.add_space(space::SM);
@@ -250,7 +248,7 @@ enum Row {
 }
 
 /// One claimable task: no status dot, because every row here is open, and a
-/// Claim button where the assigned rows carry their id.
+/// Claim button where the assigned rows carry their project and phase.
 fn claimable_row(ui: &mut egui::Ui, t: &Value, can_claim: bool) -> Row {
     let id = text_at(t, "id");
     let title = text_at(t, "title");
@@ -260,7 +258,7 @@ fn claimable_row(ui: &mut egui::Ui, t: &Value, can_claim: bool) -> Row {
     let mut claimed = false;
     let hit = w::row(ui, |ui| {
         w::discipline(ui, &discipline);
-        w::body(ui, &title);
+        w::row_title(ui, &title, TRAILING_CLAIMABLE);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             claimed = w::button(ui, "Claim", w::Emphasis::Ghost, can_claim).clicked();
             ui.add_space(space::SM);

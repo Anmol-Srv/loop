@@ -12,8 +12,10 @@ use egui_phosphor::thin as icon;
 use serde_json::Value;
 
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
-use crate::desktop::design::{colour, size, space, status_colour, status_label, text, widgets as w};
 use crate::desktop::design::avatar;
+use crate::desktop::design::{
+    colour, shell, size, space, status_colour, status_label, text, widgets as w,
+};
 use crate::desktop::App;
 
 const STATUSES: [&str; 6] = ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
@@ -26,6 +28,13 @@ const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
 
 /// Where a claim's reply is collected.
 const CLAIM_KEY: &str = "board:claim";
+
+/// Room kept on the right of a task row so the title truncates rather than
+/// running under the avatar, pill or Claim button that follows it. Four
+/// discipline columns, which is the widest of the three endings.
+/// ponytail: a reservation, not a measurement. Lay the trailing group out
+/// first and read its width back if a blocker title ever outgrows this.
+const TRAILING_TASK: f32 = DISCIPLINE_W * 4.0;
 
 #[derive(Default)]
 pub struct State {
@@ -70,8 +79,7 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    w::title(ui, "Projects");
-    ui.add_space(space::MD);
+    shell::page_title(ui, "Projects", "", |_| {});
 
     if let Some(err) = error {
         w::error(ui, &err);
@@ -199,26 +207,25 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut claim: Option<String> = None;
     let mut filters_changed = false;
 
-    if w::link(ui, &format!("{} Projects", icon::ARROW_LEFT)).clicked() {
+    if shell::back(ui, "Projects").clicked() {
         back = true;
     }
-    ui.add_space(space::XXS);
-    ui.horizontal(|ui| {
-        match &flow {
-            Some(f) => {
-                w::title(ui, str_at(f, "name"));
-                ui.add_space(space::SM);
-                w::mono_caption(ui, str_at(f, "key"));
-            }
-            None => w::title(ui, "Project"),
+    // The project key goes in the trailing slot, not the subtitle: the subtitle
+    // is a sentence about progress, and a mono identifier reads as a label on
+    // the title rather than a second line of prose about it.
+    match &flow {
+        Some(f) => {
+            let key = str_at(f, "key").to_string();
+            shell::page_title(
+                ui,
+                str_at(f, "name"),
+                &format!("{} of {} done", num_at(f, "done"), num_at(f, "total")),
+                |ui| w::mono_caption(ui, &key),
+            );
         }
-    });
-    if let Some(f) = &flow {
-        ui.add_space(space::XXS);
-        w::muted(ui, &format!("{} of {} done", num_at(f, "done"), num_at(f, "total")));
+        None => shell::page_title(ui, "Project", "", |_| {}),
     }
 
-    ui.add_space(space::LG);
     if let Some(err) = flow_error {
         w::error(ui, &err);
     } else {
@@ -343,35 +350,43 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
     }
 
     w::card(ui, |ui| {
-        ui.set_width(ui.available_width());
+        let full = ui.available_width();
+        ui.set_width(full);
         let arrow = if columns.len() > 1 { 1.0 } else { 0.0 };
         let gaps = space::LG * (columns.len() as f32 - 1.0 + arrow);
-        let width = ((ui.available_width() - gaps - space::MD * arrow) / columns.len() as f32)
-            .max(DISCIPLINE_W);
+        let width =
+            ((full - gaps - space::MD * arrow) / columns.len() as f32).max(DISCIPLINE_W);
 
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = space::LG;
-            for (i, d) in columns.iter().enumerate() {
-                let name = str_at(d, "discipline");
-                let (done, total) = (num_at(d, "done"), num_at(d, "total"));
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    w::muted(ui, name);
-                    ui.add_space(space::XS);
-                    w::progress(ui, fraction(done, total), width, discipline_colour(name));
-                    ui.add_space(space::XS);
-                    w::caption(ui, &format!("{done} / {total} done"));
-                });
-                // Hand-painted: a faint glyph between two columns. No widget is
-                // a bare separator, and `muted` is a step too bright for it.
-                if i == 0 && columns.len() > 1 {
-                    ui.label(
-                        egui::RichText::new(icon::ARROW_RIGHT)
-                            .size(text::BODY)
-                            .color(colour::TEXT_FAINT),
-                    );
+        // The floor above stops a column collapsing to nothing, which means at
+        // enough disciplines the strip is wider than the card. `horizontal_top`
+        // neither wraps nor scrolls, so it would simply run off the edge; this
+        // scrolls instead. Below the floor it shrinks to fit and no bar shows,
+        // so today's three disciplines are unchanged.
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = space::LG;
+                for (i, d) in columns.iter().enumerate() {
+                    let name = str_at(d, "discipline");
+                    let (done, total) = (num_at(d, "done"), num_at(d, "total"));
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        w::muted(ui, name);
+                        ui.add_space(space::XS);
+                        w::progress(ui, fraction(done, total), width, discipline_colour(name));
+                        ui.add_space(space::XS);
+                        w::caption(ui, &format!("{done} / {total} done"));
+                    });
+                    // Hand-painted: a faint glyph between two columns. No widget
+                    // is a bare separator, and `muted` is a step too bright.
+                    if i == 0 && columns.len() > 1 {
+                        ui.label(
+                            egui::RichText::new(icon::ARROW_RIGHT)
+                                .size(text::BODY)
+                                .color(colour::TEXT_FAINT),
+                        );
+                    }
                 }
-            }
+            });
         });
     });
 }
@@ -439,7 +454,7 @@ fn task_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) -> O
         w::dot(ui, status_colour(&status));
         ui.add_space(space::XS);
         w::discipline(ui, &discipline);
-        w::body(ui, &title);
+        w::row_title(ui, &title, TRAILING_TASK);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Exactly one of three endings: what it waits on, who holds it, or
