@@ -13,9 +13,14 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
+use egui_phosphor::thin as icon;
 use serde_json::{json, Value};
 
-use crate::desktop::{theme, App};
+use crate::desktop::design::{
+    avatar, colour, pad, radius, shell, size, space, status_colour, status_label, text,
+    widgets as w,
+};
+use crate::desktop::App;
 
 const LOG_KEY: &str = "task:logs";
 const PATCH_KEY: &str = "task:patch";
@@ -27,6 +32,14 @@ const POLL: Duration = Duration::from_secs(2);
 /// Fire slightly early: a repaint scheduled for +2s can land a hair under it,
 /// and a strict `>= POLL` test would then skip a tick and halve the cadence.
 const DUE: Duration = Duration::from_millis(1_900);
+
+/// The log well, in rows rather than pixels — tall enough to watch a run, short
+/// enough that the controls above it stay on screen.
+const LOG_ROWS: f32 = 11.0;
+
+/// The assignee disc. Sized off the spacing scale so it lines up with the pills
+/// beside it instead of inventing a diameter.
+const AVATAR: f32 = space::XL;
 
 /// Everything the detail view remembers between frames. Scoped to one task id;
 /// opening a different task resets it.
@@ -106,9 +119,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, can_write: bool, loca
         if let Some(err) = net.error(LIST_KEY) {
             failed(ui, "Could not load the task", err);
         } else if net.is_loading(LIST_KEY) {
-            waiting(ui, "Loading task");
+            w::loading(ui, "Loading task");
         } else {
-            waiting(ui, "That task is no longer in the list");
+            w::empty(ui, "That task is no longer in the list");
         }
         return;
     };
@@ -121,9 +134,13 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, can_write: bool, loca
     if can_write {
         status_controls(ui, net, task_id, &status, local);
     }
-    if let Some((text, colour)) = &local.notice {
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new(text).size(12.0).color(*colour));
+    if let Some((message, colour)) = &local.notice {
+        ui.add_space(space::SM);
+        ui.label(
+            egui::RichText::new(message)
+                .size(text::SMALL)
+                .color(*colour),
+        );
     }
 
     artifacts(ui, net);
@@ -134,68 +151,86 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, can_write: bool, loca
 
 fn back_row(app: &mut App, ui: &mut egui::Ui, task_id: &str) {
     ui.horizontal(|ui| {
-        if ui.small_button("< Board").clicked() {
+        if w::link(ui, &format!("{} Board", icon::ARROW_LEFT)).clicked() {
             app.task = None;
         }
-        ui.add_space(4.0);
-        theme::id_label(ui, task_id);
+        ui.add_space(space::XS);
+        w::id(ui, task_id);
     });
-    ui.add_space(14.0);
+    ui.add_space(space::MD);
 }
 
 fn header(ui: &mut egui::Ui, task: &Value, status: &str) {
-    card(ui, |ui| {
-        ui.label(
-            egui::RichText::new(str_of(task, "title").unwrap_or("Untitled"))
-                .size(21.0)
-                .strong(),
-        );
-        ui.add_space(12.0);
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        w::title(ui, str_of(task, "title").unwrap_or("Untitled"));
+        ui.add_space(space::MD);
 
         ui.horizontal_wrapped(|ui| {
-            theme::pill(ui, &status.replace('_', " "), theme::status(status));
+            w::pill(ui, status_label(status), status_colour(status));
 
             let kind = str_of(task, "assigneeKind");
             let is_agent = kind == Some("agent");
-            let who = str_of(task, "claimedBy")
-                .or(kind)
-                .unwrap_or("unassigned")
-                .to_string();
+            let claimed_by = str_of(task, "claimedBy");
+            let who = claimed_by.or(kind).unwrap_or("unassigned").to_string();
+
+            // An agent-held task gets a face: the run log below is that
+            // agent's output, and the two should read as one thing.
+            if is_agent {
+                if let Some(seed) = claimed_by {
+                    ui.add_space(space::XS);
+                    avatar::small(ui, seed, AVATAR);
+                    ui.add_space(space::XS);
+                }
+            }
+
             let colour = if is_agent {
-                theme::AGENT
+                colour::AGENT
             } else if kind.is_some() {
-                theme::ACCENT
+                colour::ACCENT
             } else {
-                theme::MUTED
+                colour::TEXT_MUTED
             };
-            theme::pill(ui, &who, colour);
+            w::pill(ui, &who, colour);
 
             if let Some(p) = task.get("priority").and_then(Value::as_i64) {
-                let colour = if p <= 1 { theme::WARN } else { theme::MUTED };
-                theme::pill(ui, &format!("priority {p}"), colour);
+                let tint = if p <= 1 { colour::WARN } else { colour::TEXT_MUTED };
+                w::pill(ui, &format!("priority {p}"), tint);
             }
         });
 
         if let Some(updated) = str_of(task, "updatedAt") {
-            ui.add_space(10.0);
+            ui.add_space(space::SM);
             ui.label(
-                egui::RichText::new(format!("updated {}", stamp(updated)))
-                    .size(11.0)
-                    .color(theme::MUTED),
+                egui::RichText::new(format!("{} updated {}", icon::CLOCK, stamp(updated)))
+                    .size(text::CAPTION)
+                    .color(colour::TEXT_FAINT),
             );
         }
     });
 }
 
 fn body(ui: &mut egui::Ui, task: &Value) {
-    let text = str_of(task, "body").unwrap_or("").trim();
-    if text.is_empty() {
+    let description = str_of(task, "body").unwrap_or("").trim();
+    if description.is_empty() {
         return;
     }
-    section(ui, "Description");
-    card(ui, |ui| {
-        ui.label(egui::RichText::new(text).size(13.0));
+    shell::section(ui, "Description");
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        w::body(ui, description);
     });
+}
+
+/// The move a human is most likely to make from here. It gets the one filled
+/// button on the screen; everything else stays outlined.
+fn likely_next(status: &str) -> &'static str {
+    match status {
+        "in_progress" => "in_review",
+        "in_review" => "done",
+        "done" => "open",
+        _ => "in_progress",
+    }
 }
 
 fn status_controls(
@@ -213,10 +248,10 @@ fn status_controls(
                     "Awaiting approval: you do not hold write on this project, so the \
                      move was recorded as a proposed change."
                         .to_string(),
-                    theme::WARN,
+                    colour::WARN,
                 ),
-                Ok(_) => ("Status updated.".to_string(), theme::OK),
-                Err(e) => (format!("Could not move the task: {e}"), theme::DANGER),
+                Ok(_) => ("Status updated.".to_string(), colour::OK),
+                Err(e) => (format!("Could not move the task: {e}"), colour::DANGER),
             });
             local.patching = false;
             // The task list, the log and the board all show the old status.
@@ -225,18 +260,19 @@ fn status_controls(
         }
     }
 
-    section(ui, "Move to");
+    shell::section(ui, "Move to");
+    let suggested = likely_next(status);
     ui.horizontal_wrapped(|ui| {
         for next in ["open", "in_progress", "in_review", "done"] {
             let here = next == status;
-            let label = egui::RichText::new(next.replace('_', " "))
-                .size(12.0)
-                .color(if here { theme::MUTED } else { theme::status(next) });
-            let button = egui::Button::new(label);
-            if ui
-                .add_enabled(!here && !local.patching, button)
-                .clicked()
-            {
+            let enabled = !here && !local.patching;
+            let label = status_label(next);
+            let clicked = if next == suggested && enabled {
+                w::primary(ui, label, true).clicked()
+            } else {
+                w::secondary(ui, label, enabled).clicked()
+            };
+            if clicked {
                 net.patch(
                     PATCH_KEY,
                     &format!("/api/user/tasks/{task_id}"),
@@ -247,43 +283,47 @@ fn status_controls(
             }
         }
         if local.patching {
-            ui.add_space(6.0);
-            ui.add(egui::Spinner::new().size(13.0));
+            ui.add_space(space::SM);
+            ui.add(egui::Spinner::new().size(text::BODY));
         }
     });
 }
 
 fn artifacts(ui: &mut egui::Ui, net: &crate::desktop::net::Net) {
-    section(ui, "Artifacts");
+    shell::section(ui, "Artifacts");
 
     if let Some(err) = net.error(ARTIFACTS_KEY) {
         failed(ui, "Could not load artifacts", err);
         return;
     }
     let Some(rows) = net.data(ARTIFACTS_KEY).and_then(Value::as_array) else {
-        waiting(ui, "Loading artifacts");
+        w::loading(ui, "Loading artifacts");
         return;
     };
     if rows.is_empty() {
-        empty(ui, "Nothing attached yet");
+        w::empty(ui, "Nothing attached yet");
         return;
     }
 
-    card(ui, |ui| {
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
         for (i, row) in rows.iter().enumerate() {
             if i > 0 {
-                ui.add_space(7.0);
+                ui.add_space(space::SM);
             }
             ui.horizontal(|ui| {
-                theme::pill(ui, str_of(row, "kind").unwrap_or("link"), theme::MUTED);
-                ui.add_space(4.0);
+                w::pill(ui, str_of(row, "kind").unwrap_or("link"), colour::TEXT_MUTED);
+                ui.add_space(space::XS);
                 let url = str_of(row, "url").unwrap_or_default();
                 let title = match str_of(row, "title").map(str::trim) {
                     Some(t) if !t.is_empty() => t,
                     _ => url,
                 };
-                ui.hyperlink_to(egui::RichText::new(title).size(13.0), url)
-                    .on_hover_text(url);
+                ui.hyperlink_to(
+                    egui::RichText::new(format!("{} {title}", icon::LINK)).size(text::BODY),
+                    url,
+                )
+                .on_hover_text(url);
             });
         }
     });
@@ -347,29 +387,36 @@ fn run_log(
         local.fired_at = Instant::now();
     }
 
-    ui.add_space(20.0);
+    // A section heading with a pill beside it. `shell::section` owns the label
+    // alone, so the row is hand-painted here in the same type and colour.
+    ui.add_space(space::LG);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("RUN LOG")
-                .size(10.0)
-                .strong()
-                .color(theme::MUTED),
+            egui::RichText::new("Run log")
+                .size(text::SMALL)
+                .family(egui::FontFamily::Name(
+                    crate::desktop::design::theme::MEDIUM.into(),
+                ))
+                .color(colour::TEXT_MUTED),
         );
         if live {
-            ui.add_space(6.0);
-            theme::pill(ui, "live", theme::ACCENT);
+            ui.add_space(space::SM);
+            w::pill(ui, "live", colour::ACCENT);
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(space::SM);
 
     if let Some(err) = &local.log_error {
         failed(ui, "Could not load the run log", err);
     }
 
     egui::Frame::new()
-        .fill(theme::TEXT)
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(14, 12))
+        .fill(colour::LOG_BG)
+        .corner_radius(radius::MD)
+        .inner_margin(egui::Margin::symmetric(
+            pad::CARD.0 as i8,
+            pad::CARD.1 as i8,
+        ))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
@@ -384,33 +431,33 @@ fn run_log(
                 ui.label(
                     egui::RichText::new(note)
                         .monospace()
-                        .size(12.0)
-                        .color(theme::MUTED),
+                        .size(text::SMALL)
+                        .color(colour::LOG_SEQ),
                 );
                 return;
             }
 
             egui::ScrollArea::vertical()
                 .id_salt("task:log:scroll")
-                .max_height(340.0)
+                .max_height(size::ROW * LOG_ROWS)
                 .stick_to_bottom(true)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    for (seq, text) in &local.lines {
+                    ui.spacing_mut().item_spacing.y = space::XXS;
+                    for (seq, line) in &local.lines {
                         ui.horizontal_top(|ui| {
                             ui.label(
                                 egui::RichText::new(format!("{seq:>4}"))
                                     .monospace()
-                                    .size(11.5)
-                                    .color(theme::MUTED),
+                                    .size(text::SMALL)
+                                    .color(colour::LOG_SEQ),
                             );
-                            ui.add_space(6.0);
+                            ui.add_space(space::SM);
                             ui.add(egui::Label::new(
-                                egui::RichText::new(text)
+                                egui::RichText::new(line)
                                     .monospace()
-                                    .size(11.5)
-                                    .color(theme::BG),
+                                    .size(text::SMALL)
+                                    .color(colour::LOG_TEXT),
                             ));
                         });
                     }
@@ -420,47 +467,8 @@ fn run_log(
 
 // --------------------------------------------------------------------- shared
 
-fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::new()
-        .fill(theme::PANEL)
-        .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(8)
-        .inner_margin(egui::Margin::same(18))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
-}
-
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(20.0);
-    ui.label(
-        egui::RichText::new(title.to_uppercase())
-            .size(10.0)
-            .strong()
-            .color(theme::MUTED),
-    );
-    ui.add_space(6.0);
-}
-
-fn waiting(ui: &mut egui::Ui, what: &str) {
-    ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(13.0));
-        ui.label(egui::RichText::new(what).size(12.0).color(theme::MUTED));
-    });
-}
-
-fn empty(ui: &mut egui::Ui, what: &str) {
-    ui.label(egui::RichText::new(what).size(12.0).color(theme::MUTED));
-}
-
 fn failed(ui: &mut egui::Ui, what: &str, err: &str) {
-    card(ui, |ui| {
-        ui.label(egui::RichText::new(what).size(13.0).color(theme::DANGER));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new(err).size(11.0).color(theme::MUTED));
-    });
+    w::error(ui, &format!("{what}: {err}"));
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
