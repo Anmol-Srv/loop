@@ -51,14 +51,14 @@ pub mod colour {
     /// Disabled.
     pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x48, 0x52, 0x68);
 
-    /// The one accent: periwinkle, the colour of the light on the horizon.
-    /// Light enough that a filled control takes dark text, which is why
-    /// `ON_ACCENT` is near-black.
-    pub const ACCENT: Color32 = Color32::from_rgb(0xA8, 0xB8, 0xE8);
-    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xBD, 0xCA, 0xF2);
-    /// A periwinkle-tinted surface, for selected rows and quiet emphasis.
-    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x1E, 0x26, 0x3D);
-    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x0F, 0x14, 0x22);
+    /// The one accent: a pale sky blue. Light enough that a filled control
+    /// takes dark text, which is why `ON_ACCENT` is near-black rather than
+    /// white — white on this would be unreadable.
+    pub const ACCENT: Color32 = Color32::from_rgb(0x8A, 0xCF, 0xF8);
+    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xA6, 0xDC, 0xFA);
+    /// An accent-tinted surface, for selected rows and quiet emphasis.
+    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x14, 0x24, 0x31);
+    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x06, 0x14, 0x1E);
 
     /// The warm counterpoint: gold where the light catches. Used sparingly —
     /// a highlight, never a surface. Cool everywhere and it reads as cold.

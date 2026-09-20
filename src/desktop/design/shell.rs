@@ -14,6 +14,9 @@ use super::widgets as w;
 /// the title bar is hidden.
 const TRAFFIC_LIGHTS: f32 = 30.0;
 
+/// Where the wash's bounds are stashed, so a notch can sample the exact colour
+/// behind it. The gradient is painted before the items, and the items need to
+/// know it — one value, and it never leaves this module.
 /// One entry in the sidebar. `badge` shows a count when non-zero.
 pub struct NavItem<'a> {
     pub icon: &'a str,
@@ -70,12 +73,9 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
 /// sidebar's right edge, so it reads as the content panel reaching in rather
 /// than a highlight sitting on top.
 ///
-/// It had inverted corners above and below for a moment. They are the right
-/// idea on a flat sidebar — punch a disc of the sidebar colour out of a square
-/// of canvas and the panel appears to curve into the selection — but this
-/// sidebar carries a gradient wash, so there is no single colour to punch
-/// with, and any fixed one leaves a visible patch. Flush and left-rounded gets
-/// most of the effect and cannot go wrong.
+/// Concave corners above and below were tried twice and dropped both times:
+/// once broken, once working but not worth the machinery. Flush and
+/// left-rounded says the same thing.
 fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
     let height = 30.0;
     let (mut rect, response) =
