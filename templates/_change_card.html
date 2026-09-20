@@ -1,0 +1,22 @@
+<article class="card change">
+  <p class="who">
+    {{ card.actor }}
+    {%- if card.on_behalf_of != "" %} on behalf of {{ card.on_behalf_of }}{% endif -%}
+  </p>
+  <p class="what">{{ card.sentence }}</p>
+  <p class="who">
+    <span class="tag">{{ card.target_type }}</span>
+    {% if card.target != "" %}{{ card.target }}{% endif %}
+    <span class="id mono">{{ card.id }}</span>
+  </p>
+  {% if can_write %}
+  <div class="actions">
+    <form method="post" action="/inbox/{{ card.id }}/approve">
+      <button type="submit">Approve</button>
+    </form>
+    <form method="post" action="/inbox/{{ card.id }}/reject">
+      <button type="submit" class="reject">Reject</button>
+    </form>
+  </div>
+  {% endif %}
+</article>
