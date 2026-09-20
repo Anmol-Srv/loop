@@ -12,6 +12,8 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::user::artifact::routes())
         .merge(routes::user::change::routes())
         .merge(routes::user::me::routes())
+        .merge(routes::user::agent::routes())
+        .merge(routes::admin::people::routes())
         .merge(routes::user::work::routes())
         .merge(routes::user::run_log::routes())
         .merge(routes::services::mcp::routes())
