@@ -12,9 +12,16 @@
 
 use serde_json::json;
 
-use crate::desktop::{creds, net::Net, theme, App};
+use crate::desktop::design::{avatar, colour, size, space, text, widgets as w};
+use crate::desktop::{creds, net::Net, App};
 
+/// The measure of the card's contents. Not a spacing token: it is a line
+/// length, chosen so an email address fits on one line without the card
+/// sprawling across a wide window.
 const CARD_WIDTH: f32 = 320.0;
+/// Roughly how tall the composed card runs, used only to bias it above the
+/// optical centre. An estimate, not a layout constraint.
+const CARD_HEIGHT_GUESS: f32 = 420.0;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
@@ -50,6 +57,11 @@ fn tidy_code(raw: &str) -> String {
         .map(|c| String::from_utf8_lossy(c).into_owned())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Enter in a field submits the form, the way every other sign-in does.
+fn entered(response: egui::Response) -> bool {
+    response.lost_focus() && response.ctx.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -88,124 +100,122 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let busy = app.login.net.as_ref().is_some_and(|n| n.is_loading("auth"));
     let first_time = app.login.mode == Mode::FirstTime;
+    // A face for the address once it looks like one: a quiet confirmation that
+    // what was typed is what was meant.
+    let face = app.login.email.contains('@').then(|| app.login.email.clone());
     let mut submit = false;
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(theme::BG))
+        .frame(egui::Frame::new().fill(colour::CANVAS))
         .show(ui, |ui| {
-            ui.add_space(((ui.available_height() - 420.0) * 0.35).max(24.0));
+            let slack = (ui.available_height() - CARD_HEIGHT_GUESS) * 0.35;
+            ui.add_space(slack.max(space::XL));
 
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("Airtribe Control Plane").size(19.0).strong());
-                ui.add_space(3.0);
+                w::title(ui, "Airtribe Control Plane");
+                ui.add_space(space::XS);
+                // No widget for a monospaced caption: the URL is a machine
+                // string and must read as one, so localhost and production are
+                // told apart at a glance.
                 ui.label(
                     egui::RichText::new(creds::base_url())
                         .monospace()
-                        .size(11.0)
-                        .color(theme::MUTED),
+                        .size(text::CAPTION)
+                        .color(colour::TEXT_FAINT),
                 );
-                ui.add_space(22.0);
+                ui.add_space(space::XL);
 
-                egui::Frame::new()
-                    .fill(theme::PANEL)
-                    .stroke(egui::Stroke::new(1.0, theme::LINE))
-                    .corner_radius(10)
-                    .inner_margin(egui::Margin::same(26))
-                    .show(ui, |ui| {
-                        ui.set_width(CARD_WIDTH);
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(if first_time {
-                                    "Set your password"
-                                } else {
-                                    "Sign in"
-                                })
-                                .size(14.0)
-                                .strong(),
+                w::card(ui, |ui| {
+                    ui.set_width(CARD_WIDTH);
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(seed) = &face {
+                                avatar::small(ui, seed, size::CONTROL);
+                                ui.add_space(space::SM);
+                            }
+                            w::heading(
+                                ui,
+                                if first_time { "Set your password" } else { "Sign in" },
                             );
-                            ui.add_space(16.0);
-
-                            let s = &mut app.login;
-                            submit |= field(ui, "Email", &mut s.email, false, "you@airtribe.live");
-
-                            if first_time {
-                                ui.add_space(12.0);
-                                submit |= field(ui, "Setup code", &mut s.code, false, "K7QF-M2XT-9PDR");
-                                ui.add_space(12.0);
-                                submit |= field(ui, "New password", &mut s.password, true, "at least 12 characters");
-                                ui.add_space(12.0);
-                                submit |= field(ui, "Confirm password", &mut s.confirm, true, "");
-                                if !s.confirm.is_empty() && s.confirm != s.password {
-                                    ui.add_space(5.0);
-                                    ui.label(
-                                        egui::RichText::new("passwords do not match")
-                                            .size(11.0)
-                                            .color(theme::MUTED),
-                                    );
-                                }
-                            } else {
-                                ui.add_space(12.0);
-                                submit |= field(ui, "Password", &mut s.password, true, "");
-                            }
-
-                            ui.add_space(20.0);
-
-                            let ready = !s.email.trim().is_empty()
-                                && !s.password.is_empty()
-                                && (!first_time
-                                    || (!s.code.trim().is_empty() && s.confirm == s.password));
-
-                            let label = if first_time { "Set password and sign in" } else { "Sign in" };
-                            let button = egui::Button::new(label)
-                                .min_size(egui::vec2(CARD_WIDTH, 28.0))
-                                .fill(theme::ACCENT)
-                                .stroke(egui::Stroke::NONE);
-                            let clicked = ui
-                                .add_enabled(ready && !busy, button)
-                                .on_disabled_hover_text(if busy { "working" } else { "fill in every field" })
-                                .clicked();
-                            submit = (submit || clicked) && ready && !busy;
-
-                            if busy {
-                                ui.add_space(10.0);
-                                ui.horizontal(|ui| {
-                                    ui.add(egui::Spinner::new().size(13.0));
-                                    ui.label(
-                                        egui::RichText::new("Contacting the server")
-                                            .size(11.0)
-                                            .color(theme::MUTED),
-                                    );
-                                });
-                            }
-
-                            if let Some(err) = &s.error {
-                                ui.add_space(12.0);
-                                ui.label(egui::RichText::new(err).size(12.0).color(theme::DANGER));
-                            }
-
-                            ui.add_space(16.0);
-                            let toggle = if first_time {
-                                "Already have a password? Sign in"
-                            } else {
-                                "First time here?"
-                            };
-                            if ui.link(egui::RichText::new(toggle).size(12.0)).clicked() {
-                                s.mode = if first_time { Mode::SignIn } else { Mode::FirstTime };
-                                s.password.clear();
-                                s.confirm.clear();
-                                s.code.clear();
-                                s.error = None;
-                            }
                         });
+                        ui.add_space(space::LG);
+
+                        let s = &mut app.login;
+                        submit |= entered(w::field(ui, "Email", &mut s.email, false));
+
+                        if first_time {
+                            ui.add_space(space::MD);
+                            submit |= entered(w::field(ui, "Setup code", &mut s.code, false));
+                            ui.add_space(space::MD);
+                            submit |=
+                                entered(w::field(ui, "New password", &mut s.password, true));
+                            ui.add_space(space::MD);
+                            submit |=
+                                entered(w::field(ui, "Confirm password", &mut s.confirm, true));
+                            if !s.confirm.is_empty() && s.confirm != s.password {
+                                ui.add_space(space::XS);
+                                w::caption(ui, "passwords do not match");
+                            }
+                        } else {
+                            ui.add_space(space::MD);
+                            submit |= entered(w::field(ui, "Password", &mut s.password, true));
+                        }
+
+                        ui.add_space(space::XL);
+
+                        let ready = !s.email.trim().is_empty()
+                            && !s.password.is_empty()
+                            && (!first_time
+                                || (!s.code.trim().is_empty() && s.confirm == s.password));
+
+                        let label =
+                            if first_time { "Set password and sign in" } else { "Sign in" };
+                        // Justified so the one filled control spans the card's
+                        // measure; `w::primary` sets the height, not the width.
+                        let clicked = ui
+                            .with_layout(
+                                egui::Layout::top_down_justified(egui::Align::Center),
+                                |ui| w::primary(ui, label, ready && !busy),
+                            )
+                            .inner
+                            .on_disabled_hover_text(if busy {
+                                "working"
+                            } else {
+                                "fill in every field"
+                            })
+                            .clicked();
+                        submit = (submit || clicked) && ready && !busy;
+
+                        if busy {
+                            ui.add_space(space::MD);
+                            w::loading(ui, "Contacting the server");
+                        }
+
+                        if let Some(err) = &s.error {
+                            ui.add_space(space::MD);
+                            // Verbatim, always.
+                            w::error(ui, err);
+                        }
+
+                        ui.add_space(space::LG);
+                        let toggle = if first_time {
+                            "Already have a password? Sign in"
+                        } else {
+                            "First time here?"
+                        };
+                        if w::link(ui, toggle).clicked() {
+                            s.mode = if first_time { Mode::SignIn } else { Mode::FirstTime };
+                            s.password.clear();
+                            s.confirm.clear();
+                            s.code.clear();
+                            s.error = None;
+                        }
                     });
+                });
 
                 if first_time {
-                    ui.add_space(16.0);
-                    ui.label(
-                        egui::RichText::new("Ask an admin for a setup code. They expire after 48 hours.")
-                            .size(11.0)
-                            .color(theme::MUTED),
-                    );
+                    ui.add_space(space::LG);
+                    w::caption(ui, "Ask an admin for a setup code. They expire after 48 hours.");
                 }
             });
         });
@@ -234,18 +244,4 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         app.login.net = Some(net);
         app.login.error = None;
     }
-}
-
-/// One labelled field. Returns true when Enter was pressed in it.
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String, secret: bool, hint: &str) -> bool {
-    ui.label(egui::RichText::new(label).size(11.0).color(theme::MUTED));
-    ui.add_space(3.0);
-    let response = ui.add(
-        egui::TextEdit::singleline(value)
-            .password(secret)
-            .desired_width(CARD_WIDTH)
-            .margin(egui::Margin::symmetric(8, 5))
-            .hint_text(hint),
-    );
-    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
