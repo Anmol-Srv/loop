@@ -39,7 +39,8 @@ impl Caller {
 
 /// Turn a raw token string into a `Caller`. The only place a token becomes
 /// authority: the header extractor below and the cookie extractor in
-/// `middleware::session` both go through here, so they cannot diverge.
+/// Every client — the Mac app, the CLI, and MCP — goes through here, so no
+/// two of them can diverge on what a credential means.
 pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
     let row = token::lookup(db, raw)
         .await?
