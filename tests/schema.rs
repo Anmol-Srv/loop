@@ -13,7 +13,7 @@ async fn all_nine_tables_exist(pool: PgPool) {
     let names: Vec<String> = rows.into_iter().map(|r| r.0).collect();
 
     for expected in [
-        "agent_token", "artifact", "change", "job", "person",
+        "credential", "artifact", "change", "job", "person",
         "phase", "project", "run_log_line", "task",
     ] {
         assert!(names.contains(&expected.to_string()), "missing table {expected}");

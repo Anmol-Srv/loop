@@ -157,7 +157,7 @@ pub async fn assign(
         }
         Assignee::Agent(label) => {
             let tid: Uuid = sqlx::query_scalar(
-                "SELECT id FROM agent_token WHERE label = $1 AND revoked_at IS NULL AND expires_at > now()
+                "SELECT id FROM credential WHERE label = $1 AND revoked_at IS NULL AND expires_at > now()
                  ORDER BY created_at DESC LIMIT 1",
             )
             .bind(label)

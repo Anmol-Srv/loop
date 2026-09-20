@@ -62,7 +62,7 @@ async fn revoking_a_token_ends_its_web_session(pool: PgPool) {
     assert_eq!(before.status(), StatusCode::SEE_OTHER);
     assert_eq!(before.headers().get("location").unwrap(), "/");
 
-    sqlx::query("UPDATE agent_token SET revoked_at = now() WHERE id = $1")
+    sqlx::query("UPDATE credential SET revoked_at = now() WHERE id = $1")
         .bind(row.id)
         .execute(&pool)
         .await

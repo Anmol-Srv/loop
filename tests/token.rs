@@ -31,7 +31,7 @@ async fn minted_token_resolves_and_is_stored_hashed(pool: PgPool) {
 
     assert_eq!(row.scopes, vec!["read".to_string(), "write".to_string()]);
 
-    let stored: String = sqlx::query_scalar("SELECT token_hash FROM agent_token WHERE id = $1")
+    let stored: String = sqlx::query_scalar("SELECT token_hash FROM credential WHERE id = $1")
         .bind(row.id)
         .fetch_one(&pool)
         .await
@@ -49,7 +49,7 @@ async fn revoked_and_expired_tokens_do_not_resolve(pool: PgPool) {
     let state = AppState { db: pool.clone() };
 
     let (revoked_raw, revoked) = token::mint(&state, "old", "anmol@airtribe.live", vec!["read".into()], 30).await.unwrap();
-    sqlx::query("UPDATE agent_token SET revoked_at = now() WHERE id = $1")
+    sqlx::query("UPDATE credential SET revoked_at = now() WHERE id = $1")
         .bind(revoked.id)
         .execute(&pool)
         .await
@@ -57,7 +57,7 @@ async fn revoked_and_expired_tokens_do_not_resolve(pool: PgPool) {
     assert!(lookup(&pool, &revoked_raw).await.unwrap().is_none(), "revoked token must not resolve");
 
     let (expired_raw, expired) = token::mint(&state, "stale", "anmol@airtribe.live", vec!["read".into()], 30).await.unwrap();
-    sqlx::query("UPDATE agent_token SET expires_at = now() - interval '1 day' WHERE id = $1")
+    sqlx::query("UPDATE credential SET expires_at = now() - interval '1 day' WHERE id = $1")
         .bind(expired.id)
         .execute(&pool)
         .await

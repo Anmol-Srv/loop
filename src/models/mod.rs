@@ -5,3 +5,5 @@ pub mod phase;
 pub mod task;
 pub mod artifact;
 pub mod run_log;
+pub mod password;
+pub mod setup_code;

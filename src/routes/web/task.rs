@@ -132,7 +132,7 @@ async fn load(state: &AppState, id: Uuid) -> Option<TaskDetail> {
          JOIN phase ph ON ph.id = t.phase_id
          JOIN project pr ON pr.id = ph.project_id
          LEFT JOIN person per ON per.id = t.assignee_person_id
-         LEFT JOIN agent_token tok ON tok.id = t.assignee_token_id
+         LEFT JOIN credential tok ON tok.id = t.assignee_token_id
          WHERE t.id = $1",
     )
     .bind(id)
