@@ -15,7 +15,34 @@ Humans drive it from a CLI; agents get a scoped, audited surface of their own.
 | P1 Core & CLI — tokens, auth, phases, tasks, artifacts, `acp` | done |
 | P2 MCP — tool surface, approval queue | done |
 | P3 Delegation — claim-lease, run logs, job worker | done |
-| P4 Web UI | next |
+| P4 Web UI — board, filters, approval inbox, live run log | done |
+
+## The web UI
+
+```bash
+cargo run --bin acp-server
+./scripts/seed-demo.sh          # optional: loads the tool with its own history
+open http://localhost:8080/login
+```
+
+Paste a token to sign in; it is stored in an httpOnly, SameSite=Strict cookie.
+The cookie is a pointer to the token, not a copy of its authority — revoking the
+token ends the session on the next request.
+
+| Route | What it is |
+|---|---|
+| `/` | every project with its phase progress |
+| `/projects/{id}` | phases in order with their tasks, filtered without a page reload |
+| `/inbox` | pending agent proposals, each rendered as a sentence |
+| `/tasks/{id}` | detail, artifacts, change history, and a live run log |
+
+A session without the `write` scope sees the inbox but no approve buttons, and
+the POST handlers reject it regardless — the UI shows the same scope truth the
+API enforces.
+
+The run log polls every two seconds *only* while a task is `in_progress`, and
+appends incrementally from a cursor, so watching an agent work costs one small
+request per tick and stops by itself when the work finishes.
 
 ## Setup
 
@@ -127,11 +154,48 @@ src/
 migrations/       plain .sql             ← api/db/migrations/
 ```
 
-## Tests
+## Verifying it works
 
 ```bash
-cargo test
+cargo test                             # 59 tests
+./scripts/rehearse-delegation.sh       # the full agent loop over real HTTP
+./scripts/verify-p2.sh                 # the proposal guardrail over real MCP
 ```
 
-Tests run against real throwaway Postgres databases via `sqlx::test`; the schema
-constraints carry half the design, so the database is not mocked.
+Unit tests run against real throwaway Postgres databases via `sqlx::test`; the
+schema constraints carry half the design, so the database is not mocked.
+
+The two scripts matter more than the test count. They drive a running server the
+way Hermes does and assert the *failure* modes, not the happy path: a second
+worker cannot steal a live lease, a non-holder cannot write to a run log, an
+agent cannot approve its own proposal, and a lapsed lease returns its task to
+the pool.
+
+## Deploying
+
+```bash
+docker build -t acp .
+docker run -p 8080:8080 -e DATABASE_URL=postgres://... acp
+```
+
+Templates, MCP docs, HTMX, and CSS are compiled into the binary, so the runtime
+image is the binary on Debian slim under a non-root user, with no source tree
+and no asset directory. Migrations run at startup.
+
+`/health` is liveness and touches nothing but the process. `/health/ready`
+checks the database. They are separate on purpose: a sick database should not
+get the container killed and restarted to no purpose.
+
+## Known debt
+
+- **Google SSO is not wired.** Login takes a pasted token. SSO mints into the
+  same `agent_token` table, so it replaces one handler and nothing else.
+- **Approval is not fully transactional.** The replay calls controllers that own
+  their own transactions, so a replay can succeed while the state flip fails.
+  The result is a proposal stuck in `pending` whose effect already applied —
+  visible in the inbox, recoverable by rejecting it, never silent. Closing the
+  window means threading a transaction through all seven mutating controllers.
+- **A few reads are inline SQL in route handlers** (get-project-by-id,
+  get-task-by-id, the inbox label lookup), marked with `ponytail:` comments,
+  because the controllers did not expose them and the work was parallelised.
+  Fold them into controllers when a second caller appears.
