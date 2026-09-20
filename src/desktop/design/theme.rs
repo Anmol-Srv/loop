@@ -4,10 +4,14 @@ use egui::{FontData, FontDefinitions, FontFamily, Stroke};
 
 use super::tokens::{colour, radius, space, text};
 
-/// Inter for the interface, JetBrains Mono for ids and the run log, Phosphor
+/// Nunito for the interface, JetBrains Mono for ids and the run log, Phosphor
 /// for icons. All compiled in rather than read from the system: the app starts
 /// offline and renders identically on every machine, which a system font cannot
 /// promise across macOS versions.
+///
+/// Nunito is a rounded humanist sans. It softens the dusk palette in a way a
+/// neutral grotesque does not, and its generous x-height survives being set at
+/// 11pt in a dense table.
 ///
 /// Both faces are SIL Open Font License; see `assets/fonts/LICENSE.md`.
 fn install_fonts(ctx: &egui::Context) {
@@ -18,16 +22,17 @@ fn install_fonts(ctx: &egui::Context) {
             .font_data
             .insert(name.to_owned(), FontData::from_static(bytes).into());
     };
-    add("inter", include_bytes!("../../../assets/fonts/Inter-Regular.ttf"));
-    add("inter-medium", include_bytes!("../../../assets/fonts/Inter-Medium.ttf"));
-    add("inter-semibold", include_bytes!("../../../assets/fonts/Inter-SemiBold.ttf"));
+    add("ui", include_bytes!("../../../assets/fonts/Nunito-Regular.ttf"));
+    add("ui-medium", include_bytes!("../../../assets/fonts/Nunito-Medium.ttf"));
+    add("ui-semibold", include_bytes!("../../../assets/fonts/Nunito-SemiBold.ttf"));
+    add("ui-bold", include_bytes!("../../../assets/fonts/Nunito-Bold.ttf"));
     add("mono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
 
     fonts
         .families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, "inter".into());
+        .insert(0, "ui".into());
     fonts
         .families
         .entry(FontFamily::Monospace)
@@ -37,10 +42,13 @@ fn install_fonts(ctx: &egui::Context) {
     // Named families, so a widget can ask for weight without a second lookup.
     fonts
         .families
-        .insert(FontFamily::Name(MEDIUM.into()), vec!["inter-medium".into()]);
+        .insert(FontFamily::Name(MEDIUM.into()), vec!["ui-medium".into()]);
     fonts
         .families
-        .insert(FontFamily::Name(SEMIBOLD.into()), vec!["inter-semibold".into()]);
+        .insert(FontFamily::Name(SEMIBOLD.into()), vec!["ui-semibold".into()]);
+    fonts
+        .families
+        .insert(FontFamily::Name(BOLD.into()), vec!["ui-bold".into()]);
 
     // Icons, so nothing ever reaches for an emoji.
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Thin);
@@ -49,8 +57,9 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 /// Weight families. `FontFamily::Name(MEDIUM.into())` in a `FontId`.
-pub const MEDIUM: &str = "inter-medium";
-pub const SEMIBOLD: &str = "inter-semibold";
+pub const MEDIUM: &str = "ui-medium";
+pub const SEMIBOLD: &str = "ui-semibold";
+pub const BOLD: &str = "ui-bold";
 
 pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
