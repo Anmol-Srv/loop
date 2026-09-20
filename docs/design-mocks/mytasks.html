@@ -1,0 +1,68 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css"></head><body>
+<div class="side">
+  <div class="top"></div>
+  <div class="nav"><span class="ico">⌂</span>Home</div>
+  <div class="nav on"><span class="ico">☰</span>My Tasks<span class="badge">4</span></div>
+  <div class="nav"><span class="ico">▦</span>Projects</div>
+  <div class="nav"><span class="ico">⇲</span>Inbox<span class="badge">2</span></div>
+  <div class="foot"><div class="linkbtn">Sign out</div><div class="linkbtn">Refresh</div>
+    <div class="who"><div class="av" style="background:linear-gradient(140deg,#8ACFF8,#6E86C8)">AN</div>
+      <span class="meta">anmol</span></div></div>
+</div>
+<div class="page">
+  <div style="display:flex;align-items:baseline;gap:var(--sm)">
+    <h1>My tasks</h1>
+    <span class="sub" style="margin:0">5 assigned · 3 available to claim</span>
+  </div>
+
+  <div style="display:flex;gap:var(--sm);margin-top:var(--lg)">
+    <button class="btn secondary">All disciplines ⌄</button>
+    <button class="btn secondary">Any status ⌄</button>
+    <button class="btn secondary">All projects ⌄</button>
+  </div>
+
+  <div class="section">In progress <span class="n">1</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="dot" style="background:#8ACFF8"></span><span class="disc">frontend</span>
+      <span class="t">Cart UI and empty states</span><span class="meta">Checkout · Phase 2</span>
+      <span class="mono">a3f1c204</span></div>
+  </div>
+
+  <div class="section">In review <span class="n">1</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row agent"><span class="dot" style="background:#EAC17E"></span><span class="disc">frontend</span>
+      <span class="t">Task detail live log</span>
+      <span class="pill" style="background:rgba(192,174,232,.12);color:#C0AEE8">hermes</span>
+      <span class="meta">Control Plane · P4</span><span class="mono">7bd9e100</span></div>
+  </div>
+
+  <div class="section">Open <span class="n">2</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="dot" style="background:#6A748C"></span><span class="disc">backend</span>
+      <span class="t">Cart totals API</span><span class="meta">Checkout · Phase 2</span>
+      <span class="mono">c081aa5f</span></div>
+    <div class="row"><span class="dot" style="background:#6A748C"></span><span class="disc">backend</span>
+      <span class="t">Task by id endpoint</span><span class="meta">Control Plane · P5</span>
+      <span class="mono">11de3390</span></div>
+  </div>
+
+  <div class="section">Blocked <span class="n">1</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="dot" style="background:#66718A"></span><span class="disc">design</span>
+      <span class="t">Empty state illustrations</span>
+      <span class="blocked">⤳ waiting on “Design tokens” · dhaval</span></div>
+  </div>
+
+  <div class="section">Available to claim <span class="n">3</span>
+    <span class="right meta">matching frontend, backend</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="disc">backend</span><span class="t">Rate limit the MCP surface</span>
+      <span class="meta">Control Plane</span><button class="btn ghost">Claim</button></div>
+    <div class="row"><span class="disc">frontend</span><span class="t">Projects page empty state</span>
+      <span class="meta">Control Plane</span><button class="btn ghost">Claim</button></div>
+    <div class="row"><span class="disc">backend</span><span class="t">Seed script for new installs</span>
+      <span class="meta">Control Plane</span><button class="btn ghost">Claim</button></div>
+  </div>
+</div></body></html>

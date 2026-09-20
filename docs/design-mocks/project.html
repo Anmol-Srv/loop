@@ -1,0 +1,81 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css"></head><body>
+<div class="side">
+  <div class="top"></div>
+  <div class="nav"><span class="ico">⌂</span>Home</div>
+  <div class="nav"><span class="ico">☰</span>My Tasks<span class="badge">4</span></div>
+  <div class="nav on"><span class="ico">▦</span>Projects</div>
+  <div class="nav"><span class="ico">⇲</span>Inbox<span class="badge">2</span></div>
+  <div class="foot"><div class="linkbtn">Sign out</div><div class="linkbtn">Refresh</div>
+    <div class="who"><div class="av" style="background:linear-gradient(140deg,#8ACFF8,#6E86C8)">AN</div>
+      <span class="meta">anmol</span></div></div>
+</div>
+<div class="page">
+  <div class="meta" style="margin-bottom:var(--xs)">← Projects</div>
+  <div style="display:flex;align-items:baseline;gap:var(--sm)">
+    <h1>Checkout redesign</h1><span class="mono">chk</span>
+    <button class="btn secondary" style="margin-left:auto">New task</button>
+  </div>
+  <div class="sub">3 of 9 done · design leads, frontend and backend follow</div>
+
+  <!-- flow strip -->
+  <div class="card" style="margin-top:var(--lg);display:flex;align-items:center;gap:var(--lg)">
+    <div style="flex:1">
+      <div class="meta" style="margin-bottom:6px">design</div>
+      <div class="bar"><i style="width:100%;background:#7FD4B0"></i></div>
+      <div class="meta" style="margin-top:6px;font-size:var(--t-caption)">3 / 3 done</div>
+    </div>
+    <div style="color:var(--faint)">→</div>
+    <div style="flex:1">
+      <div class="meta" style="margin-bottom:6px">frontend</div>
+      <div class="bar"><i style="width:25%"></i></div>
+      <div class="meta" style="margin-top:6px;font-size:var(--t-caption)">1 / 4 · 1 blocked</div>
+    </div>
+    <div style="flex:1">
+      <div class="meta" style="margin-bottom:6px">backend</div>
+      <div class="bar"><i style="width:0%"></i></div>
+      <div class="meta" style="margin-top:6px;font-size:var(--t-caption)">0 / 2</div>
+    </div>
+  </div>
+
+  <div class="section">Phase 1 · Design <span class="pill" style="background:rgba(127,212,176,.1);color:#7FD4B0">done</span>
+    <span class="right meta">3 / 3</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="dot" style="background:#7FD4B0"></span><span class="disc">design</span>
+      <span class="t">Cart and checkout flows</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#7FD4B0,#4E9E84)">DH</div></div>
+    <div class="row"><span class="dot" style="background:#7FD4B0"></span><span class="disc">design</span>
+      <span class="t">Design tokens</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#7FD4B0,#4E9E84)">DH</div></div>
+    <div class="row"><span class="dot" style="background:#7FD4B0"></span><span class="disc">design</span>
+      <span class="t">Error and empty states</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#7FD4B0,#4E9E84)">DH</div></div>
+  </div>
+
+  <div class="section">Phase 2 · Build <span class="pill" style="background:rgba(138,207,248,.1);color:#8ACFF8">active</span>
+    <span class="right meta">1 / 6</span></div>
+  <div class="card" style="padding:var(--sm)">
+    <div class="row"><span class="dot" style="background:#8ACFF8"></span><span class="disc">frontend</span>
+      <span class="t">Cart UI and empty states</span>
+      <span class="pill" style="background:rgba(138,207,248,.1);color:#8ACFF8">in progress</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#8ACFF8,#6E86C8)">AN</div></div>
+    <div class="row agent"><span class="dot" style="background:#8ACFF8"></span><span class="disc">backend</span>
+      <span class="t">Cart totals API</span>
+      <span class="pill" style="background:rgba(192,174,232,.12);color:#C0AEE8">hermes</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#8ACFF8,#6E86C8)">AN</div></div>
+    <div class="row"><span class="dot" style="background:#66718A"></span><span class="disc">frontend</span>
+      <span class="t">Payment method picker</span>
+      <span class="blocked">⤳ waiting on “Cart totals API”</span></div>
+    <div class="row"><span class="dot" style="background:#6A748C"></span><span class="disc">backend</span>
+      <span class="t">Idempotency on submit</span>
+      <span class="meta">unassigned</span><button class="btn ghost">Claim</button></div>
+    <div class="row"><span class="dot" style="background:#6A748C"></span><span class="disc">frontend</span>
+      <span class="t">Order confirmation</span>
+      <span class="meta">unassigned</span><button class="btn ghost">Claim</button></div>
+    <div class="row"><span class="dot" style="background:#7FD4B0"></span><span class="disc">frontend</span>
+      <span class="t">Cart route scaffolding</span>
+      <span class="pill" style="background:rgba(127,212,176,.1);color:#7FD4B0">done</span>
+      <div class="av" style="width:20px;height:20px;background:linear-gradient(140deg,#8ACFF8,#6E86C8)">AN</div></div>
+  </div>
+</div></body></html>
