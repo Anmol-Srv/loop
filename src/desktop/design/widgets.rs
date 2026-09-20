@@ -210,60 +210,174 @@ pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
 
 // ---------------------------------------------------------------- controls
 
-/// The one filled button on a screen. More than one and the eye has nowhere
-/// to land.
-pub fn primary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
-    let text = RichText::new(label).size(text::BODY).color(colour::ON_ACCENT);
-    let button = egui::Button::new(text)
-        .fill(if enabled { colour::ACCENT } else { colour::ACCENT.gamma_multiply(0.4) })
-        .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, size::CONTROL));
-    ui.add_enabled(enabled, button)
+// ---------------------------------------------------------------- buttons
+//
+// One implementation, five variants. They all allocate, read their own hover
+// and press state, then paint ONCE.
+//
+// The previous `link` painted its label, then painted it again in a brighter
+// colour on hover — two overlapping draws that read as doubled, smeared text.
+// Deciding the colour before painting, rather than layering a second pass on
+// top, is the whole fix and the reason this is one function.
+
+/// How loud a button is. Exactly one `Primary` per screen: if two things are
+/// filled, the eye has nowhere to land.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Emphasis {
+    /// Filled accent. The single most likely action.
+    Primary,
+    /// Outlined. Everything else that is a real action.
+    Secondary,
+    /// Outlined in danger. Destructive, available but not urged.
+    Danger,
+    /// No border, no fill. Tertiary navigation.
+    Ghost,
+    /// Text only, small. "Back", "Sign out".
+    Link,
 }
 
-pub fn secondary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
-    let button = egui::Button::new(RichText::new(label).size(text::BODY).color(colour::TEXT))
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, size::CONTROL));
-    ui.add_enabled(enabled, button)
+/// The button. Prefer the named wrappers below; reach for this when you need
+/// an icon or a non-default size.
+pub fn button(ui: &mut Ui, label: &str, emphasis: Emphasis, enabled: bool) -> Response {
+    button_with(ui, None, label, emphasis, enabled)
 }
 
-/// Destructive, and deliberately not a filled red block — outlined, so it
-/// reads as available rather than urged.
-pub fn danger(ui: &mut Ui, label: &str, enabled: bool) -> Response {
-    let button = egui::Button::new(RichText::new(label).size(text::BODY).color(colour::DANGER))
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::DANGER.gamma_multiply(0.5)))
-        .corner_radius(radius::SM)
-        .min_size(Vec2::new(0.0, size::CONTROL));
-    ui.add_enabled(enabled, button)
+/// A button with a leading icon glyph.
+pub fn icon_button(
+    ui: &mut Ui,
+    icon: &str,
+    label: &str,
+    emphasis: Emphasis,
+    enabled: bool,
+) -> Response {
+    button_with(ui, Some(icon), label, emphasis, enabled)
 }
 
-/// Text-only, for tertiary navigation like "back".
-///
-/// Deliberately not accent-coloured. The accent is a fill colour here — pink
-/// text on a dark ground reads as decoration and competes with the status
-/// colours that actually carry meaning.
-pub fn link(ui: &mut Ui, label: &str) -> Response {
-    let response = ui.add(
-        egui::Button::new(RichText::new(label).size(text::SMALL).color(colour::TEXT_MUTED))
-            .fill(Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE),
+fn button_with(
+    ui: &mut Ui,
+    icon: Option<&str>,
+    label: &str,
+    emphasis: Emphasis,
+    enabled: bool,
+) -> Response {
+    let small = emphasis == Emphasis::Link;
+    let font = egui::FontId::proportional(if small { text::SMALL } else { text::BODY });
+
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT);
+    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    let (px, _) = if small { (space::XS, 0.0) } else { pad::BUTTON };
+    let height = if small { size::CONTROL - space::SM } else { size::CONTROL };
+    let width = galley.size().x + icon_w + px * 2.0;
+
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(width, height),
+        if enabled { Sense::click() } else { Sense::hover() },
     );
-    if response.hovered() {
-        // Brighten rather than recolour.
-        ui.painter().text(
-            response.rect.left_center(),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::FontId::proportional(text::SMALL),
+
+    let hovered = enabled && response.hovered();
+    let pressed = enabled && response.is_pointer_button_down_on();
+
+    // Every colour decided here, before a single draw call.
+    let (fill, stroke, fg) = match (emphasis, enabled) {
+        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_DISABLED),
+        (Emphasis::Primary, _) => {
+            let f = if pressed {
+                colour::ACCENT
+            } else if hovered {
+                colour::ACCENT_HOVER
+            } else {
+                colour::ACCENT
+            };
+            (f, Color32::TRANSPARENT, colour::ON_ACCENT)
+        }
+        (Emphasis::Secondary, _) => (
+            if pressed {
+                colour::GLASS_ACTIVE
+            } else if hovered {
+                colour::GLASS_HOVER
+            } else {
+                colour::GLASS
+            },
+            if hovered { colour::EDGE_HI_HOVER } else { colour::EDGE_MID },
             colour::TEXT,
+        ),
+        (Emphasis::Danger, _) => (
+            if hovered { colour::DANGER.gamma_multiply(0.14) } else { Color32::TRANSPARENT },
+            colour::DANGER.gamma_multiply(if hovered { 0.75 } else { 0.42 }),
+            colour::DANGER,
+        ),
+        (Emphasis::Ghost, _) => (
+            if hovered { colour::GLASS_HOVER } else { Color32::TRANSPARENT },
+            Color32::TRANSPARENT,
+            if hovered { colour::TEXT } else { colour::TEXT_MUTED },
+        ),
+        (Emphasis::Link, _) => (
+            Color32::TRANSPARENT,
+            Color32::TRANSPARENT,
+            if hovered { colour::TEXT } else { colour::TEXT_MUTED },
+        ),
+    };
+
+    let p = ui.painter();
+    if fill != Color32::TRANSPARENT {
+        p.rect_filled(rect, radius::SM as f32, fill);
+    }
+    if stroke != Color32::TRANSPARENT {
+        p.rect_stroke(
+            rect,
+            radius::SM as f32,
+            egui::Stroke::new(1.0, stroke),
+            egui::StrokeKind::Inside,
         );
+    }
+
+    let mut x = rect.left() + px;
+    if let Some(glyph) = icon {
+        p.text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            glyph,
+            egui::FontId::proportional(text::HEADING),
+            fg,
+        );
+        x += icon_w;
+    }
+    // One draw, one colour. No second pass on hover.
+    p.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font,
+        fg,
+    );
+
+    if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response
+}
+
+pub fn primary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    button(ui, label, Emphasis::Primary, enabled)
+}
+
+pub fn secondary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    button(ui, label, Emphasis::Secondary, enabled)
+}
+
+pub fn danger(ui: &mut Ui, label: &str, enabled: bool) -> Response {
+    button(ui, label, Emphasis::Danger, enabled)
+}
+
+/// No border, no fill until hovered. For toolbar-ish actions.
+pub fn ghost(ui: &mut Ui, label: &str) -> Response {
+    button(ui, label, Emphasis::Ghost, true)
+}
+
+/// Text only. Brightens on hover; it does not recolour and it does not
+/// redraw itself on top of itself.
+pub fn link(ui: &mut Ui, label: &str) -> Response {
+    button(ui, label, Emphasis::Link, true)
 }
 
 /// A labelled input. The label sits above in caption type, which keeps forms

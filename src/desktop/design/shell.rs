@@ -64,26 +64,49 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
     clicked
 }
 
+/// A sidebar entry.
+///
+/// The selected item is filled with the *canvas* colour and runs flush to the
+/// sidebar's right edge, so it reads as the content panel reaching in rather
+/// than a highlight sitting on top. Two inverted corners above and below
+/// finish the join — without them the selection looks like a rectangle that
+/// happens to touch the edge, which is the tell.
 fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
     let height = 30.0;
-    let (rect, response) =
+    let (mut rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
 
-    let (bg, fg) = if item.selected {
-        (colour::SURFACE_ACTIVE, colour::TEXT)
-    } else if response.hovered() {
-        (colour::SURFACE, colour::TEXT)
-    } else {
-        (egui::Color32::TRANSPARENT, colour::TEXT_MUTED)
-    };
-
-    if bg != egui::Color32::TRANSPARENT {
-        ui.painter().rect_filled(rect, radius::SM as f32, bg);
+    // Run past the panel's right padding so the fill meets the content area.
+    if item.selected {
+        rect.max.x += pad::SIDEBAR.0;
     }
+
+    let r = radius::MD as f32;
+    let p = ui.painter();
+
+    if item.selected {
+        // Left corners only: the right side is continuous with the panel.
+        p.rect_filled(
+            rect,
+            egui::CornerRadius {
+                nw: radius::MD,
+                sw: radius::MD,
+                ne: 0,
+                se: 0,
+            },
+            colour::CANVAS,
+        );
+        inverted_corner(ui, egui::pos2(rect.right(), rect.top()), r, true);
+        inverted_corner(ui, egui::pos2(rect.right(), rect.bottom()), r, false);
+    } else if response.hovered() {
+        p.rect_filled(rect, r, colour::GLASS_HOVER);
+    }
+
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
+    let fg = if item.selected { colour::TEXT } else { colour::TEXT_MUTED };
     let p = ui.painter();
     let mut x = rect.left() + space::MD;
 
@@ -122,6 +145,21 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
     }
 
     response
+}
+
+/// The concave notch where the selected item meets the content panel.
+///
+/// Painted as a square of canvas with a disc of chrome punched out of it, so
+/// the sidebar appears to curve into the selection. `above` puts the notch
+/// over the corner, otherwise under it.
+fn inverted_corner(ui: &Ui, corner: egui::Pos2, r: f32, above: bool) {
+    let dy = if above { -r } else { 0.0 };
+    let square = egui::Rect::from_min_size(egui::pos2(corner.x - r, corner.y + dy), egui::vec2(r, r));
+    let centre = egui::pos2(corner.x - r, if above { corner.y - r } else { corner.y + r });
+
+    let p = ui.painter();
+    p.rect_filled(square, 0.0, colour::CANVAS);
+    p.circle_filled(centre, r, colour::CHROME);
 }
 
 /// The content area. No header strip: gutters and scrolling applied once, then
