@@ -78,3 +78,15 @@ async fn propose_token_queues_a_pending_change(pool: PgPool) {
     let state_col: String = sqlx::query_scalar("SELECT state FROM change LIMIT 1").fetch_one(&pool).await.unwrap();
     assert_eq!(state_col, "pending", "a propose-scoped actor must never write an applied change");
 }
+
+#[sqlx::test]
+async fn propose_token_must_not_mutate_shared_state(pool: PgPool) {
+    seed(&pool).await;
+    let state = AppState { db: pool.clone() };
+    let (raw, _) = token::mint(&state, "hermes", "anmol@airtribe.live", vec!["read".into(), "propose".into()], 30).await.unwrap();
+
+    acp_server::app::app(state).oneshot(create_req(Some(&raw))).await.unwrap();
+
+    let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM project").fetch_one(&pool).await.unwrap();
+    assert_eq!(projects, 0, "a propose-scoped token must not mutate shared state");
+}
