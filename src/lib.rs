@@ -8,3 +8,4 @@ pub mod routes;
 
 #[path = "lib/errors/mod.rs"]
 pub mod errors;
+pub mod middleware;

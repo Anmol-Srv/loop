@@ -4,21 +4,39 @@ use http_body_util::BodyExt;
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-fn post(uri: &str, body: serde_json::Value) -> Request<Body> {
+fn post(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
+async fn write_token(pool: &PgPool) -> String {
+    sqlx::query("INSERT INTO person (email, name) VALUES ($1, $2)")
+        .bind("anmol@airtribe.live")
+        .bind("Anmol")
+        .execute(pool)
+        .await
+        .unwrap();
+    let state = acp_server::db::AppState { db: pool.clone() };
+    acp_server::controllers::token::mint(
+        &state, "test", "anmol@airtribe.live", vec!["read".into(), "write".into()], 30,
+    )
+    .await
+    .unwrap()
+    .0
+}
+
 #[sqlx::test]
 async fn creating_a_project_returns_it_and_records_one_change(pool: PgPool) {
+    let t = write_token(&pool).await;
     let app = acp_server::app::app(acp_server::db::AppState { db: pool.clone() });
 
     let response = app
-        .oneshot(post("/api/user/projects", serde_json::json!({ "key": "acp", "name": "Control Plane" })))
+        .oneshot(post("/api/user/projects", &t, serde_json::json!({ "key": "acp", "name": "Control Plane" })))
         .await
         .unwrap();
 
@@ -46,16 +64,17 @@ async fn creating_a_project_returns_it_and_records_one_change(pool: PgPool) {
 
 #[sqlx::test]
 async fn duplicate_project_keys_are_rejected(pool: PgPool) {
+    let t = write_token(&pool).await;
     let state = acp_server::db::AppState { db: pool.clone() };
 
     let first = acp_server::app::app(state.clone())
-        .oneshot(post("/api/user/projects", serde_json::json!({ "key": "acp", "name": "One" })))
+        .oneshot(post("/api/user/projects", &t, serde_json::json!({ "key": "acp", "name": "One" })))
         .await
         .unwrap();
     assert_eq!(first.status(), StatusCode::OK);
 
     let second = acp_server::app::app(state)
-        .oneshot(post("/api/user/projects", serde_json::json!({ "key": "acp", "name": "Two" })))
+        .oneshot(post("/api/user/projects", &t, serde_json::json!({ "key": "acp", "name": "Two" })))
         .await
         .unwrap();
     assert_eq!(second.status(), StatusCode::CONFLICT);
@@ -69,15 +88,22 @@ async fn duplicate_project_keys_are_rejected(pool: PgPool) {
 
 #[sqlx::test]
 async fn listing_returns_created_projects(pool: PgPool) {
+    let t = write_token(&pool).await;
     let state = acp_server::db::AppState { db: pool };
 
     acp_server::app::app(state.clone())
-        .oneshot(post("/api/user/projects", serde_json::json!({ "key": "acp", "name": "Control Plane" })))
+        .oneshot(post("/api/user/projects", &t, serde_json::json!({ "key": "acp", "name": "Control Plane" })))
         .await
         .unwrap();
 
     let response = acp_server::app::app(state)
-        .oneshot(Request::builder().uri("/api/user/projects").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/user/projects")
+                .header("authorization", format!("Bearer {t}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
