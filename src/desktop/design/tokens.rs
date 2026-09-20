@@ -184,6 +184,11 @@ pub mod size {
     pub const ROW: f32 = 30.0;
     pub const CONTROL: f32 = 28.0;
     pub const SIDEBAR_W: f32 = 212.0;
+    /// Avatar diameters. Two callers independently reached for `24.0` during
+    /// the port, which is exactly the literal this module exists to prevent.
+    pub const AVATAR_SM: f32 = 20.0;
+    pub const AVATAR_MD: f32 = 24.0;
+    pub const AVATAR_LG: f32 = 34.0;
     // No CONTENT_MAX: the body runs to the window edge. A centred measure suits
     // prose; a board wants every pixel.
 }

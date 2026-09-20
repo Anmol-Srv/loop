@@ -121,7 +121,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, can_write: bool, loca
         } else if net.is_loading(LIST_KEY) {
             w::loading(ui, "Loading task");
         } else {
-            w::empty(ui, "That task is no longer in the list");
+            w::empty(ui, "That task is no longer in the list", "It may have been dropped or moved.");
         }
         return;
     };
@@ -301,7 +301,7 @@ fn artifacts(ui: &mut egui::Ui, net: &crate::desktop::net::Net) {
         return;
     };
     if rows.is_empty() {
-        w::empty(ui, "Nothing attached yet");
+        w::empty(ui, "Nothing attached yet", "Link a PR or a doc with: acp link <task-id> --pr <url>");
         return;
     }
 

@@ -63,7 +63,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         if list_loading {
             w::loading(ui, "Loading the queue");
         } else {
-            w::empty(ui, "Nothing waiting for review.");
+            w::empty(ui, "Nothing waiting for review.", "Proposals from agents will appear here.");
             ui.vertical_centered(|ui| {
                 w::caption(ui, "Proposals from agents will appear here.");
             });

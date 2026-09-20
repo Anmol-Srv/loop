@@ -139,6 +139,23 @@ pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
         });
 }
 
+/// A section heading with something trailing on the right — a count, a live
+/// pill, an action. The task view rebuilt this inline because `section` takes
+/// a label and nothing else.
+pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
+    ui.add_space(space::LG);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(label)
+                .size(text::SMALL)
+                .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
+                .color(colour::TEXT_MUTED),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), trailing);
+    });
+    ui.add_space(space::SM);
+}
+
 /// A section heading inside a page body.
 pub fn section(ui: &mut Ui, label: &str) {
     ui.add_space(space::LG);

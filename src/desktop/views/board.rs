@@ -66,7 +66,7 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         if loading {
             w::loading(ui, "projects");
         } else {
-            w::empty(ui, "No projects yet.");
+            w::empty(ui, "No projects yet.", "Create one with: acp project new <key> <name>");
         }
         return;
     }
@@ -197,7 +197,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         if phases_loading {
             w::loading(ui, "phases");
         } else {
-            w::empty(ui, "This project has no phases yet.");
+            w::empty(ui, "This project has no phases yet.", "A phase groups the tasks for one stage of the work.");
         }
     } else {
         for p in &phases {
@@ -215,7 +215,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 if tasks_loading {
                     w::loading(ui, "tasks");
                 } else {
-                    w::empty(ui, "No tasks in this phase.");
+                    w::empty(ui, "No tasks in this phase.", "");
                 }
             } else {
                 for t in list {
@@ -278,7 +278,17 @@ fn task_row(ui: &mut egui::Ui, t: &Value) -> Option<String> {
     let title = str_at(t, "title").to_string();
     let priority = t.get("priority").and_then(Value::as_i64).unwrap_or(0);
 
-    let hit = w::row(ui, |ui| {
+    // Delegated rows carry a spine as well as the pill: at a glance down a
+    // long phase, the edge is what you actually see.
+    let paint = |ui: &mut egui::Ui, body: &dyn Fn(&mut egui::Ui)| {
+        if is_agent {
+            w::row_marked(ui, colour::AGENT, |ui| body(ui))
+        } else {
+            w::row(ui, |ui| body(ui))
+        }
+    };
+
+    let hit = paint(ui, &|ui: &mut egui::Ui| {
         w::dot(ui, status_colour(&status));
         ui.add_space(space::XS);
         w::body(ui, &title);

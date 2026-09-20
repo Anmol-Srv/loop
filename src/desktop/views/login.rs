@@ -141,24 +141,24 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                         ui.add_space(space::LG);
 
                         let s = &mut app.login;
-                        submit |= entered(w::field(ui, "Email", &mut s.email, false));
+                        submit |= entered(w::field(ui, "Email", &mut s.email, false, "you@airtribe.live"));
 
                         if first_time {
                             ui.add_space(space::MD);
-                            submit |= entered(w::field(ui, "Setup code", &mut s.code, false));
+                            submit |= entered(w::field(ui, "Setup code", &mut s.code, false, "K7QF-M2XT-9PDR"));
                             ui.add_space(space::MD);
                             submit |=
-                                entered(w::field(ui, "New password", &mut s.password, true));
+                                entered(w::field(ui, "New password", &mut s.password, true, "at least 12 characters"));
                             ui.add_space(space::MD);
                             submit |=
-                                entered(w::field(ui, "Confirm password", &mut s.confirm, true));
+                                entered(w::field(ui, "Confirm password", &mut s.confirm, true, ""));
                             if !s.confirm.is_empty() && s.confirm != s.password {
                                 ui.add_space(space::XS);
                                 w::caption(ui, "passwords do not match");
                             }
                         } else {
                             ui.add_space(space::MD);
-                            submit |= entered(w::field(ui, "Password", &mut s.password, true));
+                            submit |= entered(w::field(ui, "Password", &mut s.password, true, ""));
                         }
 
                         ui.add_space(space::XL);

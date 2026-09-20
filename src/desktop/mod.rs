@@ -5,7 +5,6 @@
 
 pub mod design;
 pub mod net;
-pub mod theme;
 pub mod views;
 
 // One credential store, shared with the CLI.

@@ -25,6 +25,17 @@ pub fn muted(ui: &mut Ui, s: &str) {
     ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
 }
 
+/// A monospaced caption: a server URL, an ordinal, anything where the glyphs
+/// should line up. Both the sign-in screen and the board hand-painted this.
+pub fn mono_caption(ui: &mut Ui, s: &str) {
+    ui.label(
+        RichText::new(s)
+            .monospace()
+            .size(text::CAPTION)
+            .color(colour::TEXT_FAINT),
+    );
+}
+
 pub fn caption(ui: &mut Ui, s: &str) {
     ui.label(RichText::new(s).size(text::CAPTION).color(colour::TEXT_MUTED));
 }
@@ -161,6 +172,21 @@ pub fn rule(ui: &mut Ui) {
     ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE_SOFT));
 }
 
+/// A row with a coloured spine down its left edge — used to mark a row as
+/// delegated to an agent. Restored as a widget after the board port dropped it
+/// for being hand-painted geometry: the signal was worth keeping, the literals
+/// were not. Delegated work should be visible in a scan, not read for.
+pub fn row_marked<R>(ui: &mut Ui, spine: Color32, add: impl FnOnce(&mut Ui) -> R) -> Response {
+    let top = ui.cursor().top();
+    let response = row(ui, add);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(response.rect.left(), top),
+        egui::vec2(2.0, response.rect.height()),
+    );
+    ui.painter().rect_filled(rect, radius::SM as f32, spine);
+    response
+}
+
 /// A clickable list row of fixed height, so columns align down the page.
 /// Hover tints the background rather than moving anything.
 pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
@@ -242,7 +268,13 @@ pub fn link(ui: &mut Ui, label: &str) -> Response {
 
 /// A labelled input. The label sits above in caption type, which keeps forms
 /// scannable without a second column.
-pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool) -> Response {
+///
+/// `hint` is the placeholder shown while empty; pass `""` for none. It is a
+/// required argument rather than a builder because the first port of this
+/// widget silently dropped every placeholder in the sign-in form — an example
+/// address and a sample setup code — and nobody noticed until the form was
+/// read back. Making it explicit means forgetting it is a decision.
+pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &str) -> Response {
     ui.vertical(|ui| {
         caption(ui, label);
         ui.add_space(space::XXS);
@@ -250,6 +282,7 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool) -> Resp
             [ui.available_width(), size::CONTROL],
             egui::TextEdit::singleline(value)
                 .password(secret)
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         )
     })
@@ -260,10 +293,20 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool) -> Resp
 
 /// Empty, loading and error are the three states every fetched thing has.
 /// Naming them here means no view forgets one.
-pub fn empty(ui: &mut Ui, message: &str) {
+/// `detail` is a quieter second line; pass `""` for none. Empty states almost
+/// always want to say what the thing is as well as that there is none of it.
+pub fn empty(ui: &mut Ui, message: &str, detail: &str) {
     ui.add_space(space::LG);
     ui.vertical_centered(|ui| {
         ui.label(RichText::new(message).size(text::SMALL).color(colour::TEXT_FAINT));
+        if !detail.is_empty() {
+            ui.add_space(space::XXS);
+            ui.label(
+                RichText::new(detail)
+                    .size(text::CAPTION)
+                    .color(colour::TEXT_DISABLED),
+            );
+        }
     });
     ui.add_space(space::LG);
 }
