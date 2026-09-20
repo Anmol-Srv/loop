@@ -6,13 +6,18 @@
 //! mutation invalidates the board and task caches too, since approving a
 //! proposal replays a real write behind them.
 
-use egui::{Color32, CornerRadius, Margin, RichText, Stroke};
+use egui::{Color32, RichText};
 use serde_json::Value;
 
-use crate::desktop::{theme, App};
+use crate::desktop::design::{avatar, colour, space, text, widgets as w};
+use crate::desktop::App;
 
 const APPROVE: &str = "inbox:approve";
 const REJECT: &str = "inbox:reject";
+
+/// The avatar in a metadata row. `space::XL` is 24 — the same disc chrome.rs
+/// uses beside the signed-in user, so one person is the same size everywhere.
+const AVATAR: f32 = space::XL;
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let can_write = app.can_write();
@@ -43,114 +48,102 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     header(ui, changes.len(), can_write);
 
     if let Some(err) = &mutation_error {
-        ui.add_space(12.0);
-        banner(ui, &format!("That did not go through. {err}"), theme::DANGER);
+        ui.add_space(space::MD);
+        w::error(ui, &format!("That did not go through. {err}"));
     }
 
     if let Some(err) = &list_error {
-        ui.add_space(12.0);
-        banner(ui, &format!("Could not load the queue. {err}"), theme::DANGER);
+        ui.add_space(space::MD);
+        w::error(ui, &format!("Could not load the queue. {err}"));
         return;
     }
 
     if changes.is_empty() {
-        ui.add_space(12.0);
+        ui.add_space(space::MD);
         if list_loading {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(quiet("Loading the queue"));
-            });
+            w::loading(ui, "Loading the queue");
         } else {
+            w::empty(ui, "Nothing waiting for review.");
             ui.vertical_centered(|ui| {
-                ui.add_space(64.0);
-                ui.label(RichText::new("Nothing waiting for review.").size(14.0).color(theme::MUTED));
-                ui.add_space(4.0);
-                ui.label(quiet("Proposals from agents will appear here."));
+                w::caption(ui, "Proposals from agents will appear here.");
             });
         }
         return;
     }
 
-    ui.add_space(14.0);
+    ui.add_space(space::LG);
     for change in &changes {
         card(ui, net, change, can_write, busy);
-        ui.add_space(10.0);
+        ui.add_space(space::MD);
     }
 }
 
 fn header(ui: &mut egui::Ui, count: usize, can_write: bool) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Pending approvals").size(18.0).strong());
+        w::title(ui, "Pending approvals");
         if count > 0 {
-            ui.add_space(2.0);
-            theme::pill(ui, &count.to_string(), theme::ACCENT);
+            ui.add_space(space::XXS);
+            w::pill(ui, &count.to_string(), colour::ACCENT);
         }
     });
-    ui.add_space(2.0);
+    ui.add_space(space::XXS);
     let note = if can_write {
         "Proposals wait here until a person decides."
     } else {
         "Read only. This token can see the queue but not decide on it."
     };
-    ui.label(quiet(note));
+    w::muted(ui, note);
 }
 
-fn card(ui: &mut egui::Ui, net: &mut crate::desktop::net::Net, change: &Value, can_write: bool, busy: bool) {
+fn card(
+    ui: &mut egui::Ui,
+    net: &mut crate::desktop::net::Net,
+    change: &Value,
+    can_write: bool,
+    busy: bool,
+) {
     let id = string(change, "id");
     let target_type = string(change, "targetType");
     let target_id = string(change, "targetId");
     let actor = string(change, "actor");
     let sentence = describe(change);
 
-    egui::Frame::new()
-        .fill(theme::PANEL)
-        .stroke(Stroke::new(1.0, theme::LINE))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::same(16))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
 
-            ui.label(RichText::new(sentence).size(15.0).color(theme::TEXT));
-            ui.add_space(10.0);
+        // The sentence is the decision: loudest thing on the card.
+        ui.label(RichText::new(sentence).size(text::BODY).color(colour::TEXT));
+        ui.add_space(space::MD);
 
-            ui.horizontal(|ui| {
-                theme::pill(ui, &target_type, target_colour(&target_type));
-                theme::id_label(ui, &target_id);
-                ui.label(quiet("·"));
-                ui.label(quiet(&format!("proposed by {actor}")));
+        ui.horizontal(|ui| {
+            w::pill(ui, &target_type, target_colour(&target_type));
+            w::id(ui, &target_id);
+            ui.add_space(space::SM);
+            avatar::small(ui, &actor, AVATAR);
+            ui.add_space(space::XS);
+            w::muted(ui, &format!("proposed by {actor}"));
 
-                if !can_write {
-                    return;
+            if !can_write {
+                return;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if w::primary(ui, "Approve", !busy).clicked() {
+                    net.post(APPROVE, &format!("/api/user/changes/{id}/approve"), Value::Null);
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let approve = egui::Button::new(
-                        RichText::new("Approve").size(12.0).color(Color32::WHITE),
-                    )
-                    .fill(theme::ACCENT)
-                    .corner_radius(CornerRadius::same(6));
-                    if ui.add_enabled(!busy, approve).clicked() {
-                        net.post(APPROVE, &format!("/api/user/changes/{id}/approve"), Value::Null);
-                    }
-
-                    let reject = egui::Button::new(
-                        RichText::new("Reject").size(12.0).color(theme::DANGER),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, theme::LINE))
-                    .corner_radius(CornerRadius::same(6));
-                    if ui.add_enabled(!busy, reject).clicked() {
-                        net.post(REJECT, &format!("/api/user/changes/{id}/reject"), Value::Null);
-                    }
-                });
+                ui.add_space(space::SM);
+                if w::danger(ui, "Reject", !busy).clicked() {
+                    net.post(REJECT, &format!("/api/user/changes/{id}/reject"), Value::Null);
+                }
             });
         });
+    });
 }
 
 fn target_colour(target_type: &str) -> Color32 {
     match target_type {
-        "task" => theme::ACCENT,
-        "artifact" => theme::AGENT,
-        _ => theme::MUTED,
+        "task" => colour::ACCENT,
+        "artifact" => colour::AGENT,
+        _ => colour::TEXT_MUTED,
     }
 }
 
@@ -264,20 +257,4 @@ fn scalar(value: &Value, key: &str) -> String {
 
 fn short(id: &str) -> String {
     id.get(..8).unwrap_or(id).to_string()
-}
-
-fn quiet(text: &str) -> RichText {
-    RichText::new(text).size(12.0).color(theme::MUTED)
-}
-
-fn banner(ui: &mut egui::Ui, text: &str, colour: Color32) {
-    egui::Frame::new()
-        .fill(colour.gamma_multiply(0.08))
-        .stroke(Stroke::new(1.0, colour.gamma_multiply(0.35)))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(12, 9))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(text).size(12.0).color(colour));
-        });
 }
