@@ -10,5 +10,7 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::user::phase::routes())
         .merge(routes::user::task::routes())
         .merge(routes::user::artifact::routes())
+        .merge(routes::user::change::routes())
+        .merge(routes::services::mcp::routes())
         .with_state(state)
 }
