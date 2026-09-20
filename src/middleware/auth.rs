@@ -1,5 +1,6 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use sqlx::PgPool;
 
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
@@ -36,6 +37,26 @@ impl Caller {
     }
 }
 
+/// Turn a raw token string into a `Caller`. The only place a token becomes
+/// authority: the header extractor below and the cookie extractor in
+/// `middleware::session` both go through here, so they cannot diverge.
+pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
+    let row = token::lookup(db, raw)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("invalid or expired token".into()))?;
+
+    let can_apply = row.scopes.iter().any(|s| s == "write");
+
+    Ok(Caller {
+        actor: Actor {
+            label: row.label,
+            person_id: Some(row.owner_id),
+            can_apply,
+        },
+        scopes: row.scopes,
+    })
+}
+
 impl FromRequestParts<AppState> for Caller {
     type Rejection = AppError;
 
@@ -47,19 +68,6 @@ impl FromRequestParts<AppState> for Caller {
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or_else(|| AppError::Unauthorized("missing bearer token".into()))?;
 
-        let row = token::lookup(&state.db, raw)
-            .await?
-            .ok_or_else(|| AppError::Unauthorized("invalid or expired token".into()))?;
-
-        let can_apply = row.scopes.iter().any(|s| s == "write");
-
-        Ok(Caller {
-            actor: Actor {
-                label: row.label,
-                person_id: Some(row.owner_id),
-                can_apply,
-            },
-            scopes: row.scopes,
-        })
+        resolve(&state.db, raw).await
     }
 }

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in — Airtribe Control Plane</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body class="centered">
+    <form class="card" method="post" action="/login">
+      <h1>Airtribe Control Plane</h1>
+      <p class="muted">Paste an agent token to sign in.</p>
+      {% if let Some(error) = error %}
+      <p class="error">{{ error }}</p>
+      {% endif %}
+      <label for="token">Token</label>
+      <input id="token" name="token" type="password" autocomplete="off" autofocus required />
+      <button type="submit">Sign in</button>
+    </form>
+  </body>
+</html>
