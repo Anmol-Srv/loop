@@ -16,6 +16,41 @@ Humans drive it from a CLI; agents get a scoped, audited surface of their own.
 | P2 MCP — tool surface, approval queue | done |
 | P3 Delegation — claim-lease, run logs, job worker | done |
 | P4 Web UI — board, filters, approval inbox, live run log | done |
+| P5 Native Mac app — egui, Keychain, .app bundle | done |
+
+## The Mac app
+
+A native desktop client in Rust — egui, no webview, no HTML. It talks to the
+same API as everything else, so it is a front end, not a second system.
+
+```bash
+./scripts/bundle-mac.sh        # builds "target/Airtribe Control Plane.app"
+open "target/Airtribe Control Plane.app"
+```
+
+Or run it straight from cargo while developing:
+
+```bash
+cargo run --features app --bin acp-app
+```
+
+Sign in once by pasting a token; it is stored in the **macOS Keychain**, not a
+dotfile, because it grants write access to shared team state. `ACP_TOKEN` in the
+environment overrides the stored credential, which is useful for pointing the
+app at a scratch server. `ACP_URL` sets the server (default
+`http://localhost:8080`).
+
+| Screen | What it shows |
+|---|---|
+| Board | projects, then phases in order with their tasks; filter by status and assignee kind |
+| Inbox | pending agent proposals, each written as a sentence, with approve and reject |
+| Task | detail, artifacts, change history, and the run log, live while an agent works |
+
+Delegated work is marked twice over — a purple pill and a spine down the left
+edge of the card — so you can see what an agent is holding without reading.
+
+The GUI stack sits behind the `app` cargo feature, so `cargo build` for the
+server does not compile egui at all.
 
 ## The web UI
 
