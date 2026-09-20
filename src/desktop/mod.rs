@@ -13,7 +13,9 @@ use net::Net;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Tab {
-    Board,
+    Home,
+    MyTasks,
+    Projects,
     Inbox,
 }
 
@@ -35,7 +37,7 @@ impl App {
 
         let mut app = Self {
             net: None,
-            tab: Tab::Board,
+            tab: Tab::Home,
             project: None,
             task: None,
             scopes: Vec::new(),

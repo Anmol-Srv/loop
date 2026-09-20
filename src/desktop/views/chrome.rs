@@ -18,11 +18,32 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         .unwrap_or(0);
 
     let on_task = app.task.is_some();
+    let mine = app
+        .net
+        .as_ref()
+        .and_then(|n| n.data("home"))
+        .and_then(|h| h.get("myTasks"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter(|t| t.get("status").and_then(|s| s.as_str()) != Some("done")).count())
+        .unwrap_or(0);
+
     let items = [
         shell::NavItem {
+            icon: icon::HOUSE,
+            label: "Home",
+            selected: app.tab == Tab::Home && !on_task,
+            badge: 0,
+        },
+        shell::NavItem {
+            icon: icon::LIST_CHECKS,
+            label: "My Tasks",
+            selected: app.tab == Tab::MyTasks && !on_task,
+            badge: mine,
+        },
+        shell::NavItem {
             icon: icon::SQUARES_FOUR,
-            label: "Board",
-            selected: app.tab == Tab::Board && !on_task,
+            label: "Projects",
+            selected: app.tab == Tab::Projects && !on_task,
             badge: 0,
         },
         shell::NavItem {
@@ -80,16 +101,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             n.results.clear();
         }
     }
-    match clicked {
-        Some(0) => {
-            app.tab = Tab::Board;
-            app.task = None;
+    if let Some(i) = clicked {
+        app.tab = match i {
+            0 => Tab::Home,
+            1 => Tab::MyTasks,
+            2 => Tab::Projects,
+            _ => Tab::Inbox,
+        };
+        app.task = None;
+        if app.tab != Tab::Projects {
+            app.project = None;
         }
-        Some(1) => {
-            app.tab = Tab::Inbox;
-            app.task = None;
-        }
-        _ => {}
     }
 
     shell::content(ui, |ui| {
@@ -97,7 +119,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             views::task::ui(app, ui);
         } else {
             match app.tab {
-                Tab::Board => views::board::ui(app, ui),
+                Tab::Home => views::home::ui(app, ui),
+                Tab::MyTasks => views::mytasks::ui(app, ui),
+                Tab::Projects => views::board::ui(app, ui),
                 Tab::Inbox => views::inbox::ui(app, ui),
             }
         }
