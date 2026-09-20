@@ -5,7 +5,7 @@
 
 use egui_phosphor::thin as icon;
 
-use crate::desktop::design::{avatar, colour, shell, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, shell, size, space, text, widgets as w};
 use crate::desktop::{views, App, Tab};
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -81,7 +81,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         if !me.is_empty() {
             ui.add_space(space::XS);
             ui.horizontal(|ui| {
-                avatar::small(ui, &me, 24.0);
+                avatar::small(ui, &me, size::AVATAR_MD);
                 ui.add_space(space::XS);
                 ui.label(
                     egui::RichText::new(me.split('@').next().unwrap_or(&me))

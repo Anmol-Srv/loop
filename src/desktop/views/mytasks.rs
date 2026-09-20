@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::desktop::design::tokens::DISCIPLINE_W;
 use crate::desktop::design::{colour, shell, space, status_colour, status_label, text, widgets as w};
 use crate::desktop::App;
 
@@ -27,6 +28,16 @@ const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
 /// finished task is not shown unless it is asked for: this screen answers
 /// "what now", and yesterday's work is noise in that answer.
 const SECTIONS: [&str; 6] = ["in_progress", "in_review", "open", "blocked", "done", "dropped"];
+
+/// Room kept on the right of a row so the title truncates instead of running
+/// underneath what follows it. Measured in discipline columns because that is
+/// the one fixed column width the rows already agree on: four of them covers
+/// "project · phase" plus an agent pill, three covers a project name plus the
+/// Claim button.
+/// ponytail: a reservation, not a measurement. Lay the trailing group out
+/// first and read its width back if a project name ever outgrows this.
+const TRAILING_ASSIGNED: f32 = DISCIPLINE_W * 4.0;
+const TRAILING_CLAIMABLE: f32 = DISCIPLINE_W * 3.0;
 
 /// Filter selections. `None` means "any" on each. The two fixed vocabularies
 /// are `&'static str` so a frame that changes nothing allocates nothing; the
@@ -80,20 +91,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         .collect();
     let claimable: Vec<&Value> = available.iter().filter(|t| keep(t, &state)).collect();
 
-    ui.horizontal(|ui| {
-        w::title(ui, "My tasks");
-        ui.add_space(space::SM);
-        w::muted(
-            ui,
-            &format!(
-                "{} assigned · {} available to claim",
-                shown.len(),
-                claimable.len()
-            ),
-        );
-    });
+    shell::page_title(
+        ui,
+        "My tasks",
+        &format!(
+            "{} assigned · {} available to claim",
+            shown.len(),
+            claimable.len()
+        ),
+        |_| {},
+    );
 
-    ui.add_space(space::LG);
     filters(ui, &mut state, &mine, &available);
 
     if let Some(err) = &claim_error {
@@ -131,8 +139,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         if rows.is_empty() {
             continue;
         }
-        shell::section(ui, &format!("{}  {}", capitalise(status_label(name)), rows.len()));
-        w::card(ui, |ui| {
+        shell::section_count(ui, &capitalise(status_label(name)), rows.len());
+        w::card_list(ui, |ui| {
             ui.set_width(ui.available_width());
             for t in rows {
                 if let Some(id) = assigned_row(ui, t, &titles) {
@@ -151,13 +159,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         let note = format!("matching {}", kinds.join(", "));
-        shell::section_with(ui, &format!("Available to claim  {}", claimable.len()), |ui| {
+        // Other people's unclaimed work is a different kind of thing from the
+        // four status sections above it. At the same pitch the screen reads as
+        // five interchangeable slabs; a page-margin gap says "and separately".
+        ui.add_space(space::XXL);
+        shell::section_count_with(ui, "Available to claim", claimable.len(), |ui| {
             if !kinds.is_empty() {
                 w::muted(ui, &note);
             }
         });
 
-        w::card(ui, |ui| {
+        w::card_list(ui, |ui| {
             ui.set_width(ui.available_width());
             for t in &claimable {
                 match claimable_row(ui, t, can_write && !busy) {

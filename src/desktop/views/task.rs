@@ -39,7 +39,7 @@ const LOG_ROWS: f32 = 11.0;
 
 /// The assignee disc. Sized off the spacing scale so it lines up with the pills
 /// beside it instead of inventing a diameter.
-const AVATAR: f32 = space::XL;
+const AVATAR: f32 = size::AVATAR_MD;
 
 /// Everything the detail view remembers between frames. Scoped to one task id;
 /// opening a different task resets it.

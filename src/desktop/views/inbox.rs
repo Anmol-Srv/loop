@@ -9,7 +9,7 @@
 use egui::{Color32, RichText};
 use serde_json::Value;
 
-use crate::desktop::design::{avatar, colour, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, size, space, text, widgets as w};
 use crate::desktop::App;
 
 const APPROVE: &str = "inbox:approve";
@@ -17,7 +17,7 @@ const REJECT: &str = "inbox:reject";
 
 /// The avatar in a metadata row. `space::XL` is 24 — the same disc chrome.rs
 /// uses beside the signed-in user, so one person is the same size everywhere.
-const AVATAR: f32 = space::XL;
+const AVATAR: f32 = size::AVATAR_MD;
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let can_write = app.can_write();
@@ -64,9 +64,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             w::loading(ui, "Loading the queue");
         } else {
             w::empty(ui, "Nothing waiting for review.", "Proposals from agents will appear here.");
-            ui.vertical_centered(|ui| {
-                w::caption(ui, "Proposals from agents will appear here.");
-            });
         }
         return;
     }
