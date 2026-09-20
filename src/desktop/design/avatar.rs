@@ -72,22 +72,3 @@ pub fn small(ui: &mut Ui, seed: &str, size: f32) -> Response {
     );
     response.on_hover_text(seed)
 }
-
-/// A stack of overlapping avatars, as used for "who is on this".
-pub fn stack(ui: &mut Ui, seeds: &[&str], size: f32) {
-    let overlap = size * 0.32;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = -overlap;
-        for seed in seeds.iter().take(4) {
-            small(ui, seed, size);
-        }
-        if seeds.len() > 4 {
-            ui.add_space(overlap + 4.0);
-            ui.label(
-                egui::RichText::new(format!("+{}", seeds.len() - 4))
-                    .size(text::CAPTION)
-                    .color(colour::TEXT_MUTED),
-            );
-        }
-    });
-}

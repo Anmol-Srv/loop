@@ -192,6 +192,18 @@ pub mod size {
     pub const AVATAR_SM: f32 = 20.0;
     pub const AVATAR_MD: f32 = 24.0;
     pub const AVATAR_LG: f32 = 34.0;
+    /// Height of a count badge.
+    pub const BADGE_H: f32 = 16.0;
+    /// The icon gutter. One number, so a leading icon sits at the same offset
+    /// in the sidebar as in a button — they were 24 and 18 before.
+    pub const ICON_COL: f32 = 22.0;
+    /// A status dot.
+    pub const DOT: f32 = 8.0;
+    /// Collapse the sidebar to icons below this window width. The only
+    /// structural response in the app, and the right one: it hands 160px back
+    /// to the column that runs out first.
+    pub const SIDEBAR_COLLAPSE_AT: f32 = 960.0;
+    pub const SIDEBAR_W_NARROW: f32 = 52.0;
     // No CONTENT_MAX: the body runs to the window edge. A centred measure suits
     // prose; a board wants every pixel.
 }

@@ -124,7 +124,7 @@ pub fn install(ctx: &egui::Context) {
         s.spacing.menu_margin = egui::Margin::same(space::XS as i8);
         s.spacing.button_padding = egui::vec2(super::tokens::pad::BUTTON.0, super::tokens::pad::BUTTON.1);
         s.spacing.interact_size.y = super::tokens::size::CONTROL;
-        s.spacing.scroll.bar_width = 8.0;
+        s.spacing.scroll.bar_width = space::SM;
 
         use egui::{FontId, TextStyle};
         s.text_styles = [

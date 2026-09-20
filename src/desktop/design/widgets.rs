@@ -17,6 +17,24 @@ pub fn heading(ui: &mut Ui, s: &str) {
     ui.label(RichText::new(s).size(text::HEADING).color(colour::TEXT));
 }
 
+/// A task title in a row: takes the flexible slot and truncates rather than
+/// running through whatever follows it.
+///
+/// egui's default wrap mode in a horizontal layout is `Extend`, so a plain
+/// label lets a long title overrun its trailing column and leaves the
+/// right-aligned group with no width to lay out in. Every list row in the app
+/// had this; the mockup's `.t{overflow:hidden;text-overflow:ellipsis}` was the
+/// contract and nothing implemented it.
+pub fn row_title(ui: &mut Ui, s: &str, reserve_trailing: f32) {
+    let available = (ui.available_width() - reserve_trailing).max(size::ROW);
+    ui.add_sized(
+        [available, size::ROW],
+        egui::Label::new(RichText::new(s).size(text::BODY).color(colour::TEXT))
+            .truncate()
+            .halign(egui::Align::LEFT),
+    );
+}
+
 pub fn body(ui: &mut Ui, s: &str) {
     ui.label(RichText::new(s).size(text::BODY).color(colour::TEXT));
 }
@@ -55,8 +73,8 @@ pub fn id(ui: &mut Ui, value: &str) -> Response {
 /// A filled dot. The densest possible way to show state — used in list rows
 /// where a pill would be too loud repeated forty times.
 pub fn dot(ui: &mut Ui, c: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-    ui.painter().circle_filled(rect.center(), 3.5, c);
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size::DOT), Sense::hover());
+    ui.painter().circle_filled(rect.center(), size::DOT / 2.0 - 0.5, c);
 }
 
 /// A tinted pill. For one-off state, not for every row.
@@ -64,7 +82,7 @@ pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), egui::FontId::proportional(text::CAPTION), c);
-    let pad = Vec2::new(space::SM, 2.5);
+    let pad = Vec2::new(space::SM, space::XXS);
     let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::hover());
     ui.painter()
         .rect_filled(rect, radius::SM as f32, c.gamma_multiply(0.10));
@@ -105,7 +123,7 @@ pub fn blocked_by(ui: &mut Ui, what: &str) {
 
 /// A thin progress track. Used for phase and discipline completion.
 pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 4.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, space::XS), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 2.0, colour::INSET);
     if fraction > 0.0 {
@@ -113,7 +131,7 @@ pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
             rect.min,
             Vec2::new(rect.width() * fraction.clamp(0.0, 1.0), rect.height()),
         );
-        p.rect_filled(filled, 2.0, tint);
+        p.rect_filled(filled, space::XXS, tint);
     }
 }
 
@@ -223,14 +241,6 @@ pub fn gradient_v(ui: &Ui, rect: egui::Rect, top: Color32, bottom: Color32) {
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
-/// A hairline. Prefer whitespace; reach for this only when a boundary is
-/// genuinely ambiguous without it.
-pub fn rule(ui: &mut Ui) {
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 1.0), Sense::hover());
-    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE_SOFT));
-}
-
 /// A row with a coloured spine down its left edge — used to mark a row as
 /// delegated to an agent. Restored as a widget after the board port dropped it
 /// for being hand-painted geometry: the signal was worth keeping, the literals
@@ -240,7 +250,7 @@ pub fn row_marked<R>(ui: &mut Ui, spine: Color32, add: impl FnOnce(&mut Ui) -> R
     let response = row(ui, add);
     let rect = egui::Rect::from_min_size(
         egui::pos2(response.rect.left(), top),
-        egui::vec2(2.0, response.rect.height()),
+        egui::vec2(space::XXS, response.rect.height()),
     );
     ui.painter().rect_filled(rect, radius::SM as f32, spine);
     response
@@ -323,7 +333,7 @@ fn button_with(
     let font = egui::FontId::proportional(if small { text::SMALL } else { text::BODY });
 
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT);
-    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    let icon_w = if icon.is_some() { size::ICON_COL } else { 0.0 };
     let (px, _) = if small { (space::XS, 0.0) } else { pad::BUTTON };
     let height = if small { size::CONTROL - space::SM } else { size::CONTROL };
     let width = galley.size().x + icon_w + px * 2.0;
@@ -469,7 +479,8 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &
 /// `detail` is a quieter second line; pass `""` for none. Empty states almost
 /// always want to say what the thing is as well as that there is none of it.
 pub fn empty(ui: &mut Ui, message: &str, detail: &str) {
-    ui.add_space(space::LG);
+    // No leading space: every caller already sits under a section heading that
+    // spaces itself, and the pair made an empty phase taller than a full one.
     ui.vertical_centered(|ui| {
         ui.label(RichText::new(message).size(text::SMALL).color(colour::TEXT_FAINT));
         if !detail.is_empty() {

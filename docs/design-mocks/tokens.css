@@ -1,4 +1,9 @@
-/* Mirrors src/desktop/design/tokens.rs exactly. If these drift, the mockup lies. */
+/* Mirrors src/desktop/design/tokens.rs. If these drift, the mockup lies — and
+   it did: an earlier version omitted pad::, radius::PILL, the avatar sizes and
+   DISCIPLINE_W, so every one of them reappeared downstream as a bare literal,
+   and the progress bar was drawn as a pill here while the Rust painted it at
+   radius 2. A mock that disagrees with the tokens is worse than no mock,
+   because three agents built against it believing it. */
 :root{
   --canvas:#0D111A; --chrome:#111621; --surface:#171D2A;
   --surface-hover:#1E2534; --surface-active:#262E3F; --inset:#0A0E16;
@@ -15,6 +20,13 @@
   --r-sm:6px; --r-md:10px; --r-lg:14px;
   --t-display:26px; --t-title:18px; --t-heading:14px; --t-body:13px; --t-small:11.5px; --t-caption:10.5px;
   --row:30px; --control:28px; --sidebar-w:212px;
+  --r-pill:99px;
+  --avatar-sm:20px; --avatar-md:24px; --avatar-lg:34px;
+  --discipline-w:62px;
+  /* pad:: presets, as (horizontal, vertical) pairs */
+  --pad-card:12px 16px; --pad-button:8px 12px; --pad-input:8px 12px;
+  --pad-page:24px; --pad-sidebar:12px; --pad-list:8px;
+  --dot:8px; --badge-h:16px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--canvas);color:var(--text);
@@ -24,14 +36,14 @@ body{background:var(--canvas);color:var(--text);
 /* sidebar */
 .side{width:var(--sidebar-w);background:linear-gradient(180deg,var(--wash-top),var(--wash-bottom) 55%);
   padding:var(--md);display:flex;flex-direction:column;flex:0 0 auto}
-.side .top{height:30px}
-.nav{display:flex;align-items:center;gap:var(--md);height:30px;padding:0 var(--md);
+.side .top{height:var(--row)}
+.nav{display:flex;align-items:center;gap:var(--md);height:var(--row);padding:0 var(--md);
   border-radius:var(--r-md);color:var(--muted);font-size:var(--t-body);cursor:pointer;margin-bottom:var(--xxs)}
-.nav .ico{width:16px;opacity:.85;font-size:var(--t-heading)}
+.nav .ico{width:var(--lg);opacity:.85;font-size:var(--t-heading)}
 .nav:hover{background:var(--glass-hover);color:var(--text)}
 .nav.on{background:var(--canvas);color:var(--text)}
 .nav .badge{margin-left:auto;background:var(--accent);color:var(--on-accent);
-  font-size:var(--t-caption);padding:1px 6px;border-radius:99px;font-weight:600}
+  font-size:var(--t-caption);padding:var(--xxs) var(--sm);border-radius:var(--r-pill);font-weight:600}
 .side .foot{margin-top:auto;display:flex;flex-direction:column;gap:var(--xs)}
 .linkbtn{font-size:var(--t-small);color:var(--muted);cursor:pointer;padding:var(--xs) 0}
 .linkbtn:hover{color:var(--text)}
@@ -56,24 +68,24 @@ h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.2px}
 .row{display:flex;align-items:center;gap:var(--sm);height:var(--row);
   padding:0 var(--md);border-radius:var(--r-sm);cursor:pointer;position:relative}
 .row:hover{background:var(--glass-hover)}
-.row.agent::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:2px;
-  background:var(--agent);border-radius:2px}
-.dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.row.agent::before{content:"";position:absolute;left:0;top:var(--xs);bottom:var(--xs);width:var(--xxs);
+  background:var(--agent);border-radius:var(--r-sm)}
+.dot{width:var(--dot);height:var(--dot);border-radius:50%;flex:0 0 auto}
 .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .meta{color:var(--muted);font-size:var(--t-small)}
 .mono{font-family:"JetBrains Mono",monospace;font-size:var(--t-caption);color:var(--faint)}
-.pill{font-size:var(--t-caption);padding:2px 7px;border-radius:var(--r-sm);white-space:nowrap}
-.disc{font-size:var(--t-caption);color:var(--faint);width:62px;flex:0 0 auto;
+.pill{font-size:var(--t-caption);padding:var(--xxs) var(--sm);border-radius:var(--r-sm);white-space:nowrap}
+.disc{font-size:var(--t-caption);color:var(--faint);width:var(--discipline-w);flex:0 0 auto;
   font-family:"JetBrains Mono",monospace}
 .blocked{color:var(--faint);font-size:var(--t-small)}
 
 /* avatar */
-.av{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;
+.av{width:var(--avatar-md);height:var(--avatar-md);border-radius:50%;display:grid;place-items:center;
   font-size:var(--t-caption);font-weight:700;color:var(--on-accent);flex:0 0 auto}
 
 /* buttons */
 .btn{background:transparent;height:var(--control);padding:0 var(--md);border-radius:var(--r-sm);font-size:var(--t-body);
-  display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:1px solid transparent;font-family:inherit}
+  display:inline-flex;align-items:center;gap:var(--xs);cursor:pointer;border:1px solid transparent;font-family:inherit}
 .btn.primary{background:var(--accent);color:var(--on-accent);font-weight:600}
 .btn.primary:hover{background:var(--accent-hover)}
 .btn.secondary{background:var(--glass);border-color:var(--edge-mid);color:var(--text)}
@@ -82,7 +94,7 @@ h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.2px}
 .btn.ghost:hover{background:var(--glass-hover);color:var(--text)}
 
 /* progress */
-.bar{height:4px;background:var(--inset);border-radius:99px;overflow:hidden;flex:1}
-.bar i{display:block;height:100%;background:var(--accent);border-radius:99px}
+.bar{height:var(--xs);background:var(--inset);border-radius:var(--xxs);overflow:hidden;flex:1}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:var(--xxs)}
 .grid{display:grid;gap:var(--md)}
 .empty{color:var(--faint);font-size:var(--t-small);text-align:center;padding:var(--lg) 0}
