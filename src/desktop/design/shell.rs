@@ -69,38 +69,26 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
 
 /// A sidebar entry.
 ///
-/// The selected item is filled with the *canvas* colour and runs flush to the
-/// sidebar's right edge, so it reads as the content panel reaching in rather
-/// than a highlight sitting on top.
+/// The selected item is filled with the canvas colour and rounded on all four
+/// corners.
 ///
-/// Concave corners above and below were tried twice and dropped both times:
-/// once broken, once working but not worth the machinery. Flush and
-/// left-rounded says the same thing.
+/// It reached the panel edge with square right corners for a while, to read as
+/// the content area extending into the sidebar, with concave corners softening
+/// the join. Both are gone: the join never looked right, and a self-contained
+/// pill is quieter than a shape that depends on what it is next to.
 fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
     let height = 30.0;
-    let (mut rect, response) =
+    let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
 
     // Run past the panel's right padding so the fill meets the content area.
-    if item.selected {
-        rect.max.x += pad::SIDEBAR.0;
-    }
-
     let r = radius::MD as f32;
     let p = ui.painter();
 
     if item.selected {
-        // Left corners only: the right side is continuous with the panel.
-        p.rect_filled(
-            rect,
-            egui::CornerRadius {
-                nw: radius::MD,
-                sw: radius::MD,
-                ne: 0,
-                se: 0,
-            },
-            colour::CANVAS,
-        );
+        // Rounded on all four corners and inset from the panel edge: a pill
+        // that sits in the sidebar, rather than a tab reaching out of it.
+        p.rect_filled(rect, r, colour::CANVAS);
     } else if response.hovered() {
         p.rect_filled(rect, r, colour::GLASS_HOVER);
     }
