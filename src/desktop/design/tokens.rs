@@ -193,6 +193,22 @@ pub mod size {
     // prose; a board wants every pixel.
 }
 
+/// A discipline's colour. Deliberately close together and all quiet: the
+/// discipline is on every row, so it must be scannable without shouting. The
+/// loud colours are reserved for status, which is what you are actually
+/// hunting for.
+pub fn discipline_colour(discipline: &str) -> Color32 {
+    match discipline {
+        "design" => Color32::from_rgb(0xC9, 0xA8, 0xD8),
+        "frontend" => Color32::from_rgb(0x8A, 0xC4, 0xD8),
+        "backend" => Color32::from_rgb(0x9A, 0xC0, 0xA8),
+        _ => colour::TEXT_FAINT,
+    }
+}
+
+/// Width of the discipline column, so every row in every list agrees.
+pub const DISCIPLINE_W: f32 = 62.0;
+
 pub fn status_colour(status: &str) -> Color32 {
     match status {
         "done" => colour::OK,

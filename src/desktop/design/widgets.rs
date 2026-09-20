@@ -71,6 +71,52 @@ pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
     ui.painter().galley(rect.min + pad, galley, c);
 }
 
+/// The discipline column. Fixed width and monospaced so the titles beside it
+/// line up down the page; quiet, because it appears on every single row.
+pub fn discipline(ui: &mut Ui, value: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(super::tokens::DISCIPLINE_W, size::ROW),
+        Sense::hover(),
+    );
+    if value.is_empty() {
+        return;
+    }
+    ui.painter().text(
+        egui::pos2(rect.left(), rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        value,
+        egui::FontId::monospace(text::CAPTION),
+        super::tokens::discipline_colour(value),
+    );
+}
+
+/// "waiting on X" — what a blocked row says instead of a status.
+///
+/// A blocked task is not in a *state*, it is in a *relationship*, and naming
+/// the thing it waits on is what makes the row actionable. A "blocked" pill
+/// tells you to go and find out; this tells you.
+pub fn blocked_by(ui: &mut Ui, what: &str) {
+    ui.label(
+        RichText::new(format!("\u{2933} waiting on \u{201c}{what}\u{201d}"))
+            .size(text::SMALL)
+            .color(colour::TEXT_FAINT),
+    );
+}
+
+/// A thin progress track. Used for phase and discipline completion.
+pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 4.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, colour::INSET);
+    if fraction > 0.0 {
+        let filled = egui::Rect::from_min_size(
+            rect.min,
+            Vec2::new(rect.width() * fraction.clamp(0.0, 1.0), rect.height()),
+        );
+        p.rect_filled(filled, 2.0, tint);
+    }
+}
+
 // ---------------------------------------------------------------- surfaces
 
 /// The glass edge: three strokes, brightest on top.
