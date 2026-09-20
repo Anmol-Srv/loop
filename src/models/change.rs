@@ -81,3 +81,34 @@ pub async fn record(
 
     Ok(id)
 }
+
+/// The result of a mutation: either it happened, or it is waiting for a human.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "status")]
+pub enum Outcome<T> {
+    #[serde(rename = "applied")]
+    Applied { entity: T },
+    #[serde(rename = "proposed")]
+    Proposed {
+        #[serde(rename = "changeId")]
+        change_id: Uuid,
+    },
+}
+
+/// Record an intended mutation without performing it. Used when the actor
+/// lacks the `write` scope, so the effect waits for human approval.
+///
+/// The `patch` must carry every argument needed to replay the operation.
+pub async fn propose(
+    db: &sqlx::PgPool,
+    actor: &Actor,
+    target_type: TargetType,
+    target_id: Uuid,
+    op: Op,
+    patch: Value,
+) -> AppResult<Uuid> {
+    let mut tx = db.begin().await?;
+    let id = record(&mut tx, actor, target_type, target_id, op, patch).await?;
+    tx.commit().await?;
+    Ok(id)
+}
