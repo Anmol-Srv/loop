@@ -12,8 +12,11 @@ fn main() -> eframe::Result {
             .with_titlebar_shown(false)
             .with_title_shown(false)
             .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([900.0, 560.0])
-            .with_maximized(true)
+            .with_min_inner_size([820.0, 520.0])
+            // Explicit, though it is the default: a maximized window on macOS
+            // resists being dragged smaller, and starting zoomed made the app
+            // feel fixed-size. Open at a sensible size and let people set it.
+            .with_resizable(true)
             .with_title("Airtribe Control Plane"),
         ..Default::default()
     };
