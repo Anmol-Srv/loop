@@ -1,0 +1,6 @@
+{% for line in lines %}<div><span class="seq">{{ line.seq }}</span> {{ line.text }}</div>
+{% endfor %}
+{#- The cursor lives on this element, not in the page. Each fragment replaces it
+    out of band with a copy pointing at the last seq it just appended, so the
+    next poll asks for what comes after that instead of refetching the log. -#}
+<div id="log-poll"{% if oob %} hx-swap-oob="true"{% endif %}{% if polling %} hx-get="/tasks/{{ task_id }}/log?afterSeq={{ next_seq }}" hx-trigger="every 2s" hx-target="#log-lines" hx-swap="beforeend"{% endif %}></div>

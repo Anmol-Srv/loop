@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ task.title }} — Airtribe Control Plane{% endblock %}
+
+{% block content %}
+<h1>{{ task.title }}</h1>
+
+<dl class="meta">
+  <dt>Status</dt>
+  <dd><span class="tag">{{ task.status }}</span></dd>
+  <dt>Assignee</dt>
+  <dd>
+    {% if let Some(assignee) = task.assignee %}
+    <span class="tag {{ assignee_class }}">{{ assignee }}</span>
+    {% else %}
+    <span class="muted">unassigned</span>
+    {% endif %}
+  </dd>
+  <dt>Priority</dt>
+  <dd>P{{ task.priority }}</dd>
+  <dt>Phase</dt>
+  <dd><a href="/projects/{{ task.project_id }}">{{ task.project_name }}</a> · {{ task.phase_name }}</dd>
+  <dt>Id</dt>
+  <dd class="id">{{ task.id }}</dd>
+</dl>
+
+{% if !task.body.is_empty() %}
+<div class="card">{{ task.body }}</div>
+{% endif %}
+
+<h2>Artifacts</h2>
+{% if artifacts.is_empty() %}
+<p class="empty">Nothing linked yet.</p>
+{% else %}
+<table>
+  <tbody>
+    {% for a in artifacts %}
+    <tr>
+      <td><span class="tag">{{ a.kind }}</span></td>
+      <td><a href="{{ a.url }}">{% if a.title.is_empty() %}{{ a.url }}{% else %}{{ a.title }}{% endif %}</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>Run log</h2>
+{% if lines.is_empty() && !polling %}
+<p class="empty">No output.</p>
+{% endif %}
+<div class="log" id="log-lines">{% include "_run_log.html" %}</div>
+
+<h2>History</h2>
+{% if changes.is_empty() %}
+<p class="empty">No recorded changes.</p>
+{% else %}
+<table>
+  <thead>
+    <tr><th>When</th><th>Who</th><th>Change</th><th>State</th></tr>
+  </thead>
+  <tbody>
+    {% for c in changes %}
+    <tr>
+      <td class="mono">{{ c.created_at }}</td>
+      <td>{{ c.actor }}</td>
+      <td class="mono">{{ c.op }} {{ c.patch }}</td>
+      <td><span class="tag">{{ c.state }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
