@@ -35,6 +35,14 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
                 .inner_margin(egui::Margin::symmetric(pad::SIDEBAR.0 as i8, pad::SIDEBAR.1 as i8)),
         )
         .show(ui, |ui| {
+            // A pink wash from the top, fading out. Painted behind everything
+            // in the panel, and the glass cards on the canvas pick it up.
+            w::gradient_v(
+                ui,
+                ui.max_rect().expand(space::XL),
+                colour::WASH_TOP,
+                colour::WASH_BOTTOM,
+            );
             // The window has no title bar, so the traffic lights float over
             // this corner. Leave them room rather than drawing under them.
             ui.add_space(TRAFFIC_LIGHTS);
@@ -83,7 +91,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>) -> Response {
         egui::pos2(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         item.icon,
-        egui::FontId::proportional(15.0),
+        egui::FontId::proportional(text::HEADING),
         fg,
     );
     x += 24.0;

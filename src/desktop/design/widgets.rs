@@ -62,15 +62,49 @@ pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
 
 // ---------------------------------------------------------------- surfaces
 
-/// A card. Returns the inner closure's value alongside the response, so a
-/// caller can make the whole card clickable.
+/// A glass card: a translucent lift off the canvas rather than an opaque
+/// block, so the sidebar wash shows through it.
+///
+/// egui cannot blur what is behind a surface, so "glass" here is three cheap
+/// cues that read the same way: a weak white fill, a brighter-than-usual
+/// hairline doing the work of the missing shadow, and a one-pixel sheen along
+/// the top edge. The sheen is what sells it — without it this is just a
+/// translucent rectangle.
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
-    egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+    let out = egui::Frame::new()
+        .fill(colour::GLASS)
+        .stroke(egui::Stroke::new(1.0, colour::GLASS_LINE))
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-        .show(ui, add)
+        .show(ui, add);
+
+    sheen(ui, out.response.rect);
+    out
+}
+
+/// The highlight along a surface's top edge, inset so it follows the corner.
+pub fn sheen(ui: &Ui, rect: egui::Rect) {
+    let r = radius::MD as f32;
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left() + r, rect.top() + 0.5),
+            egui::pos2(rect.right() - r, rect.top() + 0.5),
+        ],
+        egui::Stroke::new(1.0, colour::GLASS_SHEEN),
+    );
+}
+
+/// A vertical gradient. egui has no gradient primitive, so this is a two-
+/// triangle mesh with per-vertex colour.
+pub fn gradient_v(ui: &Ui, rect: egui::Rect, top: Color32, bottom: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    ui.painter().add(egui::Shape::mesh(mesh));
 }
 
 /// A hairline. Prefer whitespace; reach for this only when a boundary is
@@ -88,7 +122,7 @@ pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(w, size::ROW), Sense::click());
 
     if response.hovered() {
-        ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_HOVER);
+        ui.painter().rect_filled(rect, radius::SM as f32, colour::GLASS_HOVER);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -174,7 +208,7 @@ pub fn empty(ui: &mut Ui, message: &str) {
 
 pub fn loading(ui: &mut Ui, what: &str) {
     ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(12.0));
+        ui.add(egui::Spinner::new().size(text::BODY));
         ui.add_space(space::XS);
         muted(ui, what);
     });

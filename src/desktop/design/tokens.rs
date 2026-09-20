@@ -40,11 +40,31 @@ pub mod colour {
     pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8C, 0x8C, 0x94);
     pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x5C, 0x5C, 0x63);
 
-    /// The one accent.
-    pub const ACCENT: Color32 = Color32::from_rgb(0x5E, 0x6A, 0xD2);
-    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x6E, 0x7A, 0xE0);
-    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x1B, 0x1E, 0x33);
-    pub const ON_ACCENT: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    /// The one accent: a light pink. Light enough that a filled control needs
+    /// dark text on it, which is why `ON_ACCENT` is near-black.
+    pub const ACCENT: Color32 = Color32::from_rgb(0xF0, 0xA8, 0xC6);
+    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xF6, 0xBA, 0xD3);
+    /// A pink-tinted surface, for selected rows and quiet emphasis.
+    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x2B, 0x1E, 0x25);
+    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1A, 0x11, 0x15);
+
+    /// The sidebar wash: pink at the top, fading to nothing. Alpha, so it
+    /// tints whatever is under it rather than needing a matching opaque pair.
+    pub const WASH_TOP: Color32 = Color32::from_rgba_premultiplied(0x2A, 0x16, 0x20, 0xFF);
+    pub const WASH_BOTTOM: Color32 = Color32::from_rgba_premultiplied(0x0F, 0x0F, 0x11, 0xFF);
+
+    // ---- glass. Cards are a translucent lift off the canvas rather than an
+    // ---- opaque block, so the wash behind them shows through.
+    /// Card fill. Deliberately weak: at 5% white the surface reads as lifted
+    /// without becoming a grey slab.
+    pub const GLASS: Color32 = Color32::from_rgba_premultiplied(0x0D, 0x0D, 0x0D, 0x0D);
+    pub const GLASS_HOVER: Color32 = Color32::from_rgba_premultiplied(0x16, 0x16, 0x16, 0x16);
+    /// The hairline around glass. Brighter than an opaque border would be,
+    /// because it is doing the work of the missing shadow.
+    pub const GLASS_LINE: Color32 = Color32::from_rgba_premultiplied(0x1F, 0x1F, 0x1F, 0x1F);
+    /// A one-pixel highlight along the top edge — the thing that reads as
+    /// "glass" rather than "translucent rectangle".
+    pub const GLASS_SHEEN: Color32 = Color32::from_rgba_premultiplied(0x2B, 0x2B, 0x2B, 0x2B);
 
     // ---- state. Used as a dot, a pill or a thin rule; never a filled block.
     pub const OK: Color32 = Color32::from_rgb(0x3E, 0xCF, 0x8E);
@@ -94,7 +114,20 @@ pub mod pad {
     pub const SIDEBAR: (f32, f32) = (space::MD, space::MD);
 }
 
-/// Type scale. Dense, never below 11 — this is read all day.
+/// Type scale. Six sizes, each with one job — if a new size is tempting, the
+/// answer is almost always one of these.
+///
+/// | size | where it is used |
+/// |---|---|
+/// | `DISPLAY` 26 | a single big number on a stat tile. Nowhere else. |
+/// | `TITLE` 18 | the one heading that names the screen |
+/// | `HEADING` 14 | a card or group heading, a project name in a list |
+/// | `BODY` 13 | the default: task titles, buttons, nav items, table cells, inputs |
+/// | `SMALL` 11.5 | metadata, section labels, secondary text, pills |
+/// | `CAPTION` 10.5 | field labels, ids, timestamps |
+///
+/// Buttons, nav items and table cells are all `BODY` on purpose: they are the
+/// same rank of thing and should not shift size between screens.
 pub mod text {
     pub const DISPLAY: f32 = 26.0;
     pub const TITLE: f32 = 18.0;
