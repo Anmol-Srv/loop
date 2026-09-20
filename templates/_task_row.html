@@ -1,0 +1,14 @@
+<tr>
+  <td><a href="/tasks/{{ task.id }}">{{ task.title }}</a></td>
+  <td><span class="tag">{{ task.status }}</span></td>
+  <td>
+    {% if task.agent %}
+    <span class="tag agent">agent</span>
+    {% else if let Some(kind) = task.kind %}
+    <span class="tag human">{{ kind }}</span>
+    {% else %}
+    <span class="muted">unassigned</span>
+    {% endif %}
+  </td>
+  <td class="mono">P{{ task.priority }}</td>
+</tr>

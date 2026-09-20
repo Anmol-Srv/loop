@@ -1,0 +1,33 @@
+{% extends "layout.html" %}
+
+{% block title %}Board — Airtribe Control Plane{% endblock %}
+
+{% block content %}
+<h1>Projects</h1>
+
+{% if projects.is_empty() %}
+<p class="empty">No projects yet.</p>
+{% endif %}
+
+{% for row in projects %}
+<section class="card">
+  <h2>
+    <a href="/projects/{{ row.project.id }}">{{ row.project.name }}</a>
+    <span class="tag">{{ row.project.key }}</span>
+    <span class="tag">{{ row.project.status }}</span>
+  </h2>
+  {% if row.phases.is_empty() %}
+  <p class="empty">No phases yet.</p>
+  {% endif %}
+  {% for phase in row.phases %}
+  <div class="phase">
+    <h3>
+      {{ phase.name }}
+      <span class="progress">{{ phase.done }}/{{ phase.total }}</span>
+      <span class="tag">{{ phase.status }}</span>
+    </h3>
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+{% endblock %}
