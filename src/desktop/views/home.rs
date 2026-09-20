@@ -12,12 +12,12 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Local, Timelike, Utc};
-use egui::{Align, Layout, RichText};
+use egui::{Align, Layout};
 use egui_phosphor::thin as icon;
 use serde_json::Value;
 
 use crate::desktop::design::{
-    avatar, colour, size, space, status_colour, status_label, text, widgets as w,
+    avatar, colour, shell, size, space, status_colour, status_label, widgets as w,
 };
 use crate::desktop::views::inbox::describe;
 use crate::desktop::{App, Tab};
@@ -29,6 +29,15 @@ const CLAIM: &str = "home:claim";
 
 /// How many of my tasks the home screen shows before deferring to My Tasks.
 const MY_TASKS_PREVIEW: usize = 5;
+
+/// Room kept clear on the right of a list row for its trailing column: a
+/// status pill or a Claim button, a gap, and a project name. The title takes
+/// what is left and truncates instead of running through it.
+const ROW_TRAILING: f32 = space::XXL * 6.0;
+
+/// Below this the project grid is one column: two cards at 820px are ~242px
+/// each, which wraps the discipline summary to three lines.
+const GRID_TWO_COL_AT: f32 = 640.0;
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let can_write = app.can_write();
@@ -75,16 +84,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         .collect();
 
     // ---- greeting
-    ui.label(
-        RichText::new(greeting)
-            .size(text::TITLE)
-            .family(egui::FontFamily::Name(
-                crate::desktop::design::theme::BOLD.into(),
-            ))
-            .color(colour::TEXT),
-    );
-    ui.add_space(space::XXS);
-    w::muted(ui, &subline(&my_tasks));
+    shell::page_title(ui, &greeting, &subline(&my_tasks), |_| {});
 
     if let Some(err) = &mutation_error {
         ui.add_space(space::MD);
@@ -95,7 +95,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut view_all = false;
 
     // ---- my tasks
-    section(ui, "My tasks", my_tasks.len(), |ui| {
+    shell::section_count_with(ui, "My tasks", my_tasks.len(), |ui| {
         if w::link(ui, &format!("View all {}", icon::ARROW_RIGHT)).clicked() {
             view_all = true;
         }
@@ -108,7 +108,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         "Nothing assigned to you.",
         "Claim something below and it will show up here.",
     ) {
-        w::card(ui, |ui| {
+        w::card_list(ui, |ui| {
             ui.set_width(ui.available_width());
             for t in my_tasks.iter().take(MY_TASKS_PREVIEW) {
                 if task_row(ui, t, &titles).clicked() {
@@ -119,7 +119,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // ---- waiting on you
-    section(ui, "Waiting on you", waiting.len(), |_ui| {});
+    shell::section_count(ui, "Waiting on you", waiting.len());
     if body(
         ui,
         loading,
@@ -135,7 +135,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // ---- available to claim
-    section(ui, "Available to claim", available_count as usize, |ui| {
+    shell::section_count_with(ui, "Available to claim", available_count as usize, |ui| {
         // /api/user/me carries no disciplines, so there is no match to name.
         w::muted(ui, "unclaimed across every project");
     });
@@ -147,14 +147,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         "Nothing unclaimed.",
         "Every open task already has someone on it.",
     ) {
-        w::card(ui, |ui| {
+        w::card_list(ui, |ui| {
             ui.set_width(ui.available_width());
             for t in &available {
                 let Some(id) = str_at(t, "id") else { continue };
                 w::row(ui, |ui| {
                     w::discipline(ui, str_at(t, "discipline").unwrap_or_default());
-                    ui.add_space(space::XS);
-                    w::body(ui, str_at(t, "title").unwrap_or_default());
+                    w::row_title(ui, str_at(t, "title").unwrap_or_default(), ROW_TRAILING);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if can_write && w::ghost(ui, "Claim").clicked() {
@@ -168,8 +167,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         });
     }
 
-    // ---- across the team
-    section(ui, "Across the team", projects.len(), |_ui| {});
+    // ---- across the team. Ambient, not actionable: a bigger gap detaches it
+    // from the three sections above that ask something of you.
+    ui.add_space(space::XXL);
+    shell::section_count(ui, "Across the team", projects.len());
     if body(
         ui,
         loading,
@@ -178,10 +179,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         "No projects yet.",
         "Create one with: acp project new <key> <name>",
     ) {
-        for pair in projects.chunks(2) {
-            ui.columns(2, |cols| {
+        let cols = if ui.available_width() < GRID_TWO_COL_AT { 1 } else { 2 };
+        for pair in projects.chunks(cols) {
+            ui.columns(cols, |columns| {
                 for (i, p) in pair.iter().enumerate() {
-                    project_card(&mut cols[i], p);
+                    project_card(&mut columns[i], p);
                 }
             });
             ui.add_space(space::MD);
@@ -197,13 +199,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 }
 
 // ------------------------------------------------------------------ sections
-
-/// A section heading with its count beside the label and something optional on
-/// the right. `shell::section_with` right-aligns everything it is given, and
-/// the count belongs next to the label, so the count is folded into the label.
-fn section(ui: &mut egui::Ui, label: &str, count: usize, trailing: impl FnOnce(&mut egui::Ui)) {
-    crate::desktop::design::shell::section_with(ui, &format!("{label}   {count}"), trailing);
-}
 
 /// Loading, error and empty in one place. Returns true when the caller should
 /// draw the real thing. One request feeds every section, so they share a
@@ -242,8 +237,7 @@ fn task_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<&str, &str>) -> egui:
         w::dot(ui, status_colour(status));
         ui.add_space(space::XS);
         w::discipline(ui, str_at(t, "discipline").unwrap_or_default());
-        ui.add_space(space::XS);
-        w::body(ui, str_at(t, "title").unwrap_or_default());
+        w::row_title(ui, str_at(t, "title").unwrap_or_default(), ROW_TRAILING);
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // A blocked row is in a relationship, not a state: name what it
@@ -299,14 +293,16 @@ fn change_card(
 
     w::card(ui, |ui| {
         ui.set_width(ui.available_width());
+
+        // The sentence is the decision: its own line, at full width, so it
+        // never competes with the buttons for room.
+        w::body(ui, &describe(change));
+        ui.add_space(space::MD);
+
         ui.horizontal(|ui| {
             avatar::small(ui, &actor, size::AVATAR_MD);
             ui.add_space(space::SM);
-            ui.vertical(|ui| {
-                w::body(ui, &describe(change));
-                ui.add_space(space::XXS);
-                w::muted(ui, &meta);
-            });
+            w::muted(ui, &meta);
 
             if !can_write {
                 return;
