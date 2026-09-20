@@ -3,11 +3,12 @@
 //! Feature-gated behind `app` so the server binary does not carry a GUI stack:
 //!   cargo build --features app --bin acp-app
 
-pub mod creds;
 pub mod net;
 pub mod theme;
 pub mod views;
 
+// One credential store, shared with the CLI.
+pub use crate::cli::creds;
 use net::Net;
 
 #[derive(PartialEq, Eq, Clone, Copy)]

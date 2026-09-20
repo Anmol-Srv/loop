@@ -1,5 +1,8 @@
 //! Where the token lives on a Mac.
 //!
+//! Shared by the CLI and the desktop app: one credential, one place. Two
+//! stores would mean signing in twice and revoking twice.
+//!
 //! The Keychain, not a dotfile: this is a credential that grants write access
 //! to shared team state, and macOS already has the right place for those.
 
