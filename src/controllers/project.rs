@@ -85,9 +85,33 @@ pub struct ProjectProgress {
     /// Only disciplines that actually have tasks. Unlabelled tasks count
     /// towards the project total but belong to no discipline.
     pub disciplines: Vec<DisciplineProgress>,
+    /// The phase currently being worked, for a one-line "where is this".
+    /// None when no phase is active.
+    pub active_phase: Option<String>,
+    /// Distinct people holding unfinished work here. The honest measure of
+    /// "who is on this" — an assignee with nothing left to do is not active.
+    pub active_people: i64,
 }
 
 pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<ProjectProgress>> {
+    // Active phase and headcount come from one extra grouped query rather than
+    // being folded into the discipline rollup: mixing them would need a second
+    // level of DISTINCT and the join would double-count.
+    let extra: Vec<(Uuid, Option<String>, i64)> = sqlx::query_as(
+        "SELECT pr.id,
+                min(ph.name) FILTER (WHERE ph.status = 'active') AS active_phase,
+                count(DISTINCT t.assignee_person_id)
+                  FILTER (WHERE t.status NOT IN ('done', 'dropped')) AS active_people
+           FROM project pr
+           LEFT JOIN phase ph ON ph.project_id = pr.id
+           LEFT JOIN task t ON t.phase_id = ph.id
+          WHERE ($1::uuid IS NULL OR pr.id = $1)
+          GROUP BY pr.id",
+    )
+    .bind(only)
+    .fetch_all(&state.db)
+    .await?;
+
     let rows: Vec<(Uuid, String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
         "SELECT pr.id, pr.key, pr.name, pr.status, t.discipline,
                 count(t.id) AS total,
@@ -106,8 +130,14 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     let mut out: Vec<ProjectProgress> = Vec::new();
     for (id, key, name, status, discipline, total, done) in rows {
         if out.last().map(|p| p.id) != Some(id) {
+            let (active_phase, active_people) = extra
+                .iter()
+                .find(|(pid, _, _)| *pid == id)
+                .map(|(_, phase, people)| (phase.clone(), *people))
+                .unwrap_or((None, 0));
             out.push(ProjectProgress {
-                id, key, name, status, done: 0, total: 0, disciplines: Vec::new(),
+                id, key, name, status, done: 0, total: 0,
+                disciplines: Vec::new(), active_phase, active_people,
             });
         }
         let project = out.last_mut().expect("just pushed");

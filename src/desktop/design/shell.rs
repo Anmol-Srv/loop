@@ -170,6 +170,29 @@ pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
     ui.add_space(space::SM);
 }
 
+/// A section heading with a count beside it, the count a shade fainter.
+///
+/// Two views folded the count into the label string because nothing offered
+/// this; the result was a count in the same tone as its heading, which reads
+/// as part of the title.
+pub fn section_count(ui: &mut Ui, label: &str, count: usize) {
+    ui.add_space(space::LG);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(label)
+                .size(text::SMALL)
+                .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
+                .color(colour::TEXT_MUTED),
+        );
+        ui.label(
+            RichText::new(count.to_string())
+                .size(text::SMALL)
+                .color(colour::TEXT_FAINT),
+        );
+    });
+    ui.add_space(space::SM);
+}
+
 /// A section heading inside a page body.
 pub fn section(ui: &mut Ui, label: &str) {
     ui.add_space(space::LG);

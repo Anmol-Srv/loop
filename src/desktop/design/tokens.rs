@@ -139,6 +139,9 @@ pub mod pad {
     pub const INPUT: (f32, f32) = (space::MD, space::SM);
     /// Inside a list row.
     pub const ROW: (f32, f32) = (space::MD, 0.0);
+    /// Inside a card that holds rows rather than prose. Rows carry their own
+    /// horizontal padding, so card padding on top of it double-indents.
+    pub const LIST: (f32, f32) = (space::SM, space::SM);
     /// The page gutter.
     pub const PAGE: (f32, f32) = (space::XL, space::XL);
     /// Inside the sidebar.

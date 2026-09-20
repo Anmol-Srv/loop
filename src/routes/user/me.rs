@@ -16,6 +16,9 @@ pub struct Me {
     pub person_id: Option<Uuid>,
     pub email: Option<String>,
     pub role: Option<String>,
+    /// What this person works on. The app uses it to say which disciplines an
+    /// "available to claim" list was matched against.
+    pub disciplines: Vec<String>,
     pub scopes: Vec<String>,
     pub can_apply: bool,
 }
@@ -27,18 +30,18 @@ pub fn routes() -> Router<AppState> {
 /// Who the caller is and what they may do. A client renders its controls from
 /// this rather than guessing, so the UI shows the same truth the API enforces.
 async fn me(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Me>> {
-    let who: Option<(String, String)> = match caller.actor.person_id {
+    let who: Option<(String, String, Vec<String>)> = match caller.actor.person_id {
         Some(id) => {
-            sqlx::query_as("SELECT email, role FROM person WHERE id = $1")
+            sqlx::query_as("SELECT email, role, disciplines FROM person WHERE id = $1")
                 .bind(id)
                 .fetch_optional(&state.db)
                 .await?
         }
         None => None,
     };
-    let (email, role) = match who {
-        Some((e, r)) => (Some(e), Some(r)),
-        None => (None, None),
+    let (email, role, disciplines) = match who {
+        Some((e, r, d)) => (Some(e), Some(r), d),
+        None => (None, None, Vec::new()),
     };
 
     Ok(ApiResponse::ok(Me {
@@ -46,6 +49,7 @@ async fn me(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRespo
         person_id: caller.actor.person_id,
         email,
         role,
+        disciplines,
         can_apply: caller.actor.can_apply,
         scopes: caller.scopes,
     }))

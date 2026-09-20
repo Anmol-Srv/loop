@@ -1,24 +1,39 @@
-//! Board: the project list, and inside a project its phases with their tasks.
+//! Board: the project list, and inside a project its flow, phases and tasks.
 //!
-//! Two modes, chosen by `app.project`. Everything is read-only here; clicking a
-//! task hands off to the task view by setting `app.task`.
+//! Two modes, chosen by `app.project`. The project detail screen leads with the
+//! flow strip — done/total per discipline — because the question a lead asks
+//! first is "where is the work", not "which phase are we in". The strip reports
+//! only: it does not gate anything, and a discipline may run ahead of the one
+//! to its left. The arrow says "usually in this order", nothing stronger.
 
 use std::collections::HashMap;
 
 use egui_phosphor::thin as icon;
 use serde_json::Value;
 
-use crate::desktop::design::{colour, space, status_colour, status_label, text, widgets as w};
+use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
+use crate::desktop::design::{colour, size, space, status_colour, status_label, text, widgets as w};
+use crate::desktop::design::avatar;
 use crate::desktop::App;
 
 const STATUSES: [&str; 6] = ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
 const KINDS: [&str; 2] = ["human", "agent"];
+
+/// The usual order of the flow. Anything the server reports that is not in
+/// here keeps its own order, after these — a new discipline should appear
+/// rather than vanish because this list has not caught up.
+const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
+
+/// Where a claim's reply is collected.
+const CLAIM_KEY: &str = "board:claim";
 
 #[derive(Default)]
 pub struct State {
     /// `None` means "any"; both filters go to the server as query params.
     pub status: Option<&'static str>,
     pub assignee_kind: Option<&'static str>,
+    /// A claim is out; its reply invalidates the board when it lands.
+    pub claiming: bool,
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -38,20 +53,20 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
     let loading = net.is_loading("board:projects");
     let error = net.error("board:projects").map(str::to_string);
 
-    // Phase progress needs each project's phases. `get_once` caches, so this is
-    // one request per project for the life of the session, not per frame.
-    let mut progress: HashMap<String, (usize, usize)> = HashMap::new();
+    // One `/flow` per project — the same request count the old per-project
+    // `/phases` fetch cost, and it answers the question the card actually asks
+    // (how much of the work is done, not how many phases are closed).
+    // `get_once` caches, so this is once per project for the session.
+    let mut flows: HashMap<String, Value> = HashMap::new();
     for p in &list {
         let id = str_at(p, "id");
         if id.is_empty() {
             continue;
         }
-        let key = format!("board:phases:{id}");
-        net.get_once(&key, &format!("/api/user/projects/{id}/phases"));
-        let phases = array(net.data(&key));
-        if !phases.is_empty() {
-            let done = phases.iter().filter(|p| str_at(p, "status") == "done").count();
-            progress.insert(id.to_string(), (done, phases.len()));
+        let key = format!("board:flow:{id}");
+        net.get_once(&key, &format!("/api/user/projects/{id}/flow"));
+        if let Some(flow) = net.data(&key) {
+            flows.insert(id.to_string(), flow.clone());
         }
     }
 
@@ -77,23 +92,27 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         let name = str_at(p, "name").to_string();
         let key = str_at(p, "key").to_string();
         let status = str_at(p, "status").to_string();
-        let counts = progress.get(&id).copied();
+        let counts = flows.get(&id).map(|f| (num_at(f, "done"), num_at(f, "total")));
 
         let (hit, _) = w::card_button(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 w::heading(ui, &name);
                 ui.add_space(space::SM);
-                w::caption(ui, &key);
+                w::mono_caption(ui, &key);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     w::pill(ui, status_label(&status), status_colour(&status));
                 });
             });
-            ui.add_space(space::XXS);
+            ui.add_space(space::SM);
             match counts {
-                Some((done, total)) => w::muted(ui, &format!("{done} of {total} phases done")),
-                None => w::muted(ui, "phases loading"),
+                Some((done, total)) => {
+                    w::progress(ui, fraction(done, total), ui.available_width(), colour::ACCENT);
+                    ui.add_space(space::XS);
+                    w::muted(ui, &format!("{done} of {total} done"));
+                }
+                None => w::muted(ui, "progress loading"),
             }
         });
 
@@ -114,6 +133,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let status = app.board.status;
     let kind = app.board.assignee_kind;
 
+    let flow_key = format!("board:flow:{project_id}");
     let phases_key = format!("board:phases:{project_id}");
     let tasks_key = format!(
         "board:tasks:{project_id}:{}:{}",
@@ -129,9 +149,31 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 
     let net = app.net.as_mut().unwrap();
+
+    // Fold in a claim that has come back, before anything reads the cache. On
+    // success the board and the home screen both hold the old assignee; on
+    // failure the reply stays put so the row below can show why.
+    if app.board.claiming && !net.is_loading(CLAIM_KEY) {
+        match net.peek(CLAIM_KEY) {
+            Some(Ok(_)) => {
+                app.board.claiming = false;
+                // `board:claim` is itself under this prefix, so the reply is
+                // dropped along with the stale lists. That is what we want.
+                net.invalidate_prefix("board:");
+                net.invalidate("home");
+            }
+            Some(Err(_)) => app.board.claiming = false,
+            None => {}
+        }
+    }
+
+    net.get_once(&flow_key, &format!("/api/user/projects/{project_id}/flow"));
     net.get_once(&phases_key, &format!("/api/user/projects/{project_id}/phases"));
     net.get_once(&tasks_key, &tasks_path);
-    net.get_once("board:projects", "/api/user/projects");
+
+    let flow = net.data(&flow_key).cloned();
+    let flow_loading = net.is_loading(&flow_key);
+    let flow_error = net.error(&flow_key).map(str::to_string);
 
     let mut phases = array(net.data(&phases_key));
     phases.sort_by_key(|p| p.get("position").and_then(Value::as_i64).unwrap_or(0));
@@ -141,38 +183,53 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let tasks = array(net.data(&tasks_key));
     let tasks_loading = net.is_loading(&tasks_key);
     let tasks_error = net.error(&tasks_key).map(str::to_string);
+    let claim_error = net.error(CLAIM_KEY).map(str::to_string);
 
-    let title = array(net.data("board:projects"))
-        .iter()
-        .find(|p| str_at(p, "id") == project_id)
-        .map(|p| (str_at(p, "name").to_string(), str_at(p, "key").to_string()));
-
-    // Tasks arrive for the whole project in one call; bucket them per phase.
+    // Tasks arrive for the whole project in one call; bucket them per phase,
+    // and index them by id so a blocker can be named rather than numbered.
     let mut by_phase: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut titles: HashMap<String, String> = HashMap::new();
     for t in tasks {
+        titles.insert(str_at(&t, "id").to_string(), str_at(&t, "title").to_string());
         by_phase.entry(str_at(&t, "phaseId").to_string()).or_default().push(t);
     }
 
     let mut back = false;
     let mut open_task: Option<String> = None;
+    let mut claim: Option<String> = None;
     let mut filters_changed = false;
 
+    if w::link(ui, &format!("{} Projects", icon::ARROW_LEFT)).clicked() {
+        back = true;
+    }
+    ui.add_space(space::XXS);
     ui.horizontal(|ui| {
-        if w::link(ui, &format!("{} Projects", icon::ARROW_LEFT)).clicked() {
-            back = true;
-        }
-        ui.add_space(space::SM);
-        match &title {
-            Some((name, key)) => {
-                w::title(ui, name);
+        match &flow {
+            Some(f) => {
+                w::title(ui, str_at(f, "name"));
                 ui.add_space(space::SM);
-                w::caption(ui, key);
+                w::mono_caption(ui, str_at(f, "key"));
             }
             None => w::title(ui, "Project"),
         }
     });
+    if let Some(f) = &flow {
+        ui.add_space(space::XXS);
+        w::muted(ui, &format!("{} of {} done", num_at(f, "done"), num_at(f, "total")));
+    }
 
-    ui.add_space(space::MD);
+    ui.add_space(space::LG);
+    if let Some(err) = flow_error {
+        w::error(ui, &err);
+    } else {
+        match &flow {
+            Some(f) => flow_strip(ui, f),
+            None if flow_loading => w::loading(ui, "flow"),
+            None => w::empty(ui, "No flow for this project yet.", ""),
+        }
+    }
+
+    ui.add_space(space::XL);
     ui.horizontal(|ui| {
         filters_changed |=
             filter(ui, "board:filter:status", "Any status", &STATUSES, &mut app.board.status);
@@ -189,6 +246,11 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             }
         }
     });
+
+    if let Some(err) = claim_error {
+        ui.add_space(space::SM);
+        w::error(ui, &err);
+    }
     ui.add_space(space::LG);
 
     if let Some(err) = phases_error {
@@ -197,13 +259,17 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         if phases_loading {
             w::loading(ui, "phases");
         } else {
-            w::empty(ui, "This project has no phases yet.", "A phase groups the tasks for one stage of the work.");
+            w::empty(
+                ui,
+                "This project has no phases yet.",
+                "A phase groups the tasks for one stage of the work.",
+            );
         }
     } else {
         for p in &phases {
             let phase_id = str_at(p, "id");
-            let empty = Vec::new();
-            let list = by_phase.get(phase_id).unwrap_or(&empty);
+            let none = Vec::new();
+            let list = by_phase.get(phase_id).unwrap_or(&none);
             let done = list.iter().filter(|t| str_at(t, "status") == "done").count();
 
             phase_header(ui, p, done, list.len());
@@ -218,11 +284,16 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                     w::empty(ui, "No tasks in this phase.", "");
                 }
             } else {
-                for t in list {
-                    if let Some(id) = task_row(ui, t) {
-                        open_task = Some(id);
+                w::card_list(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for t in list {
+                        match task_row(ui, t, &titles) {
+                            Some(Hit::Open(id)) => open_task = Some(id),
+                            Some(Hit::Claim(id)) => claim = Some(id),
+                            None => {}
+                        }
                     }
-                }
+                });
             }
 
             ui.add_space(space::XL);
@@ -235,9 +306,74 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     if let Some(id) = open_task {
         app.task = Some(id);
     }
+    let net = app.net.as_mut().unwrap();
     if filters_changed {
-        app.net.as_mut().unwrap().invalidate_prefix("board:tasks");
+        net.invalidate_prefix("board:tasks");
     }
+    if let Some(id) = claim {
+        // Drop a previous claim's error, so the banner belongs to this attempt.
+        net.invalidate(CLAIM_KEY);
+        net.post(CLAIM_KEY, &format!("/api/user/tasks/{id}/claim"), Value::Null);
+        app.board.claiming = true;
+    }
+}
+
+/// The flow strip: one column per discipline that has tasks.
+///
+/// It reports, it does not gate. A column is where that discipline stands, and
+/// the single arrow after design says only what the usual order is — frontend
+/// and backend can and do run before design has finished.
+fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
+    let mut columns: Vec<&Value> = flow
+        .get("disciplines")
+        .and_then(Value::as_array)
+        .map(|d| d.iter().filter(|d| num_at(d, "total") > 0).collect())
+        .unwrap_or_default();
+    // Usual order first, then whatever else the server reports.
+    columns.sort_by_key(|d| {
+        FLOW_ORDER
+            .iter()
+            .position(|o| *o == str_at(d, "discipline"))
+            .unwrap_or(FLOW_ORDER.len())
+    });
+
+    if columns.is_empty() {
+        w::empty(ui, "No tasks have a discipline yet.", "");
+        return;
+    }
+
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let arrow = if columns.len() > 1 { 1.0 } else { 0.0 };
+        let gaps = space::LG * (columns.len() as f32 - 1.0 + arrow);
+        let width = ((ui.available_width() - gaps - space::MD * arrow) / columns.len() as f32)
+            .max(DISCIPLINE_W);
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = space::LG;
+            for (i, d) in columns.iter().enumerate() {
+                let name = str_at(d, "discipline");
+                let (done, total) = (num_at(d, "done"), num_at(d, "total"));
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    w::muted(ui, name);
+                    ui.add_space(space::XS);
+                    w::progress(ui, fraction(done, total), width, discipline_colour(name));
+                    ui.add_space(space::XS);
+                    w::caption(ui, &format!("{done} / {total} done"));
+                });
+                // Hand-painted: a faint glyph between two columns. No widget is
+                // a bare separator, and `muted` is a step too bright for it.
+                if i == 0 && columns.len() > 1 {
+                    ui.label(
+                        egui::RichText::new(icon::ARROW_RIGHT)
+                            .size(text::BODY)
+                            .color(colour::TEXT_FAINT),
+                    );
+                }
+            }
+        });
+    });
 }
 
 /// The header above a phase's tasks: its number, name, state and progress.
@@ -246,14 +382,7 @@ fn phase_header(ui: &mut egui::Ui, p: &Value, done: usize, total: usize) {
     let status = str_at(p, "status");
 
     ui.horizontal(|ui| {
-        // Hand-painted: a monospaced ordinal, so phase numbers line up in a
-        // column. No widget covers "small mono figure" yet.
-        ui.label(
-            egui::RichText::new(format!("{position:02}"))
-                .monospace()
-                .size(text::CAPTION)
-                .color(colour::TEXT_FAINT),
-        );
+        w::mono_caption(ui, &format!("{position:02}"));
         ui.add_space(space::SM);
         w::heading(ui, str_at(p, "name"));
         ui.add_space(space::SM);
@@ -263,60 +392,90 @@ fn phase_header(ui: &mut egui::Ui, p: &Value, done: usize, total: usize) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            w::muted(ui, &format!("{done}/{total} done"));
+            w::muted(ui, &format!("{done} / {total}"));
         });
     });
 }
 
-/// One task. Returns its id when clicked.
-fn task_row(ui: &mut egui::Ui, t: &Value) -> Option<String> {
+/// What a click on a row meant.
+enum Hit {
+    Open(String),
+    Claim(String),
+}
+
+/// One task. `titles` names blockers that are in this project's task list.
+fn task_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) -> Option<Hit> {
     let status = str_at(t, "status").to_string();
     let kind = str_at(t, "assigneeKind").to_string();
     let is_agent = kind == "agent";
     let claimed = str_at(t, "claimedBy").to_string();
+    let person = str_at(t, "assigneePersonId").to_string();
     let id = str_at(t, "id").to_string();
     let title = str_at(t, "title").to_string();
-    let priority = t.get("priority").and_then(Value::as_i64).unwrap_or(0);
+    let discipline = str_at(t, "discipline").to_string();
+    let assigned = !kind.is_empty() || !claimed.is_empty() || !person.is_empty();
+    let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
+
+    // The blocker's title where we hold it, its short id where the blocker
+    // lives in a phase the current filter excluded.
+    let waiting_on = blocked.then(|| {
+        let first = t
+            .get("blockedBy")
+            .and_then(Value::as_array)
+            .and_then(|b| b.first())
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        titles
+            .get(first)
+            .cloned()
+            .unwrap_or_else(|| first.get(..8).unwrap_or(first).to_string())
+    });
+
+    let mut claim = false;
 
     // Delegated rows carry a spine as well as the pill: at a glance down a
     // long phase, the edge is what you actually see.
-    let paint = |ui: &mut egui::Ui, body: &dyn Fn(&mut egui::Ui)| {
-        if is_agent {
-            w::row_marked(ui, colour::AGENT, |ui| body(ui))
-        } else {
-            w::row(ui, |ui| body(ui))
-        }
-    };
-
-    let hit = paint(ui, &|ui: &mut egui::Ui| {
+    let body = |ui: &mut egui::Ui| {
         w::dot(ui, status_colour(&status));
         ui.add_space(space::XS);
+        w::discipline(ui, &discipline);
         w::body(ui, &title);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            w::id(ui, &id);
-            ui.add_space(space::SM);
-            w::caption(ui, &format!("P{priority}"));
-            ui.add_space(space::SM);
-            w::muted(ui, status_label(&status));
-            ui.add_space(space::SM);
-            // The one pill on a task row: delegated work is what you scan for.
-            if is_agent {
-                let label = if claimed.is_empty() {
-                    "agent".to_string()
+            // Exactly one of three endings: what it waits on, who holds it, or
+            // an invitation to take it.
+            if let Some(what) = &waiting_on {
+                w::blocked_by(ui, what);
+            } else if assigned {
+                let seed = if claimed.is_empty() { &person } else { &claimed };
+                if !seed.is_empty() {
+                    avatar::small(ui, seed, size::AVATAR_SM);
+                    ui.add_space(space::SM);
+                }
+                if is_agent {
+                    let label = if claimed.is_empty() { "agent" } else { &claimed };
+                    w::pill(ui, label, colour::AGENT);
                 } else {
-                    format!("agent · {claimed}")
-                };
-                w::pill(ui, &label, colour::AGENT);
-            } else if kind == "human" {
-                // The task JSON carries `assigneePersonId`, not an email, so
-                // there is no seed for an avatar. Name the kind instead.
-                w::muted(ui, "human");
+                    w::pill(ui, status_label(&status), status_colour(&status));
+                }
+            } else {
+                claim = w::ghost(ui, "Claim").clicked();
+                ui.add_space(space::SM);
+                w::muted(ui, "unassigned");
             }
         });
-    });
+    };
 
-    hit.clicked().then_some(id)
+    let hit = if is_agent {
+        w::row_marked(ui, colour::AGENT, body)
+    } else {
+        w::row(ui, body)
+    };
+
+    if claim {
+        return Some(Hit::Claim(id));
+    }
+    hit.clicked().then(|| Hit::Open(id))
 }
 
 // ---------------------------------------------------------------------- pieces
@@ -359,4 +518,15 @@ fn array(v: Option<&Value>) -> Vec<Value> {
 
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn num_at(v: &Value, key: &str) -> i64 {
+    v.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn fraction(done: i64, total: i64) -> f32 {
+    if total <= 0 {
+        return 0.0;
+    }
+    done as f32 / total as f32
 }

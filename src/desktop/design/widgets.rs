@@ -177,6 +177,19 @@ pub fn glass_panel<R>(
     out
 }
 
+/// A glass card holding a list of `row`s. Tighter than `card`, because rows
+/// already pad themselves and a prose card's margin double-indents them. Both
+/// page agents hit this gap independently, which is how it earned a token.
+pub fn card_list<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+    let out = egui::Frame::new()
+        .fill(colour::GLASS)
+        .corner_radius(radius::MD)
+        .inner_margin(egui::Margin::symmetric(pad::LIST.0 as i8, pad::LIST.1 as i8))
+        .show(ui, add);
+    glass_edge(ui, out.response.rect, radius::MD as f32, false);
+    out
+}
+
 /// A card whose whole surface is clickable, hover included.
 pub fn card_button<R>(
     ui: &mut Ui,
