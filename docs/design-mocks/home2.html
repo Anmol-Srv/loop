@@ -7,20 +7,20 @@
     <div class="mark">A</div>
     <div class="brand"><b>Control Plane</b><span>Airtribe engineering</span></div>
   </div>
-  <div class="search">⌕ Search<span class="kbd"><b>⌘</b><b>K</b></span></div>
+  <div class="search">Search<span class="kbd"><b>&#8984;</b><b>K</b></span></div>
 
   <div class="grouplabel">WORKSPACE</div>
-  <div class="nav on"><span class="ico">⌂</span>Home</div>
-  <div class="nav"><span class="ico">☰</span>My Tasks<span class="count">5</span></div>
-  <div class="nav"><span class="ico">▦</span>Projects<span class="count">2</span></div>
-  <div class="nav"><span class="ico">⇲</span>Inbox<span class="dotbadge">2</span></div>
+  <div class="nav on"><span class="ico">&#9744;</span>Home</div>
+  <div class="nav"><span class="ico">&#9776;</span>My Tasks<span class="count">5</span></div>
+  <div class="nav"><span class="ico">&#9638;</span>Projects<span class="count">2</span></div>
+  <div class="nav"><span class="ico">&#8690;</span>Inbox<span class="dotbadge">2</span></div>
 
   <div class="grouplabel">PROJECTS</div>
-  <div class="nav"><span class="ico" style="color:#8ACFF8">●</span>Control Plane</div>
-  <div class="nav"><span class="ico" style="color:#B49BF0">●</span>Checkout redesign</div>
+  <div class="nav"><span class="ico" style="color:#8ACFF8">&#9679;</span>Control Plane</div>
+  <div class="nav"><span class="ico" style="color:#B49BF0">&#9679;</span>Checkout redesign</div>
 
   <div class="grouplabel">AGENTS</div>
-  <div class="nav"><span class="ico" style="color:#5FD39B">●</span>hermes<span class="count">live</span></div>
+  <div class="nav"><span class="ico" style="color:#5FD39B">&#9679;</span>hermes<span class="count">live</span></div>
 
   <div class="foot">
     <div class="av" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8);margin:0">AN</div>
@@ -30,7 +30,8 @@
 </div>
 
 <div class="main">
-  <div class="page">
+  <div class="page"><div class="inner">
+
     <div class="pagehead"><h1>Good evening, Anmol</h1>
       <span class="sub">Sunday, 21 September</span></div>
 
@@ -39,7 +40,7 @@
 
     <div class="stats">
       <div class="stat">
-        <div class="top"><span class="lbl">Tasks done this week</span><span class="chip up">+3</span></div>
+        <div class="top"><span class="lbl">Done this week</span><span class="chip up">+3</span></div>
         <div class="row"><div class="num">9</div>
           <div class="spark"><i style="height:30%"></i><i style="height:55%"></i><i style="height:40%"></i>
             <i style="height:75%"></i><i style="height:60%"></i><i style="height:95%"></i><i style="height:80%"></i></div></div>
@@ -55,15 +56,19 @@
         <div class="row"><div class="num">1</div></div>
         <div class="rowline" style="margin-top:6px;font-size:10.5px">frontend waiting on design</div>
       </div>
+      <div class="stat">
+        <div class="top"><span class="lbl">Available to claim</span><span class="chip up">3</span></div>
+        <div class="row"><div class="num">3</div></div>
+        <div class="rowline" style="margin-top:6px;font-size:10.5px">matching frontend, backend</div>
+      </div>
     </div>
 
     <div class="sechead"><h2>My day</h2><span class="n">5</span>
       <span class="act"><button class="ghost">View all</button></span></div>
 
     <div class="tcard">
-      <div class="meta"><span class="tag time">in progress · 2d</span>
-        <span class="tag fe">frontend</span><span class="tag running">In progress</span>
-        <span class="tag proj">Control Plane</span></div>
+      <div class="meta"><span class="tag time">in progress · 2d</span><span class="tag fe">frontend</span>
+        <span class="tag running">In progress</span><span class="tag proj">Control Plane</span></div>
       <div class="title">Home page</div>
       <div class="foot"><span class="blocked">Phase 5 · Pages and design</span>
         <div class="right"><div class="avs">
@@ -71,9 +76,8 @@
     </div>
 
     <div class="tcard">
-      <div class="meta"><span class="tag time">4h ago</span>
-        <span class="tag fe">frontend</span><span class="tag running">In progress</span>
-        <span class="tag proj">Control Plane</span></div>
+      <div class="meta"><span class="tag time">4h ago</span><span class="tag fe">frontend</span>
+        <span class="tag running">In progress</span><span class="tag proj">Control Plane</span></div>
       <div class="title">Task detail live log</div>
       <div class="foot"><span class="blocked">Phase 5 · Pages and design</span>
         <div class="right"><span class="tag de">hermes</span><div class="avs">
@@ -81,11 +85,10 @@
     </div>
 
     <div class="tcard">
-      <div class="meta"><span class="tag time">no activity</span>
-        <span class="tag de">design</span><span class="tag todo">Open</span>
-        <span class="tag proj">Control Plane</span></div>
+      <div class="meta"><span class="tag time">no activity</span><span class="tag de">design</span>
+        <span class="tag todo">Open</span><span class="tag proj">Control Plane</span></div>
       <div class="title">Empty state illustrations</div>
-      <div class="foot"><span class="blocked">⤳ waiting on “Design tokens and theme”</span>
+      <div class="foot"><span class="blocked">&#8627; waiting on &ldquo;Design tokens and theme&rdquo;</span>
         <div class="right"><div class="avs">
           <div class="av" style="background:linear-gradient(140deg,#5FD39B,#3E9E74)">DH</div></div></div></div>
     </div>
@@ -94,42 +97,57 @@
     <div class="tcard">
       <div class="meta"><span class="tag de">hermes</span><span class="tag proj">on behalf of anmol</span>
         <span class="tag time">6m ago</span></div>
-      <div class="title">Move “Home page” to in review.</div>
+      <div class="title">Move &ldquo;Home page&rdquo; to in review.</div>
       <div class="foot"><div class="right">
         <button class="ghost">Reject</button>
         <button class="ghost" style="background:#8ACFF8;color:#06141E;border-color:#8ACFF8;font-weight:700">Approve</button>
       </div></div>
     </div>
-  </div>
 
-  <div class="rail">
-    <div class="panel">
-      <h3>Team capacity</h3>
-      <div class="person"><div class="av" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8);margin:0">AN</div>
-        <span class="nm">Anmol</span><span class="load"><i class="f" style="height:14px"></i><i class="f" style="height:10px"></i><i style="height:6px"></i></span></div>
-      <div class="person"><div class="av" style="background:linear-gradient(140deg,#5FD39B,#3E9E74);margin:0">DH</div>
-        <span class="nm">Dhaval</span><span class="load"><i class="f" style="height:8px"></i><i style="height:6px"></i><i style="height:6px"></i></span></div>
-      <div class="person"><div class="av" style="background:linear-gradient(140deg,#F0B354,#B8822F);margin:0">NA</div>
-        <span class="nm">Navneet</span><span class="load"><i style="height:6px"></i><i style="height:6px"></i><i style="height:6px"></i></span></div>
+    <div class="sechead"><h2>Available to claim</h2><span class="n">3</span>
+      <span class="act"><span class="tag proj">matching frontend, backend</span></span></div>
+    <div class="tcard" style="padding:9px var(--lg)">
+      <div class="foot"><span class="tag be">backend</span>
+        <span style="font-weight:600">Task by id endpoint</span>
+        <span class="blocked">Control Plane</span>
+        <div class="right"><button class="ghost">Claim</button></div></div>
+    </div>
+    <div class="tcard" style="padding:9px var(--lg)">
+      <div class="foot"><span class="tag be">backend</span>
+        <span style="font-weight:600">Rate limit the MCP surface</span>
+        <span class="blocked">Control Plane</span>
+        <div class="right"><button class="ghost">Claim</button></div></div>
+    </div>
+    <div class="tcard" style="padding:9px var(--lg)">
+      <div class="foot"><span class="tag fe">frontend</span>
+        <span style="font-weight:600">Project tracker</span>
+        <span class="blocked">Control Plane</span>
+        <div class="right"><button class="ghost">Claim</button></div></div>
     </div>
 
-    <div class="panel">
-      <h3>Projects</h3>
-      <div class="rowline"><b>Control Plane</b><span class="r">9/15</span></div>
-      <div class="pbar"><i style="width:60%;background:#8ACFF8"></i></div>
-      <div class="rowline" style="font-size:10.5px">design 1/2 · frontend 0/3 · backend 8/10</div>
-      <div style="height:12px"></div>
-      <div class="rowline"><b>Checkout redesign</b><span class="r">2/5</span></div>
-      <div class="pbar"><i style="width:40%;background:#B49BF0"></i></div>
-      <div class="rowline" style="font-size:10.5px">design 2/2 · frontend 0/2 · backend 0/1</div>
+    <div class="sechead" style="margin-top:36px"><h2>Team capacity</h2><span class="n">3 people</span></div>
+    <div class="cap">
+      <div class="capcard">
+        <div class="who"><div class="av" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8);margin:0">AN</div>
+          <span class="nm">Anmol</span><span class="disc">frontend · backend</span></div>
+        <div class="load"><b>3</b><span>open &middot; 1 in review</span></div>
+        <div class="capbar"><i class="on"></i><i class="on"></i><i class="on"></i><i class="rev"></i><i></i><i></i></div>
+      </div>
+      <div class="capcard">
+        <div class="who"><div class="av" style="background:linear-gradient(140deg,#5FD39B,#3E9E74);margin:0">DH</div>
+          <span class="nm">Dhaval</span><span class="disc">design</span></div>
+        <div class="load"><b>1</b><span>open &middot; blocking 1</span></div>
+        <div class="capbar"><i class="on"></i><i class="blk"></i><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div class="capcard">
+        <div class="who"><div class="av" style="background:linear-gradient(140deg,#F0B354,#B8822F);margin:0">NA</div>
+          <span class="nm">Navneet</span><span class="disc">backend</span></div>
+        <div class="load"><b>0</b><span>free to take work</span></div>
+        <div class="capbar"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
     </div>
 
-    <div class="panel">
-      <h3>Available to claim</h3>
-      <div class="rowline"><span class="tag be">backend</span><b>Task by id endpoint</b></div>
-      <div class="rowline"><span class="tag be">backend</span><b>Rate limit MCP</b></div>
-      <div class="rowline"><span class="tag fe">frontend</span><b>Project tracker</b></div>
-    </div>
-  </div>
+    <div style="height:36px"></div>
+  </div></div>
 </div>
 </body></html>

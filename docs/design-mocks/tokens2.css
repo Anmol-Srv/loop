@@ -12,7 +12,7 @@
   --r-sm:6px; --r-md:10px; --r-lg:14px; --r-xl:18px; --r-pill:99px;
   --t-hero:34px; --t-display:24px; --t-title:19px; --t-card:15px;
   --t-body:13px; --t-small:11.5px; --t-caption:10.5px;
-  --sidebar-w:232px; --rail-w:272px;
+  --sidebar-w:232px; --content-max:1080px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--canvas);color:var(--text);font-family:Nunito,-apple-system,sans-serif;
@@ -48,7 +48,8 @@ body{background:var(--canvas);color:var(--text);font-family:Nunito,-apple-system
 
 /* ── main ── */
 .main{flex:1;display:flex;min-width:0}
-.page{flex:1;padding:var(--xl);overflow-y:auto;min-width:0}
+.page{flex:1;padding:var(--xl) var(--xxl);overflow-y:auto;min-width:0}
+.inner{max-width:var(--content-max);margin:0 auto}
 .pagehead{display:flex;align-items:flex-end;gap:var(--md);margin-bottom:var(--lg)}
 h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.01em}
 .pagehead .sub{font-size:var(--t-small);color:var(--muted);padding-bottom:2px}
@@ -59,7 +60,7 @@ h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.01em}
 .tab.on{background:var(--surface-2);color:var(--text);font-weight:600}
 
 /* ── stat cards ── */
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--md);margin-bottom:var(--xl)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--md);margin-bottom:var(--xl)}
 .stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
   padding:var(--lg)}
 .stat .top{display:flex;align-items:center;gap:var(--sm);margin-bottom:var(--md)}
@@ -108,8 +109,7 @@ h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.01em}
 .av:first-child{margin-left:0}
 
 /* ── right rail ── */
-.rail{width:var(--rail-w);flex:0 0 auto;border-left:1px solid var(--line-soft);
-  padding:var(--xl) var(--lg);overflow-y:auto;background:var(--chrome)}
+
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
   padding:var(--lg);margin-bottom:var(--md)}
 .panel h3{font-size:var(--t-body);font-weight:700;margin-bottom:var(--md)}
@@ -124,3 +124,20 @@ h1{font-size:var(--t-title);font-weight:700;letter-spacing:-.01em}
   color:var(--muted);padding:var(--xs) 0}
 .rowline b{color:var(--text);font-weight:600}
 .rowline .r{margin-left:auto;color:var(--faint);font-size:var(--t-caption)}
+
+/* ── team capacity: a band, not a rail panel. Load is open task count,
+      which is data we actually have, unlike the invented bars it replaces. ── */
+.cap{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--md)}
+.capcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:var(--md) var(--lg)}
+.capcard .who{display:flex;align-items:center;gap:var(--sm);margin-bottom:var(--sm)}
+.capcard .nm{font-size:var(--t-body);font-weight:600}
+.capcard .disc{margin-left:auto;font-size:var(--t-caption);color:var(--faint)}
+.capcard .load{display:flex;align-items:baseline;gap:var(--sm);margin-bottom:6px}
+.capcard .load b{font-size:var(--t-display);font-weight:800;letter-spacing:-.02em;line-height:1}
+.capcard .load span{font-size:var(--t-small);color:var(--muted)}
+.capbar{display:flex;gap:3px;height:6px}
+.capbar i{flex:1;border-radius:2px;background:var(--line)}
+.capbar i.on{background:var(--accent)}
+.capbar i.rev{background:var(--warn)}
+.capbar i.blk{background:var(--danger)}
