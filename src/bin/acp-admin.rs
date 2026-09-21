@@ -21,6 +21,13 @@ enum Command {
     /// Mint a session for a person, bypassing the password. The §7 escape
     /// hatch: for scripts, and for the day the password path is broken.
     Session { email: String },
+    /// Set a password directly, bypassing the length policy.
+    ///
+    /// The break-glass path: `acp-admin` already talks straight to the
+    /// database, and a local instance sometimes needs a password you can type
+    /// quickly. It warns when the password would not survive the real rules,
+    /// so nobody sets one of these on a shared deployment by accident.
+    SetPassword { email: String, password: String },
     /// Mint an agent credential and print it once
     Mint {
         label: String,
@@ -86,6 +93,39 @@ async fn main() {
                     eprintln!("{e}");
                     std::process::exit(1);
                 }
+            }
+        }
+        Command::SetPassword { email, password } => {
+            let weak = password.chars().count() < 12;
+            let hash = match acp_server::models::password::hash(&password) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+            let updated = sqlx::query(
+                "UPDATE person
+                    SET password_hash = $2, password_set_at = now(),
+                        failed_attempts = 0, locked_until = NULL
+                  WHERE email = $1 AND deleted_at IS NULL",
+            )
+            .bind(&email)
+            .bind(&hash)
+            .execute(&state.db)
+            .await
+            .expect("update failed");
+
+            if updated.rows_affected() == 0 {
+                eprintln!("no person with email '{email}'");
+                std::process::exit(1);
+            }
+            println!("password set for {email}");
+            if weak {
+                println!(
+                    "  warning: {} characters. The API enforces a 12-character \n  minimum, so this password could not be set through the app.",
+                    password.chars().count()
+                );
             }
         }
         Command::Mint { label, owner, scopes, days } => {

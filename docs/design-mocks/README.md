@@ -56,3 +56,25 @@ Two bugs the render caught that reading could not:
 - `file://` loads were served from cache, so a screenshot showed the previous
   version of the page while the DOM query showed the new one. Append a query
   string to force a reload before believing a screenshot.
+
+## v3 — dashboard: visualisations plus a table
+
+`dash.html` + `dash.png`. The card-list home was rejected as inconsistent, un-
+visualised and not consumable in one pass, and that was right: cards are the
+correct unit for three items and the wrong one for twenty. You cannot count a
+column of cards.
+
+What changed:
+
+- **Four visualisation cards**, all from data the API already returns: a status
+  donut, done/total per discipline, completions over the last seven days, and
+  team load with the blocking count called out underneath.
+- **A table, not cards, for the task list.** Fixed columns — status dot, task,
+  discipline, status, project, phase, owner, updated — so the eye scans down a
+  column instead of re-parsing each card.
+- **Filters above the table** rather than sections below: Mine / discipline /
+  status / project, with a live "8 of 20" count and a Table/Board toggle.
+- The whole state of the team now fits above the fold.
+
+Cards survive where a card is right: the inbox, where each item is a decision
+with its own controls, and the task detail page.

@@ -1,0 +1,221 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens2.css">
+<style>
+.viz{display:grid;grid-template-columns:1.1fr 1.3fr 1fr 1fr;gap:var(--md);margin-bottom:var(--xl)}
+.vcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--lg)}
+.vhead{display:flex;align-items:center;margin-bottom:var(--md)}
+.vhead .t{font-size:var(--t-small);color:var(--muted)}
+.vhead .r{margin-left:auto;font-size:var(--t-caption);color:var(--faint)}
+.donutwrap{display:flex;align-items:center;gap:var(--lg)}
+.legend div{display:flex;align-items:center;gap:6px;font-size:var(--t-caption);
+  color:var(--text-2);padding:2px 0;white-space:nowrap}
+.legend i{width:7px;height:7px;border-radius:2px;flex:0 0 auto}
+.legend b{margin-left:auto;color:var(--muted);font-weight:600;padding-left:var(--sm)}
+.discrow{display:flex;align-items:center;gap:var(--sm);margin-bottom:9px;font-size:var(--t-caption)}
+.discrow .nm{width:56px;color:var(--text-2)}
+.discrow .track{flex:1;height:14px;background:var(--inset);border-radius:3px;display:flex;overflow:hidden}
+.discrow .track i{height:100%}
+.discrow .num{width:38px;text-align:right;color:var(--muted)}
+.bigrow{display:flex;align-items:baseline;gap:var(--sm)}
+.bignum{font-size:var(--t-hero);font-weight:800;letter-spacing:-.02em;line-height:1}
+.bigsub{font-size:var(--t-small);color:var(--muted)}
+.wk{display:flex;align-items:flex-end;gap:5px;height:44px;margin-top:var(--md)}
+.wk i{flex:1;border-radius:3px 3px 0 0;background:var(--accent);opacity:.9}
+.wk span{flex:1;text-align:center;font-size:9px;color:var(--faint)}
+.wklbl{display:flex;gap:5px;margin-top:5px}
+.wklbl span{flex:1;text-align:center;font-size:9px;color:var(--faint)}
+.person{display:flex;align-items:center;gap:var(--sm);margin-bottom:9px}
+.person .nm{font-size:var(--t-caption);color:var(--text-2);width:56px}
+.person .track{flex:1;height:10px;background:var(--inset);border-radius:3px;display:flex;
+  overflow:hidden;gap:2px;padding:0}
+.person .track i{height:100%;border-radius:2px}
+.person .n{font-size:var(--t-caption);color:var(--muted);width:14px;text-align:right}
+
+/* filter bar */
+.filters{display:flex;align-items:center;gap:var(--sm);margin-bottom:var(--md)}
+.sel{display:flex;align-items:center;gap:6px;height:30px;padding:0 var(--md);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);
+  font-size:var(--t-small);color:var(--text-2);cursor:pointer}
+.sel.set{border-color:var(--accent);color:var(--text)}
+.sel u{color:var(--faint);text-decoration:none}
+.filters .right{margin-left:auto;display:flex;gap:var(--sm);align-items:center}
+.seg{display:flex;background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-sm);overflow:hidden}
+.seg div{padding:0 var(--md);height:28px;display:flex;align-items:center;
+  font-size:var(--t-small);color:var(--muted);cursor:pointer}
+.seg div.on{background:var(--surface-active);color:var(--text);font-weight:600}
+
+/* table */
+table{width:100%;border-collapse:collapse;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+thead th{text-align:left;font-size:var(--t-caption);font-weight:700;color:var(--faint);
+  letter-spacing:.03em;padding:9px var(--md);background:var(--chrome);
+  border-bottom:1px solid var(--line);white-space:nowrap}
+tbody td{padding:0 var(--md);height:38px;font-size:var(--t-body);
+  border-bottom:1px solid var(--line-soft);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--surface-2)}
+td.t{font-weight:600;max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.num{text-align:right;color:var(--muted);font-size:var(--t-small);white-space:nowrap}
+.sdot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:7px}
+.tiny{font-size:var(--t-caption);color:var(--faint)}
+.avmini{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;
+  font-size:9px;font-weight:800;color:#0B0C0E}
+</style></head><body>
+
+<div class="side">
+  <div class="brandrow"><div class="mark">A</div>
+    <div class="brand"><b>Control Plane</b><span>Airtribe engineering</span></div></div>
+  <div class="search">Search<span class="kbd"><b>&#8984;</b><b>K</b></span></div>
+  <div class="grouplabel">WORKSPACE</div>
+  <div class="nav on"><span class="ico">&#9744;</span>Home</div>
+  <div class="nav"><span class="ico">&#9776;</span>My Tasks<span class="count">5</span></div>
+  <div class="nav"><span class="ico">&#9638;</span>Projects<span class="count">2</span></div>
+  <div class="nav"><span class="ico">&#8690;</span>Inbox<span class="dotbadge">2</span></div>
+  <div class="grouplabel">PROJECTS</div>
+  <div class="nav"><span class="ico" style="color:#8ACFF8">&#9679;</span>Control Plane</div>
+  <div class="nav"><span class="ico" style="color:#B49BF0">&#9679;</span>Checkout redesign</div>
+  <div class="foot">
+    <div class="av" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8);margin:0">AN</div>
+    <div><div style="font-size:11.5px;font-weight:600">Anmol</div>
+      <div style="font-size:10.5px;color:#5E646D">admin</div></div></div>
+</div>
+
+<div class="main"><div class="page"><div class="inner">
+  <div class="pagehead"><h1>Overview</h1><span class="sub">20 tasks across 2 projects</span></div>
+
+  <div class="viz">
+    <div class="vcard">
+      <div class="vhead"><span class="t">Status</span><span class="r">20 tasks</span></div>
+      <div class="donutwrap">
+        <svg width="82" height="82" viewBox="0 0 42 42">
+          <circle cx="21" cy="21" r="15.9" fill="none" stroke="#1B1E21" stroke-width="6"/>
+          <circle cx="21" cy="21" r="15.9" fill="none" stroke="#5FD39B" stroke-width="6"
+            stroke-dasharray="45 55" stroke-dashoffset="25"/>
+          <circle cx="21" cy="21" r="15.9" fill="none" stroke="#F0B354" stroke-width="6"
+            stroke-dasharray="15 85" stroke-dashoffset="-20"/>
+          <circle cx="21" cy="21" r="15.9" fill="none" stroke="#8ACFF8" stroke-width="6"
+            stroke-dasharray="15 85" stroke-dashoffset="-35"/>
+          <circle cx="21" cy="21" r="15.9" fill="none" stroke="#F27A7A" stroke-width="6"
+            stroke-dasharray="5 95" stroke-dashoffset="-50"/>
+          <text x="21" y="22.5" text-anchor="middle" fill="#F2F3F5"
+            style="font:700 8px Nunito">45%</text>
+          <text x="21" y="27.5" text-anchor="middle" fill="#8A9099" style="font:400 3.4px Nunito">DONE</text>
+        </svg>
+        <div class="legend" style="flex:1">
+          <div><i style="background:#5FD39B"></i>Done<b>9</b></div>
+          <div><i style="background:#8ACFF8"></i>In progress<b>3</b></div>
+          <div><i style="background:#F0B354"></i>In review<b>3</b></div>
+          <div><i style="background:#F27A7A"></i>Blocked<b>1</b></div>
+          <div><i style="background:#31353A"></i>Open<b>4</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="vcard">
+      <div class="vhead"><span class="t">By discipline</span><span class="r">done / total</span></div>
+      <div class="discrow"><span class="nm">design</span>
+        <span class="track"><i style="width:60%;background:#B49BF0"></i></span><span class="num">3/5</span></div>
+      <div class="discrow"><span class="nm">frontend</span>
+        <span class="track"><i style="width:14%;background:#7FB4F5"></i><i style="width:14%;background:#F0B354"></i></span><span class="num">1/7</span></div>
+      <div class="discrow"><span class="nm">backend</span>
+        <span class="track"><i style="width:73%;background:#5FD39B"></i></span><span class="num">8/11</span></div>
+      <div class="discrow" style="margin-bottom:0"><span class="nm">none</span>
+        <span class="track"><i style="width:0%"></i></span><span class="num">0/2</span></div>
+    </div>
+
+    <div class="vcard">
+      <div class="vhead"><span class="t">Completed</span><span class="r">last 7 days</span></div>
+      <div class="bigrow"><span class="bignum">9</span><span class="bigsub">+3 vs prev</span></div>
+      <div class="wk">
+        <i style="height:20%"></i><i style="height:45%"></i><i style="height:30%"></i>
+        <i style="height:70%"></i><i style="height:55%"></i><i style="height:100%"></i><i style="height:80%"></i>
+      </div>
+      <div class="wklbl"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+    </div>
+
+    <div class="vcard">
+      <div class="vhead"><span class="t">Team load</span><span class="r">open</span></div>
+      <div class="person"><span class="nm">Anmol</span>
+        <span class="track"><i style="flex:3;background:#8ACFF8"></i><i style="flex:3;background:#1B1E21"></i></span>
+        <span class="n">3</span></div>
+      <div class="person"><span class="nm">Dhaval</span>
+        <span class="track"><i style="flex:1;background:#F27A7A"></i><i style="flex:5;background:#1B1E21"></i></span>
+        <span class="n">1</span></div>
+      <div class="person" style="margin-bottom:0"><span class="nm">Navneet</span>
+        <span class="track"><i style="flex:1;background:#8ACFF8"></i><i style="flex:5;background:#1B1E21"></i></span>
+        <span class="n">1</span></div>
+      <div class="tiny" style="margin-top:9px">Dhaval is blocking 1 task</div>
+    </div>
+  </div>
+
+  <div class="filters">
+    <div class="sel set">Mine <u>&#9662;</u></div>
+    <div class="sel">All disciplines <u>&#9662;</u></div>
+    <div class="sel">Any status <u>&#9662;</u></div>
+    <div class="sel">All projects <u>&#9662;</u></div>
+    <div class="right">
+      <span class="tiny">8 of 20</span>
+      <div class="seg"><div class="on">Table</div><div>Board</div></div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr>
+      <th style="width:22px"></th><th>Task</th><th style="width:88px">Discipline</th>
+      <th style="width:104px">Status</th><th style="width:150px">Project</th>
+      <th style="width:120px">Phase</th><th style="width:70px">Owner</th><th style="width:78px">Updated</th>
+    </tr></thead>
+    <tbody>
+      <tr><td><span class="sdot" style="background:#8ACFF8"></span></td>
+        <td class="t">Home page</td><td><span class="tag fe">frontend</span></td>
+        <td><span class="tag running">In progress</span></td><td class="tiny">Control Plane</td>
+        <td class="tiny">Pages and design</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8)">AN</span></td>
+        <td class="num">2d</td></tr>
+      <tr><td><span class="sdot" style="background:#8ACFF8"></span></td>
+        <td class="t">Task detail live log</td><td><span class="tag fe">frontend</span></td>
+        <td><span class="tag running">In progress</span></td><td class="tiny">Control Plane</td>
+        <td class="tiny">Pages and design</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8)">AN</span></td>
+        <td class="num">4h</td></tr>
+      <tr><td><span class="sdot" style="background:#F27A7A"></span></td>
+        <td class="t">Empty state illustrations <span class="tiny">&#8627; waiting on Design tokens</span></td>
+        <td><span class="tag de">design</span></td>
+        <td><span class="tag" style="background:#2C1718;color:#F27A7A">Blocked</span></td>
+        <td class="tiny">Control Plane</td><td class="tiny">Pages and design</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#5FD39B,#3E9E74)">DH</span></td>
+        <td class="num">1d</td></tr>
+      <tr><td><span class="sdot" style="background:#F0B354"></span></td>
+        <td class="t">Scope-filtered MCP tools</td><td><span class="tag be">backend</span></td>
+        <td><span class="tag" style="background:#2B2113;color:#F0B354">In review</span></td>
+        <td class="tiny">Control Plane</td><td class="tiny">MCP and approval</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8)">AN</span></td>
+        <td class="num">3h</td></tr>
+      <tr><td><span class="sdot" style="background:#6A7079"></span></td>
+        <td class="t">Task by id endpoint</td><td><span class="tag be">backend</span></td>
+        <td><span class="tag todo">Open</span></td><td class="tiny">Control Plane</td>
+        <td class="tiny">Pages and design</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#F0B354,#B8822F)">NA</span></td>
+        <td class="num">5h</td></tr>
+      <tr><td><span class="sdot" style="background:#6A7079"></span></td>
+        <td class="t">Rate limit the MCP surface</td><td><span class="tag be">backend</span></td>
+        <td><span class="tag todo">Open</span></td><td class="tiny">Control Plane</td>
+        <td class="tiny">Pages and design</td><td class="tiny">&mdash;</td>
+        <td class="num">1d</td></tr>
+      <tr><td><span class="sdot" style="background:#8ACFF8"></span></td>
+        <td class="t">Cart UI</td><td><span class="tag fe">frontend</span></td>
+        <td><span class="tag running">In progress</span></td><td class="tiny">Checkout redesign</td>
+        <td class="tiny">Build</td>
+        <td><span class="avmini" style="background:linear-gradient(140deg,#8ACFF8,#5E86C8)">AN</span></td>
+        <td class="num">6h</td></tr>
+      <tr><td><span class="sdot" style="background:#6A7079"></span></td>
+        <td class="t">Cart totals API</td><td><span class="tag be">backend</span></td>
+        <td><span class="tag todo">Open</span></td><td class="tiny">Checkout redesign</td>
+        <td class="tiny">Build</td><td class="tiny">&mdash;</td><td class="num">1d</td></tr>
+    </tbody>
+  </table>
+  <div style="height:36px"></div>
+</div></div></div>
+</body></html>
