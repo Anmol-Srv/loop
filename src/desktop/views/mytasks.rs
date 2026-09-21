@@ -5,13 +5,20 @@
 //! pair with one `invalidate_prefix`. Grouping is by *effective* state, not by
 //! the `status` column: a task whose blockers are unfinished is filed under
 //! Blocked whatever its status says, because that is what actually stops you.
+//!
+//! Every assigned task is a card, not a row: chips on top, the title as the
+//! loudest thing in it, the phase and the people underneath. The claimable
+//! work at the foot is the one exception — a slim card, because a title and a
+//! Claim button is the whole content.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::desktop::design::tokens::DISCIPLINE_W;
-use crate::desktop::design::{colour, shell, space, status_colour, status_label, text, widgets as w};
+use crate::desktop::design::{
+    cards as c, colour, shell, space, status_label, text, theme, widgets as w,
+};
 use crate::desktop::App;
 
 const MINE: &str = "mine:assigned";
@@ -28,16 +35,6 @@ const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
 /// finished task is not shown unless it is asked for: this screen answers
 /// "what now", and yesterday's work is noise in that answer.
 const SECTIONS: [&str; 6] = ["in_progress", "in_review", "open", "blocked", "done", "dropped"];
-
-/// Room kept on the right of a row so the title truncates instead of running
-/// underneath what follows it. Measured in discipline columns because that is
-/// the one fixed column width the rows already agree on: four of them covers
-/// "project · phase" plus an agent pill, three covers a project name plus the
-/// Claim button.
-/// ponytail: a reservation, not a measurement. Lay the trailing group out
-/// first and read its width back if a project name ever outgrows this.
-const TRAILING_ASSIGNED: f32 = DISCIPLINE_W * 4.0;
-const TRAILING_CLAIMABLE: f32 = DISCIPLINE_W * 3.0;
 
 /// Filter selections. `None` means "any" on each. The two fixed vocabularies
 /// are `&'static str` so a frame that changes nothing allocates nothing; the
@@ -57,6 +54,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut state: State = ui.data(|d| d.get_temp(slot)).unwrap_or_default();
 
     let can_write = app.can_write();
+    // Every task on this screen is assigned to the signed-in person, so the
+    // avatar on a card is always theirs — the row itself carries no seed.
+    let me = app
+        .net
+        .as_ref()
+        .and_then(|n| n.data("__me"))
+        .and_then(|m| m.get("email"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let net = app.net.as_mut().unwrap();
 
     // A finished claim has changed both lists and the home aggregate.
@@ -140,14 +147,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         shell::section_count(ui, &capitalise(status_label(name)), rows.len());
-        w::card_list(ui, |ui| {
-            ui.set_width(ui.available_width());
-            for t in rows {
-                if let Some(id) = assigned_row(ui, t, &titles) {
-                    open = Some(id);
-                }
+        for t in rows {
+            if let Some(id) = assigned_card(ui, t, &titles, &me) {
+                open = Some(id);
             }
-        });
+        }
     }
 
     if !claimable.is_empty() {
@@ -160,8 +164,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
         let note = format!("matching {}", kinds.join(", "));
         // Other people's unclaimed work is a different kind of thing from the
-        // four status sections above it. At the same pitch the screen reads as
-        // five interchangeable slabs; a page-margin gap says "and separately".
+        // status sections above it. At the same pitch the screen reads as a
+        // run of interchangeable slabs; a page-margin gap says "and separately".
         ui.add_space(space::XXL);
         shell::section_count_with(ui, "Available to claim", claimable.len(), |ui| {
             if !kinds.is_empty() {
@@ -169,16 +173,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             }
         });
 
-        w::card_list(ui, |ui| {
-            ui.set_width(ui.available_width());
-            for t in &claimable {
-                match claimable_row(ui, t, can_write && !busy) {
-                    Row::Open(id) => open = Some(id),
-                    Row::Claim(id) => claim = Some(id),
-                    Row::Idle => {}
-                }
+        for t in &claimable {
+            match claimable_card(ui, t, can_write && !busy) {
+                Row::Open(id) => open = Some(id),
+                Row::Claim(id) => claim = Some(id),
+                Row::Idle => {}
             }
-        });
+        }
     }
 
     if shown.is_empty() && claimable.is_empty() {
@@ -197,48 +198,65 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(slot, state));
 }
 
-// ---------------------------------------------------------------------- rows
+// --------------------------------------------------------------------- cards
 
 /// One assigned task. Returns its id when clicked.
-fn assigned_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) -> Option<String> {
+fn assigned_card(
+    ui: &mut egui::Ui,
+    t: &Value,
+    titles: &HashMap<String, String>,
+    me: &str,
+) -> Option<String> {
     let id = text_at(t, "id");
-    let status = text_at(t, "status");
     let title = text_at(t, "title");
     let discipline = text_at(t, "discipline");
-    let claimed_by = text_at(t, "claimedBy");
+    let project = text_at(t, "projectName");
     let is_agent = text_at(t, "assigneeKind") == "agent";
-    let blocked = bucket(t) == "blocked";
-    let waiting = blocker_name(t, titles);
-    let meta = format!("{} · {}", text_at(t, "projectName"), text_at(t, "phaseName"));
+    let claimed_by = text_at(t, "claimedBy");
+    let state = bucket(t);
 
-    let body = |ui: &mut egui::Ui| {
-        w::dot(ui, status_colour(&status));
-        ui.add_space(space::XS);
-        w::discipline(ui, &discipline);
-        w::row_title(ui, &title, TRAILING_ASSIGNED);
+    // Age first and quiet: on a screen about what to do next, the task that
+    // has not moved in four days is the news. Then discipline, then the state
+    // with its dot, then which project it belongs to.
+    let mut chips: Vec<(String, c::Tone, bool)> = vec![(age(t), c::Tone::Quiet, false)];
+    if !discipline.is_empty() {
+        chips.push((discipline.clone(), c::discipline_tone(&discipline), false));
+    }
+    chips.push((capitalise(status_label(state)), c::status_tone(state), true));
+    if !project.is_empty() {
+        chips.push((project.clone(), c::Tone::Neutral, false));
+    }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // A blocked row spends its right-hand side naming the blocker: the
-            // project and phase are not what you need from it.
-            if blocked {
-                w::blocked_by(ui, &waiting);
-                return;
-            }
-            w::muted(ui, &meta);
-            if is_agent {
-                ui.add_space(space::SM);
-                let label = if claimed_by.is_empty() { "agent".to_owned() } else { claimed_by };
-                w::pill(ui, &label, colour::AGENT);
-            }
-        });
-    };
-
-    let hit = if is_agent {
-        w::row_marked(ui, colour::AGENT, body)
+    // A blocked card spends its context line naming the blocker: the project
+    // and phase are not what you need from it.
+    let context = if state == "blocked" {
+        waiting_on(&blocker_name(t, titles))
     } else {
-        w::row(ui, body)
+        format!("{project} · {}", text_at(t, "phaseName"))
     };
-    hit.clicked().then_some(id)
+
+    let trailing: Vec<(String, c::Tone)> = if is_agent {
+        let label = if claimed_by.is_empty() { "agent".to_owned() } else { claimed_by };
+        vec![(label, c::Tone::Agent)]
+    } else {
+        Vec::new()
+    };
+    // The agent chip already says who holds it; a second face beside it is noise.
+    let people: Vec<String> =
+        if is_agent || me.is_empty() { Vec::new() } else { vec![me.to_owned()] };
+
+    c::task_card(
+        ui,
+        &c::TaskCard {
+            title: &title,
+            chips: &chips,
+            context: &context,
+            trailing_chips: &trailing,
+            people: &people,
+        },
+    )
+    .clicked()
+    .then_some(id)
 }
 
 enum Row {
@@ -247,24 +265,33 @@ enum Row {
     Claim(String),
 }
 
-/// One claimable task: no status dot, because every row here is open, and a
-/// Claim button where the assigned rows carry their project and phase.
-fn claimable_row(ui: &mut egui::Ui, t: &Value, can_claim: bool) -> Row {
+/// One claimable task: no status, because every row here is open, and a Claim
+/// button where the assigned cards carry their people.
+fn claimable_card(ui: &mut egui::Ui, t: &Value, can_claim: bool) -> Row {
     let id = text_at(t, "id");
     let title = text_at(t, "title");
     let discipline = text_at(t, "discipline");
     let project = text_at(t, "projectName");
 
     let mut claimed = false;
-    let hit = w::row(ui, |ui| {
-        w::discipline(ui, &discipline);
-        w::row_title(ui, &title, TRAILING_CLAIMABLE);
+    let hit = c::slim_card(ui, |ui| {
+        if !discipline.is_empty() {
+            c::chip(ui, &discipline, c::discipline_tone(&discipline), false);
+            ui.add_space(space::XS);
+        }
+        ui.label(
+            egui::RichText::new(&title)
+                .size(text::BODY)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             claimed = w::button(ui, "Claim", w::Emphasis::Ghost, can_claim).clicked();
             ui.add_space(space::SM);
             w::muted(ui, &project);
         });
-    });
+    })
+    .interact(egui::Sense::click());
 
     if claimed {
         Row::Claim(id)
@@ -388,7 +415,7 @@ fn keep(t: &Value, state: &State) -> bool {
     true
 }
 
-/// What the blocked row names. The first unfinished blocker is the one to go
+/// What the blocked card names. The first unfinished blocker is the one to go
 /// and chase; its title when we have it, its short id when we do not.
 fn blocker_name(t: &Value, titles: &HashMap<String, String>) -> String {
     let first = t
@@ -404,7 +431,28 @@ fn blocker_name(t: &Value, titles: &HashMap<String, String>) -> String {
     }
 }
 
-// --------------------------------------------------------------------- pieces
+// -------------------------------------------------------------------- pieces
+
+/// `w::blocked_by`'s wording, as a string — a card's context line is text, not
+/// a widget.
+/// ponytail: two spellings of one sentence. Fold them together the day a third
+/// screen needs it.
+fn waiting_on(what: &str) -> String {
+    format!("\u{2933} waiting on \u{201c}{what}\u{201d}")
+}
+
+/// How long since the task last moved, for the quiet leading chip.
+fn age(t: &Value) -> String {
+    let Ok(then) = DateTime::parse_from_rfc3339(&text_at(t, "updatedAt")) else {
+        return "no activity".to_owned();
+    };
+    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
+        s if s < 60 => "just now".to_owned(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
 
 fn capitalise(s: &str) -> String {
     let mut chars = s.chars();

@@ -5,16 +5,20 @@
 //! first is "where is the work", not "which phase are we in". The strip reports
 //! only: it does not gate anything, and a discipline may run ahead of the one
 //! to its left. The arrow says "usually in this order", nothing stronger.
+//!
+//! Everything below the strip is a card: a project is a surface with its own
+//! progress, a task is a `c::task_card`, and an unclaimed task is a slim card
+//! with a Claim button — the same shape the claim zone has on My tasks.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use egui_phosphor::thin as icon;
 use serde_json::Value;
 
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
-use crate::desktop::design::avatar;
 use crate::desktop::design::{
-    colour, shell, size, space, status_colour, status_label, text, widgets as w,
+    cards as c, colour, shell, space, status_label, text, theme, widgets as w,
 };
 use crate::desktop::App;
 
@@ -28,13 +32,6 @@ const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
 
 /// Where a claim's reply is collected.
 const CLAIM_KEY: &str = "board:claim";
-
-/// Room kept on the right of a task row so the title truncates rather than
-/// running under the avatar, pill or Claim button that follows it. Four
-/// discipline columns, which is the widest of the three endings.
-/// ponytail: a reservation, not a measurement. Lay the trailing group out
-/// first and read its width back if a blocker title ever outgrows this.
-const TRAILING_TASK: f32 = DISCIPLINE_W * 4.0;
 
 #[derive(Default)]
 pub struct State {
@@ -100,30 +97,49 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         let name = str_at(p, "name").to_string();
         let key = str_at(p, "key").to_string();
         let status = str_at(p, "status").to_string();
-        let counts = flows.get(&id).map(|f| (num_at(f, "done"), num_at(f, "total")));
+        let flow = flows.get(&id);
+        let counts = flow.map(|f| (num_at(f, "done"), num_at(f, "total")));
 
-        let (hit, _) = w::card_button(ui, |ui| {
+        let hover_id = ui.next_auto_id();
+        let hovered = ui.ctx().data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
+        let out = c::surface(ui, hovered, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                w::heading(ui, &name);
+                ui.label(
+                    egui::RichText::new(&name)
+                        .size(text::CARD)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT),
+                );
                 ui.add_space(space::SM);
                 w::mono_caption(ui, &key);
+                ui.add_space(space::SM);
+                c::chip(ui, status_label(&status), c::status_tone(&status), true);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    w::pill(ui, status_label(&status), status_colour(&status));
+                    match counts {
+                        Some((done, total)) => w::muted(ui, &format!("{done} of {total} done")),
+                        None => w::muted(ui, "progress loading"),
+                    }
                 });
             });
             ui.add_space(space::SM);
-            match counts {
-                Some((done, total)) => {
-                    w::progress(ui, fraction(done, total), ui.available_width(), colour::ACCENT);
-                    ui.add_space(space::XS);
-                    w::muted(ui, &format!("{done} of {total} done"));
-                }
-                None => w::muted(ui, "progress loading"),
+            let (done, total) = counts.unwrap_or((0, 0));
+            w::progress(ui, fraction(done, total), ui.available_width(), colour::ACCENT);
+            // Where the work stands per discipline, in one muted line: it is
+            // the same question the detail screen's flow strip answers, and a
+            // project card is the place you ask it first.
+            if let Some(line) = flow.map(per_discipline).filter(|l| !l.is_empty()) {
+                ui.add_space(space::SM);
+                w::muted(ui, &line);
             }
         });
 
+        let hit = out.response.interact(egui::Sense::click());
+        ui.ctx().data_mut(|d| d.insert_temp(hover_id, hit.hovered()));
+        if hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
         if hit.clicked() {
             open = Some(id);
         }
@@ -133,6 +149,15 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
     if let Some(id) = open {
         app.project = Some(id);
     }
+}
+
+/// "design 2/5 · frontend 1/3" — the flow, folded onto one line for a card.
+fn per_discipline(flow: &Value) -> String {
+    flow_columns(flow)
+        .iter()
+        .map(|d| format!("{} {}/{}", str_at(d, "discipline"), num_at(d, "done"), num_at(d, "total")))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 // -------------------------------------------------------------- project detail
@@ -156,6 +181,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         tasks_path.push_str(&format!("&assigneeKind={k}"));
     }
 
+    let can_write = app.can_write();
     let net = app.net.as_mut().unwrap();
 
     // Fold in a claim that has come back, before anything reads the cache. On
@@ -192,6 +218,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let tasks_loading = net.is_loading(&tasks_key);
     let tasks_error = net.error(&tasks_key).map(str::to_string);
     let claim_error = net.error(CLAIM_KEY).map(str::to_string);
+    let busy = net.is_loading(CLAIM_KEY) || app.board.claiming;
 
     // Tasks arrive for the whole project in one call; bucket them per phase,
     // and index them by id so a blocker can be named rather than numbered.
@@ -280,7 +307,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             let done = list.iter().filter(|t| str_at(t, "status") == "done").count();
 
             phase_header(ui, p, done, list.len());
-            ui.add_space(space::SM);
 
             if let Some(err) = &tasks_error {
                 w::error(ui, err);
@@ -291,19 +317,14 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                     w::empty(ui, "No tasks in this phase.", "");
                 }
             } else {
-                w::card_list(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    for t in list {
-                        match task_row(ui, t, &titles) {
-                            Some(Hit::Open(id)) => open_task = Some(id),
-                            Some(Hit::Claim(id)) => claim = Some(id),
-                            None => {}
-                        }
+                for t in list {
+                    match task_card(ui, t, &titles, can_write && !busy) {
+                        Some(Hit::Open(id)) => open_task = Some(id),
+                        Some(Hit::Claim(id)) => claim = Some(id),
+                        None => {}
                     }
-                });
+                }
             }
-
-            ui.add_space(space::XL);
         }
     }
 
@@ -325,12 +346,8 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 }
 
-/// The flow strip: one column per discipline that has tasks.
-///
-/// It reports, it does not gate. A column is where that discipline stands, and
-/// the single arrow after design says only what the usual order is — frontend
-/// and backend can and do run before design has finished.
-fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
+/// The disciplines of a flow that have any work, in the usual order.
+fn flow_columns(flow: &Value) -> Vec<&Value> {
     let mut columns: Vec<&Value> = flow
         .get("disciplines")
         .and_then(Value::as_array)
@@ -343,19 +360,29 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
             .position(|o| *o == str_at(d, "discipline"))
             .unwrap_or(FLOW_ORDER.len())
     });
+    columns
+}
+
+/// The flow strip: one column per discipline that has tasks.
+///
+/// It reports, it does not gate. A column is where that discipline stands, and
+/// the single arrow after design says only what the usual order is — frontend
+/// and backend can and do run before design has finished.
+fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
+    let columns = flow_columns(flow);
 
     if columns.is_empty() {
         w::empty(ui, "No tasks have a discipline yet.", "");
         return;
     }
 
-    w::card(ui, |ui| {
+    c::surface(ui, false, |ui| {
         let full = ui.available_width();
         ui.set_width(full);
         let arrow = if columns.len() > 1 { 1.0 } else { 0.0 };
         let gaps = space::LG * (columns.len() as f32 - 1.0 + arrow);
-        let width =
-            ((full - gaps - space::MD * arrow) / columns.len() as f32).max(DISCIPLINE_W);
+        let width = ((full - gaps - space::MD * arrow) / columns.len() as f32)
+            .max(DISCIPLINE_W);
 
         // The floor above stops a column collapsing to nothing, which means at
         // enough disciplines the strip is wider than the card. `horizontal_top`
@@ -370,8 +397,13 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
                     let (done, total) = (num_at(d, "done"), num_at(d, "total"));
                     ui.vertical(|ui| {
                         ui.set_width(width);
-                        w::muted(ui, name);
-                        ui.add_space(space::XS);
+                        ui.label(
+                            egui::RichText::new(name)
+                                .size(text::SMALL)
+                                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                                .color(colour::TEXT_2),
+                        );
+                        ui.add_space(space::SM);
                         w::progress(ui, fraction(done, total), width, discipline_colour(name));
                         ui.add_space(space::XS);
                         w::caption(ui, &format!("{done} / {total} done"));
@@ -391,49 +423,58 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
     });
 }
 
-/// The header above a phase's tasks: its number, name, state and progress.
+/// The header above a phase's tasks: its number and name, how many tasks it
+/// holds, then its state and progress on the right.
 fn phase_header(ui: &mut egui::Ui, p: &Value, done: usize, total: usize) {
     let position = p.get("position").and_then(Value::as_i64).unwrap_or(0);
     let status = str_at(p, "status");
+    let gate = p.get("gate").and_then(Value::as_bool).unwrap_or(false);
+    let label = format!("{position:02} · {}", str_at(p, "name"));
 
-    ui.horizontal(|ui| {
-        w::mono_caption(ui, &format!("{position:02}"));
+    shell::section_count_with(ui, &label, total, |ui| {
+        w::muted(ui, &format!("{done} / {total}"));
         ui.add_space(space::SM);
-        w::heading(ui, str_at(p, "name"));
-        ui.add_space(space::SM);
-        w::pill(ui, status_label(status), status_colour(status));
-        if p.get("gate").and_then(Value::as_bool).unwrap_or(false) {
-            w::pill(ui, "gate", colour::WARN);
+        if gate {
+            c::chip(ui, "gate", c::Tone::Running, false);
         }
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            w::muted(ui, &format!("{done} / {total}"));
-        });
+        c::chip(ui, status_label(status), c::status_tone(status), true);
     });
 }
 
-/// What a click on a row meant.
+/// What a click on a card meant.
 enum Hit {
     Open(String),
     Claim(String),
 }
 
 /// One task. `titles` names blockers that are in this project's task list.
-fn task_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) -> Option<Hit> {
+///
+/// Unclaimed work drops to a slim card: it has no state worth four chips and
+/// no people, and the one thing to do with it is take it — the same shape the
+/// claim zone has on My tasks.
+fn task_card(
+    ui: &mut egui::Ui,
+    t: &Value,
+    titles: &HashMap<String, String>,
+    can_claim: bool,
+) -> Option<Hit> {
     let status = str_at(t, "status").to_string();
-    let kind = str_at(t, "assigneeKind").to_string();
-    let is_agent = kind == "agent";
+    let is_agent = str_at(t, "assigneeKind") == "agent";
     let claimed = str_at(t, "claimedBy").to_string();
     let person = str_at(t, "assigneePersonId").to_string();
     let id = str_at(t, "id").to_string();
     let title = str_at(t, "title").to_string();
     let discipline = str_at(t, "discipline").to_string();
-    let assigned = !kind.is_empty() || !claimed.is_empty() || !person.is_empty();
+    let assigned = is_agent || !claimed.is_empty() || !person.is_empty();
     let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
+
+    if !assigned && !blocked {
+        return claimable_card(ui, &id, &title, &discipline, can_claim);
+    }
 
     // The blocker's title where we hold it, its short id where the blocker
     // lives in a phase the current filter excluded.
-    let waiting_on = blocked.then(|| {
+    let waiting = blocked.then(|| {
         let first = t
             .get("blockedBy")
             .and_then(Value::as_array)
@@ -446,51 +487,77 @@ fn task_row(ui: &mut egui::Ui, t: &Value, titles: &HashMap<String, String>) -> O
             .unwrap_or_else(|| first.get(..8).unwrap_or(first).to_string())
     });
 
-    let mut claim = false;
+    // Blockers beat the status column: a task marked in progress that waits on
+    // someone else is not in progress, and the chip should not claim it is.
+    let state = if blocked { "blocked" } else { status.as_str() };
 
-    // Delegated rows carry a spine as well as the pill: at a glance down a
-    // long phase, the edge is what you actually see.
-    let body = |ui: &mut egui::Ui| {
-        w::dot(ui, status_colour(&status));
-        ui.add_space(space::XS);
-        w::discipline(ui, &discipline);
-        w::row_title(ui, &title, TRAILING_TASK);
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Exactly one of three endings: what it waits on, who holds it, or
-            // an invitation to take it.
-            if let Some(what) = &waiting_on {
-                w::blocked_by(ui, what);
-            } else if assigned {
-                let seed = if claimed.is_empty() { &person } else { &claimed };
-                if !seed.is_empty() {
-                    avatar::small(ui, seed, size::AVATAR_SM);
-                    ui.add_space(space::SM);
-                }
-                if is_agent {
-                    let label = if claimed.is_empty() { "agent" } else { &claimed };
-                    w::pill(ui, label, colour::AGENT);
-                } else {
-                    w::pill(ui, status_label(&status), status_colour(&status));
-                }
-            } else {
-                claim = w::ghost(ui, "Claim").clicked();
-                ui.add_space(space::SM);
-                w::muted(ui, "unassigned");
-            }
-        });
-    };
-
-    let hit = if is_agent {
-        w::row_marked(ui, colour::AGENT, body)
-    } else {
-        w::row(ui, body)
-    };
-
-    if claim {
-        return Some(Hit::Claim(id));
+    let mut chips: Vec<(String, c::Tone, bool)> = vec![(age(t), c::Tone::Quiet, false)];
+    if !discipline.is_empty() {
+        chips.push((discipline.clone(), c::discipline_tone(&discipline), false));
     }
-    hit.clicked().then(|| Hit::Open(id))
+    chips.push((capitalise(status_label(state)), c::status_tone(state), true));
+
+    let context = match &waiting {
+        Some(what) => waiting_on(what),
+        None => str_at(t, "phaseName").to_string(),
+    };
+
+    let trailing: Vec<(String, c::Tone)> = if is_agent {
+        let label = if claimed.is_empty() { "agent".to_owned() } else { claimed.clone() };
+        vec![(label, c::Tone::Agent)]
+    } else {
+        Vec::new()
+    };
+    let seed = if claimed.is_empty() { person } else { claimed };
+    // The agent chip already names who holds it; a face beside it is noise.
+    let people: Vec<String> =
+        if is_agent || seed.is_empty() { Vec::new() } else { vec![seed] };
+
+    let hit = c::task_card(
+        ui,
+        &c::TaskCard {
+            title: &title,
+            chips: &chips,
+            context: &context,
+            trailing_chips: &trailing,
+            people: &people,
+        },
+    );
+    hit.clicked().then_some(Hit::Open(id))
+}
+
+/// An unclaimed task: a discipline, a title, and the one thing to do with it.
+fn claimable_card(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    discipline: &str,
+    can_claim: bool,
+) -> Option<Hit> {
+    let mut claimed = false;
+    let hit = c::slim_card(ui, |ui| {
+        if !discipline.is_empty() {
+            c::chip(ui, discipline, c::discipline_tone(discipline), false);
+            ui.add_space(space::XS);
+        }
+        ui.label(
+            egui::RichText::new(title)
+                .size(text::BODY)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            claimed = w::button(ui, "Claim", w::Emphasis::Ghost, can_claim).clicked();
+            ui.add_space(space::SM);
+            w::muted(ui, "unassigned");
+        });
+    })
+    .interact(egui::Sense::click());
+
+    if claimed {
+        return Some(Hit::Claim(id.to_string()));
+    }
+    hit.clicked().then(|| Hit::Open(id.to_string()))
 }
 
 // ---------------------------------------------------------------------- pieces
@@ -525,6 +592,35 @@ fn filter(
             }
         });
     changed
+}
+
+/// `w::blocked_by`'s wording, as a string — a card's context line is text, not
+/// a widget.
+/// ponytail: the same sentence lives in mytasks.rs. Fold them together the day
+/// a third screen needs it.
+fn waiting_on(what: &str) -> String {
+    format!("\u{2933} waiting on \u{201c}{what}\u{201d}")
+}
+
+/// How long since the task last moved, for the quiet leading chip.
+fn age(t: &Value) -> String {
+    let Ok(then) = DateTime::parse_from_rfc3339(str_at(t, "updatedAt")) else {
+        return "no activity".to_owned();
+    };
+    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
+        s if s < 60 => "just now".to_owned(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 fn array(v: Option<&Value>) -> Vec<Value> {
