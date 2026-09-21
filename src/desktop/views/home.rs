@@ -5,21 +5,26 @@
 //! cards. This is the shape the owner asked for: four visualisations that read
 //! at a glance, a filter bar, and a table.
 //!
-//! Everything arrives in a single `GET /api/user/home`, cached under the key
-//! `"home"` — chrome.rs reads that same key for the sidebar badges, so the
-//! name is load-bearing.
+//! Two fetches. `GET /api/user/home` carries the projects rollup, the team
+//! band and the sidebar badges — chrome.rs reads that payload under the key
+//! `"home"`, so the name is load-bearing. `GET /api/user/tasks` carries the
+//! table: the whole workspace, one row per task.
 //!
-//! The four cards sit on different data and are honest about it:
-//!   * Status and Completed are counted over the tasks the payload actually
-//!     carries (mine, plus the unclaimed preview).
-//!   * By discipline is the server's per-project rollup, which is workspace-
-//!     wide and exact.
-//!   * Team load is `team[]`, real counts from one grouped query.
+//! The endpoint takes server-side filters, and the table ignores them. At
+//! twenty rows a round trip per filter click buys nothing and costs a cache
+//! key per combination, a spinner on every menu selection, and a filter menu
+//! that can only offer the values the last response happened to contain.
+//! One fetch, filtered in memory, keeps the menus honest and the clicks free.
+//! Move to query params the day the workspace outgrows a single response.
+//!
+//! All four cards now sit on the whole workspace: Status and Completed count
+//! the task list, By discipline sums the server's per-project rollup, Team
+//! load is `team[]` from one grouped query.
 //!
 //! Approvals are gone from this page: the inbox owns them, and the table's
 //! "Mine" filter covers what used to be the claim list.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use chrono::{DateTime, Datelike, Local, Utc};
 use egui::{Align, Color32, Layout, RichText};
@@ -27,12 +32,14 @@ use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
 use crate::desktop::design::{
-    avatar, cards as c, colour, radius, shell, size, space, status_colour, status_label, text,
-    theme, tokens, viz, widgets as w,
+    avatar, cards as c, colour, motion, radius, shell, size, space, status_colour, status_label,
+    text, theme, tokens, viz, widgets as w,
 };
 use crate::desktop::App;
 
 const HOME: &str = "home";
+/// The table's rows: the whole workspace, unfiltered.
+const TASKS: &str = "home:tasks";
 const CLAIM: &str = "home:claim";
 
 /// `App` owns no home state, and this view is the only thing that reads these
@@ -89,31 +96,28 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     if net.data(CLAIM).is_some() {
         net.invalidate(CLAIM);
         net.invalidate(HOME);
+        net.invalidate(TASKS);
         net.invalidate_prefix("board:");
         net.invalidate_prefix("task:");
     }
     net.get_once(HOME, "/api/user/home");
+    net.get_once(TASKS, "/api/user/tasks");
 
-    let loading = net.is_loading(HOME);
-    let error = net.error(HOME).map(str::to_owned);
+    let loading = net.is_loading(HOME) || net.is_loading(TASKS);
+    let error = net.error(HOME).or_else(|| net.error(TASKS)).map(str::to_owned);
     let claim_error = net.error(CLAIM).map(str::to_owned);
     let busy = net.is_loading(CLAIM);
     let home = net.data(HOME).cloned().unwrap_or(Value::Null);
+    let tasks = net.data(TASKS).cloned().unwrap_or(Value::Null);
 
     let projects = list(&home, "projects");
     let team = list(&home, "team");
 
-    // The table is my tasks plus the unclaimed preview, deduplicated. That
-    // union is the honest limit of this payload, not a design choice.
-    let mut seen: HashSet<&str> = HashSet::new();
-    let rows: Vec<&Value> = list(&home, "myTasks")
-        .into_iter()
-        .chain(list(&home["available"], "first"))
-        .filter(|t| str_at(t, "id").is_some_and(|id| seen.insert(id)))
-        .collect();
+    // Every task in the workspace, in the order the server sorted them.
+    let rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
 
-    // A blocker resolves to a title only when the blocking task happens to be
-    // in this union. It usually is — you are blocked by work near your own.
+    // With the whole workspace here, a blocker's title resolves whenever the
+    // blocking task still exists.
     let known: HashMap<&str, &str> = rows
         .iter()
         .filter_map(|t| Some((str_at(t, "id")?, str_at(t, "title")?)))
@@ -123,13 +127,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         .filter_map(|p| Some((str_at(p, "personId")?, str_at(p, "email")?)))
         .collect();
 
-    let workspace_total: i64 = projects.iter().map(|p| num(p, "total")).sum();
+    // The subtitle counts the same list the donut and the table count, so the
+    // three numbers cannot drift apart. The projects rollup carries its own
+    // `total`, but it is a second measurement of the same thing and only the
+    // list can be clicked into.
     shell::page_title(
         ui,
         "Overview",
         &format!(
             "{} across {}",
-            plural(workspace_total as usize, "task"),
+            plural(rows.len(), "task"),
             plural(projects.len(), "project")
         ),
         |_| {},
@@ -500,6 +507,7 @@ fn table(
     let hover_id = egui::Id::new(HOVER);
     let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
     let mut now: Option<usize> = None;
+    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
 
     egui::Frame::new()
         .fill(colour::SURFACE)
@@ -546,17 +554,24 @@ fn table(
                             row.set_hovered(was == Some(i));
                             row.set_overline(i > 0);
                             task_row(&mut row, t, known, owners, can_claim && was == Some(i), claim);
-                            let response = row.response();
-                            if response.hovered() {
-                                now = Some(i);
-                                response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
-                            if response.clicked() {
-                                *open_task = str_at(t, "id").map(str::to_owned);
-                            }
+                            responses.push(row.response());
                         });
                     }
                 });
+
+            // A row is hand-painted, so Tab does not reach it on its own.
+            // Handled after the table rather than inside the body closure,
+            // which holds the only `Ui` the focus ring can be drawn on.
+            for (i, response) in responses.into_iter().enumerate() {
+                let response = motion::operable_sm(ui, response);
+                if response.hovered() {
+                    now = Some(i);
+                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    *open_task = str_at(rows[i], "id").map(str::to_owned);
+                }
+            }
 
             let band_rect = egui::Rect::from_min_max(
                 egui::pos2(ui.max_rect().left() - space::MD, top),
