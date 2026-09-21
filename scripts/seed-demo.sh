@@ -64,6 +64,10 @@ T_LIVE=$(task  4 "Task detail live log"       frontend open)
 api POST "/api/user/tasks/$T_HOME/assign"  "$H" '{"personEmail":"anmol@airtribe.live"}'  >/dev/null
 api POST "/api/user/tasks/$T_TOKENS/assign" "$H" '{"personEmail":"dhaval@airtribe.live"}' >/dev/null
 api POST "/api/user/tasks/$T_LIVE/assign"  "$H" '{"personEmail":"anmol@airtribe.live"}'  >/dev/null
+# Dhaval owns the design task that the tracker waits on, so team capacity has a
+# real bottleneck to show rather than three zeros.
+api POST "/api/user/tasks/$T_EMPTY/assign" "$H" '{"personEmail":"dhaval@airtribe.live"}' >/dev/null
+api POST "/api/user/tasks/$T_IDS/assign"   "$H" '{"personEmail":"navneet@airtribe.live"}' >/dev/null
 
 # the tracker waits on the design tokens — the flow the board must show
 api PATCH "/api/user/tasks/$T_TRACK/blockers" "$H" "{\"blockedBy\":[\"$T_EMPTY\"]}" >/dev/null

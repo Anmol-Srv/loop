@@ -8,7 +8,6 @@
 use egui::{Align, Layout, Response, RichText, Ui};
 
 use super::tokens::{colour, pad, radius, size, space, text};
-use super::widgets as w;
 
 /// Vertical room for the macOS traffic lights, which overlay the content when
 /// the title bar is hidden.
