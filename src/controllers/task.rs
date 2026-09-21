@@ -209,6 +209,37 @@ pub async fn get(state: &AppState, id: Uuid) -> AppResult<TaskRow> {
 
 /// Everything assigned to one person. Unfiltered by status on purpose — the
 /// caller decides whether finished work still belongs on their screen.
+/// Every task in the workspace, filtered. The dashboard's table reads this.
+///
+/// Added because the table was built from `myTasks ∪ available.first` — a
+/// personal list wearing a dashboard's clothes. `available.first` is truncated
+/// to five server-side, so unclaimed work silently vanished past the fifth
+/// row, and nobody else's in-flight work was ever in it, while the filters
+/// advertised "All projects". A filter that cannot see all projects is a lie.
+///
+/// Returns the enriched row (project and phase names, blocker counts) rather
+/// than the bare task, because every caller needed the join anyway.
+pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>> {
+    Ok(sqlx::query_as(&format!(
+        "{} WHERE ($1::uuid IS NULL OR pr.id = $1)
+               AND ($2::uuid IS NULL OR t.phase_id = $2)
+               AND ($3::text IS NULL OR t.status = $3)
+               AND ($4::text IS NULL OR own.email = $4)
+               AND ($5::text IS NULL OR t.assignee_kind = $5)
+               AND ($6::text IS NULL OR t.discipline = $6)
+           ORDER BY t.priority, t.updated_at DESC",
+        task_row_select()
+    ))
+    .bind(filter.project_id)
+    .bind(filter.phase_id)
+    .bind(filter.status)
+    .bind(filter.assignee_email)
+    .bind(filter.assignee_kind)
+    .bind(filter.discipline)
+    .fetch_all(&state.db)
+    .await?)
+}
+
 pub async fn mine(state: &AppState, person_id: Uuid) -> AppResult<Vec<TaskRow>> {
     Ok(sqlx::query_as(&format!(
         "{} WHERE t.assignee_person_id = $1 ORDER BY t.priority, t.created_at",

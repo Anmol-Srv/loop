@@ -45,6 +45,7 @@ pub struct TaskRow {
 
 #[derive(Debug, Default)]
 pub struct TaskFilter {
+    pub discipline: Option<String>,
     pub project_id: Option<Uuid>,
     pub phase_id: Option<Uuid>,
     pub status: Option<String>,
@@ -71,7 +72,8 @@ pub fn task_row_select() -> String {
                   WHERE b.id = ANY(t.blocked_by) AND b.status = 'done') AS blockers_done
            FROM task t
            JOIN phase ph ON ph.id = t.phase_id
-           JOIN project pr ON pr.id = ph.project_id",
+           JOIN project pr ON pr.id = ph.project_id
+           LEFT JOIN person own ON own.id = t.assignee_person_id",
         cols = TASK_COLUMNS.replace(", ", ", t.")
     )
 }

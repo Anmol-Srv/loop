@@ -58,6 +58,7 @@ pub struct BlockersBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskQuery {
+    pub discipline: Option<String>,
     pub project_id: Option<Uuid>,
     pub phase_id: Option<Uuid>,
     pub status: Option<String>,
@@ -99,16 +100,17 @@ async fn search(
     State(state): State<AppState>,
     caller: Caller,
     Query(q): Query<TaskQuery>,
-) -> AppResult<ApiResponse<Vec<Task>>> {
+) -> AppResult<ApiResponse<Vec<TaskRow>>> {
     caller.require("read")?;
     let filter = TaskFilter {
+        discipline: q.discipline,
         project_id: q.project_id,
         phase_id: q.phase_id,
         status: q.status,
         assignee_email: q.assignee_email,
         assignee_kind: q.assignee_kind,
     };
-    Ok(ApiResponse::ok(controllers::task::search(&state, filter).await?))
+    Ok(ApiResponse::ok(controllers::task::all(&state, filter).await?))
 }
 
 async fn update(
