@@ -5,6 +5,7 @@ pub mod avatar;
 pub mod cards;
 pub mod shell;
 pub mod theme;
+pub mod viz;
 pub mod tokens;
 pub mod widgets;
 
