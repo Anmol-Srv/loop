@@ -67,10 +67,6 @@ const COL_PHASE: f32 = 120.0;
 const COL_OWNER: f32 = 70.0;
 const COL_UPDATED: f32 = 78.0;
 
-/// The four cards agree on a body height so the row reads as a row rather
-/// than as four cards that happen to be adjacent.
-const VIZ_BODY_H: f32 = 92.0;
-
 /// What the table is filtered to. Every field is "no filter" when unset, so
 /// `Default` is the unfiltered view.
 #[derive(Clone, Default, PartialEq)]
@@ -208,7 +204,6 @@ fn status_card(ui: &mut egui::Ui, rows: &[&Value]) {
     let pct = if total == 0 { 0 } else { done * 100 / total };
 
     viz::card(ui, "Status", &plural(total, "task"), |ui| {
-        ui.set_min_height(VIZ_BODY_H);
         let slices: Vec<viz::Slice<'_>> = STATUSES
             .iter()
             .zip(LABELS)
@@ -259,8 +254,7 @@ fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
     }
 
     viz::card(ui, "By discipline", "done / total", |ui| {
-        ui.set_min_height(VIZ_BODY_H);
-        for name in &order {
+        for name in order.iter().take(viz::MAX_BARS) {
             let (done, total) = tally.get(name).copied().unwrap_or((0, 0));
             let fill = if total == 0 { 0.0 } else { done as f32 / total as f32 };
             viz::bar_row(
@@ -272,6 +266,7 @@ fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
                 tokens::DISCIPLINE_W,
             );
         }
+        overflow(ui, order.len());
     });
 }
 
@@ -316,7 +311,6 @@ fn completed_card(ui: &mut egui::Ui, rows: &[&Value]) {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
 
     viz::card(ui, "Completed", "last 7 days", |ui| {
-        ui.set_min_height(VIZ_BODY_H);
         viz::headline(ui, &total.to_string(), &delta);
         ui.add_space(space::MD);
         viz::columns(ui, &buckets, &names, colour::ACCENT);
@@ -333,8 +327,7 @@ fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
     let peak = team.iter().map(|p| num(p, "open")).max().unwrap_or(0);
 
     viz::card(ui, "Team load", "open", |ui| {
-        ui.set_min_height(VIZ_BODY_H);
-        for p in team {
+        for p in team.iter().take(viz::MAX_BARS) {
             let open = num(p, "open");
             let blocking = num(p, "blocking");
             let fill = if peak == 0 { 0.0 } else { open as f32 / peak as f32 };
@@ -346,6 +339,11 @@ fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
                 &open.to_string(),
                 tokens::DISCIPLINE_W,
             );
+        }
+
+        if team.len() > viz::MAX_BARS {
+            overflow(ui, team.len());
+            return;
         }
 
         let note: Vec<String> = team
@@ -365,6 +363,14 @@ fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
     });
 }
 
+/// "+N more" under a capped bar list. Silent when nothing was cut, so the
+/// line only ever appears when it is telling the truth.
+fn overflow(ui: &mut egui::Ui, total: usize) {
+    if total > viz::MAX_BARS {
+        w::caption(ui, &format!("+{} more", total - viz::MAX_BARS));
+    }
+}
+
 // ---------------------------------------------------------------- filter bar
 
 fn filter_bar(
@@ -377,7 +383,7 @@ fn filter_bar(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
 
-        if viz::filter(ui, "Mine", state.mine).clicked() {
+        if viz::filter(ui, "Mine", state.mine, false).clicked() {
             state.mine = !state.mine;
         }
 
@@ -432,8 +438,25 @@ fn filter_bar(
             &mut state.project,
         );
 
+        if *state != State::default() && viz::clear(ui).clicked() {
+            *state = State::default();
+        }
+
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            w::caption(ui, &format!("{shown} of {}", rows.len()));
+            // The count is the number the bar exists to move, so it is the one
+            // thing on this strip in full-strength ink.
+            ui.label(
+                RichText::new(format!("of {}", rows.len()))
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
+            ui.add_space(space::XXS);
+            ui.label(
+                RichText::new(shown.to_string())
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
         });
     });
     ui.add_space(space::MD);
@@ -449,7 +472,7 @@ fn menu(
     options: Vec<(String, String)>,
     slot: &mut Option<String>,
 ) {
-    let response = viz::filter(ui, &label, active);
+    let response = viz::filter(ui, &label, active, true);
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {

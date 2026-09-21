@@ -7,8 +7,19 @@
 
 use egui::{Color32, Pos2, Response, RichText, Sense, Ui, Vec2};
 
-use super::theme;
 use super::tokens::{colour, radius, space, text};
+use super::{motion, theme};
+
+/// Every figure on the dashboard draws into a box this tall. Four cards of
+/// four different heights read as four unrelated things; one height makes the
+/// row a row. Sized to the tallest figure (the headline plus its columns),
+/// and the card clips rather than grows, so no future figure can break the
+/// alignment by being one row longer.
+pub const BODY_H: f32 = 102.0;
+
+/// How many bars a figure shows before it collapses the rest into a count.
+/// Four rows is what fits in `BODY_H` with a line left for the overflow.
+pub const MAX_BARS: usize = 4;
 
 /// One slice of a donut, or one row of a legend.
 pub struct Slice<'a> {
@@ -119,7 +130,7 @@ fn legend_row(ui: &mut Ui, s: &Slice<'_>) {
                 RichText::new(s.count.to_string())
                     .size(text::CAPTION)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT),
             );
         });
     });
@@ -159,7 +170,8 @@ pub fn bar_row(ui: &mut Ui, name: &str, fill: f32, tint: Color32, right: &str, n
             ui.label(
                 RichText::new(right)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_MUTED),
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
             );
         });
     });
@@ -199,34 +211,48 @@ pub fn columns(ui: &mut Ui, values: &[f32], labels: &[&str], tint: Color32) {
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(text::CAPTION - 1.5),
-            colour::TEXT_FAINT,
+            colour::TEXT_MUTED,
         );
     }
 }
 
 /// A visualisation card: a quiet label, something on the right, then the
-/// figure. Every viz on the dashboard sits in one of these so the row reads as
-/// a row.
+/// figure in a fixed-height box.
+///
+/// The box is exactly `BODY_H` tall and clipped, which is the whole point —
+/// four cards in a row must be one height, and the only way to guarantee that
+/// is to stop the figure deciding. A figure that needs more room shows fewer
+/// rows (see `MAX_BARS`) rather than stretching its card.
 pub fn card<R>(ui: &mut Ui, label: &str, right: &str, body: impl FnOnce(&mut Ui) -> R) -> Response {
     super::cards::surface(ui, false, |ui| {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(label)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT_2),
             );
             if !right.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(right)
                             .size(text::CAPTION)
-                            .color(colour::TEXT_FAINT),
+                            .color(colour::TEXT_MUTED),
                     );
                 });
             }
         });
         ui.add_space(space::MD);
-        body(ui);
+
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), BODY_H), Sense::hover());
+        let mut box_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        box_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+        body(&mut box_ui)
     })
     .response
 }
@@ -251,20 +277,43 @@ pub fn headline(ui: &mut Ui, value: &str, note: &str) {
     });
 }
 
-/// A filter control that shows whether it is set. Accent border when active,
-/// so a filtered view never looks like an empty one.
-pub fn filter(ui: &mut Ui, label: &str, active: bool) -> Response {
-    let font = egui::FontId::proportional(text::SMALL);
+/// A filter control that shows whether it is set.
+///
+/// Three states worth telling apart, so all three get their own fill rather
+/// than sharing one and differing by border: idle is the surface, hover eases
+/// a step lighter, and active is accent-tinted with accent text. A filtered
+/// view should never be mistakable for an empty one.
+///
+/// `caret` is for the ones that open a menu. A toggle that draws a caret is
+/// promising a popup it does not have.
+pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
+    let font = egui::FontId::new(
+        text::SMALL,
+        egui::FontFamily::Name(if active { theme::SEMIBOLD } else { theme::MEDIUM }.into()),
+    );
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT);
+        .layout_no_wrap(label.to_owned(), font, colour::TEXT);
+    let caret_w = if caret { 14.0 } else { 0.0 };
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(galley.size().x + space::MD * 2.0 + 12.0, 30.0),
+        Vec2::new(galley.size().x + space::MD * 2.0 + caret_w, HEIGHT),
         Sense::click(),
     );
+    let response = motion::operable(ui, response, radius::SM as f32);
 
+    let fill = if active {
+        colour::ACCENT_SOFT
+    } else {
+        motion::hover_fill(
+            ui,
+            response.id.with("fill"),
+            response.hovered(),
+            colour::SURFACE,
+            colour::SURFACE_HOVER,
+        )
+    };
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, colour::SURFACE);
+    p.rect_filled(rect, radius::SM as f32, fill);
     p.rect_stroke(
         rect,
         radius::SM as f32,
@@ -280,17 +329,47 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool) -> Response {
         ),
         egui::StrokeKind::Inside,
     );
+    let ink = if active { colour::ACCENT } else { colour::TEXT_2 };
     p.galley(
         egui::pos2(rect.left() + space::MD, rect.center().y - galley.size().y / 2.0),
         galley,
-        if active { colour::TEXT } else { colour::TEXT_2 },
+        ink,
     );
-    p.text(
-        egui::pos2(rect.right() - space::SM, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        "\u{25BE}",
-        egui::FontId::proportional(text::CAPTION),
-        colour::TEXT_FAINT,
+    if caret {
+        p.text(
+            egui::pos2(rect.right() - space::SM, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            "\u{25BE}",
+            egui::FontId::proportional(text::CAPTION),
+            if active { colour::ACCENT } else { colour::TEXT_MUTED },
+        );
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// Every control on the filter bar is this tall, including the clear button,
+/// so the bar reads as one strip rather than as controls of two heights.
+pub const HEIGHT: f32 = 30.0;
+
+/// The escape hatch: only drawn when something is filtered, because a clear
+/// button next to four unset filters is a control that does nothing.
+pub fn clear(ui: &mut Ui) -> Response {
+    let font = egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::MEDIUM.into()));
+    let galley = ui.painter().layout_no_wrap("Clear".to_owned(), font, colour::TEXT);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(galley.size().x + space::MD * 2.0, HEIGHT),
+        Sense::click(),
+    );
+    let response = motion::operable(ui, response, radius::SM as f32);
+
+    let ink = if response.hovered() { colour::TEXT } else { colour::TEXT_MUTED };
+    ui.painter().galley(
+        egui::pos2(rect.left() + space::MD, rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
     );
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
