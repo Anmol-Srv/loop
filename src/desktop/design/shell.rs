@@ -217,13 +217,23 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
         egui::vec2(ui.available_width(), size::NAV_ROW),
         egui::Sense::click(),
     );
+    let response = super::motion::operable(ui, response, radius::SM as f32);
 
     let r = radius::SM as f32;
+    // The selected pill eases in, so switching tabs reads as one surface
+    // moving rather than two surfaces blinking.
+    let sel = super::motion::to(ui, response.id.with("sel"), item.selected, super::motion::BASE);
+    let hov = super::motion::to(
+        ui,
+        response.id.with("hov"),
+        response.hovered() || response.has_focus(),
+        super::motion::FAST,
+    );
     let p = ui.painter();
-    if item.selected {
-        p.rect_filled(rect, r, colour::SURFACE_ACTIVE);
-    } else if response.hovered() {
-        p.rect_filled(rect, r, colour::SURFACE);
+    if sel > 0.001 {
+        p.rect_filled(rect, r, colour::SURFACE_ACTIVE.gamma_multiply(sel));
+    } else if hov > 0.001 {
+        p.rect_filled(rect, r, colour::SURFACE.gamma_multiply(hov));
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

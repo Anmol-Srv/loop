@@ -261,9 +261,21 @@ pub fn row_marked<R>(ui: &mut Ui, spine: Color32, add: impl FnOnce(&mut Ui) -> R
 pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
     let w = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(w, size::ROW), Sense::click());
+    let response = super::motion::operable(ui, response, radius::SM as f32);
 
+    // Eased rather than snapped: a row that lights up instantly on every
+    // pointer move reads as flicker when you drag down a long list.
+    let tint = super::motion::hover_fill(
+        ui,
+        response.id.with("hover"),
+        response.hovered() || response.has_focus(),
+        Color32::TRANSPARENT,
+        colour::SURFACE_HOVER,
+    );
+    if tint != Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, radius::SM as f32, tint);
+    }
     if response.hovered() {
-        ui.painter().rect_filled(rect, radius::SM as f32, colour::GLASS_HOVER);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -342,8 +354,14 @@ fn button_with(
         Vec2::new(width, height),
         if enabled { Sense::click() } else { Sense::hover() },
     );
+    // Keyboard operability, applied once here rather than at every call site.
+    let response = if enabled {
+        super::motion::operable(ui, response, radius::SM as f32)
+    } else {
+        response
+    };
 
-    let hovered = enabled && response.hovered();
+    let hovered = enabled && (response.hovered() || response.has_focus());
     let pressed = enabled && response.is_pointer_button_down_on();
 
     // Every colour decided here, before a single draw call.
