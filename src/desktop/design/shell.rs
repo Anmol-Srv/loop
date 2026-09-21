@@ -17,23 +17,60 @@ const TRAFFIC_LIGHTS: f32 = size::ROW;
 /// Where the wash's bounds are stashed, so a notch can sample the exact colour
 /// behind it. The gradient is painted before the items, and the items need to
 /// know it — one value, and it never leaves this module.
-/// One entry in the sidebar. `badge` shows a count when non-zero.
+/// One entry in the sidebar.
+///
+/// `badge` is an attention count and is drawn in the accent; `count` is
+/// ambient and is drawn faint. A pending-review count is a badge; the number
+/// of projects is a count. Conflating them makes everything shout.
 pub struct NavItem<'a> {
     pub icon: &'a str,
     pub label: &'a str,
     pub selected: bool,
     pub badge: usize,
+    pub count: Option<String>,
+    /// A coloured dot instead of an icon — used for project and agent rows.
+    pub dot: Option<egui::Color32>,
+}
+
+impl<'a> NavItem<'a> {
+    pub fn new(icon: &'a str, label: &'a str, selected: bool) -> Self {
+        Self { icon, label, selected, badge: 0, count: None, dot: None }
+    }
+    pub fn badge(mut self, n: usize) -> Self {
+        self.badge = n;
+        self
+    }
+    pub fn count(mut self, s: impl Into<String>) -> Self {
+        self.count = Some(s.into());
+        self
+    }
+    pub fn dot(mut self, c: egui::Color32) -> Self {
+        self.dot = Some(c);
+        self
+    }
+}
+
+/// A group of nav items under a small muted heading.
+pub struct NavGroup<'a> {
+    pub label: &'a str,
+    pub items: Vec<NavItem<'a>>,
 }
 
 /// Draws the sidebar and returns the index of a clicked item, if any.
-pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui)) -> Option<usize> {
+/// The sidebar: a brand row, a search affordance, grouped navigation, and the
+/// signed-in person pinned at the foot.
+///
+/// Returns `(group, item)` of whatever was clicked. Grouping is the point: a
+/// flat list of four items in 232px reads as an accident, and the group labels
+/// are what let projects and agents live here without competing with the
+/// primary destinations.
+pub fn sidebar(
+    ui: &mut Ui,
+    brand: (&str, &str),
+    groups: &[NavGroup<'_>],
+    footer: impl FnOnce(&mut Ui),
+) -> Option<(usize, usize)> {
     let mut clicked = None;
-
-    // The one structural response in the app. Below this width the content
-    // column is the thing that runs out — a change card loses its buttons
-    // before the sidebar is inconvenienced — so the sidebar gives up its
-    // labels and hands 160px back.
-    // Measured from the Ui we are handed, which is the whole window here.
     let narrow = ui.max_rect().width() < size::SIDEBAR_COLLAPSE_AT;
     let width = if narrow { size::SIDEBAR_W_NARROW } else { size::SIDEBAR_W };
 
@@ -46,32 +83,47 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
                 .inner_margin(egui::Margin::symmetric(pad::SIDEBAR.0 as i8, pad::SIDEBAR.1 as i8)),
         )
         .show(ui, |ui| {
-            // A pink wash from the top, fading out. Painted behind everything
-            // in the panel, and the glass cards on the canvas pick it up.
-            w::gradient_v(
-                ui,
-                ui.max_rect().expand(space::XL),
-                colour::WASH_TOP,
-                colour::WASH_BOTTOM,
-            );
-            // The window has no title bar, so the traffic lights float over
-            // this corner. Leave them room rather than drawing under them.
+            // Room for the traffic lights, which float over this corner
+            // because the window has no title bar.
             ui.add_space(TRAFFIC_LIGHTS);
 
-            for (i, item) in items.iter().enumerate() {
-                if nav_item(ui, item, narrow).clicked() {
-                    clicked = Some(i);
-                }
-                ui.add_space(space::XXS);
+            if !narrow {
+                brand_row(ui, brand.0, brand.1);
+                ui.add_space(space::MD);
+                search_field(ui);
+                ui.add_space(space::MD);
             }
 
-            // Footer pinned to the bottom, so sign-out never floats mid-panel.
-            // Hidden when collapsed: the controls are text-only and there is
-            // no room to render them honestly at 52px.
+            for (g, group) in groups.iter().enumerate() {
+                if !narrow && !group.label.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        RichText::new(group.label)
+                            .size(text::CAPTION)
+                            .family(egui::FontFamily::Name(super::theme::BOLD.into()))
+                            .color(colour::TEXT_FAINT),
+                    );
+                    ui.add_space(space::XXS);
+                }
+                for (i, item) in group.items.iter().enumerate() {
+                    if nav_item(ui, item, narrow).clicked() {
+                        clicked = Some((g, i));
+                    }
+                }
+                ui.add_space(space::SM);
+            }
+
             if !narrow {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     ui.add_space(space::SM);
                     footer(ui);
+                    ui.add_space(space::MD);
+                    let line = ui.available_rect_before_wrap();
+                    ui.painter().hline(
+                        line.x_range(),
+                        ui.cursor().top(),
+                        egui::Stroke::new(1.0, colour::LINE_SOFT),
+                    );
                 });
             }
         });
@@ -79,32 +131,101 @@ pub fn sidebar(ui: &mut Ui, items: &[NavItem<'_>], footer: impl FnOnce(&mut Ui))
     clicked
 }
 
-/// A sidebar entry.
-///
-/// The selected item is filled with the canvas colour and rounded on all four
-/// corners.
-///
-/// It reached the panel edge with square right corners for a while, to read as
-/// the content area extending into the sidebar, with concave corners softening
-/// the join. Both are gone: the join never looked right, and a self-contained
-/// pill is quieter than a shape that depends on what it is next to.
-fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
-    let height = size::ROW;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+/// The product mark and name.
+fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(26.0), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, radius::SM as f32, colour::ACCENT);
+        p.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "A",
+            egui::FontId::proportional(text::SMALL),
+            colour::ON_ACCENT,
+        );
+        ui.add_space(space::XS);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(
+                RichText::new(name)
+                    .size(text::BODY)
+                    .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
+            ui.label(
+                RichText::new(tagline)
+                    .size(text::CAPTION)
+                    .color(colour::TEXT_FAINT),
+            );
+        });
+    });
+}
 
-    // Run past the panel's right padding so the fill meets the content area.
-    let r = radius::MD as f32;
+/// A search affordance. Not wired yet — it is drawn because its absence is the
+/// loudest thing missing from a sidebar of this shape, and because the
+/// keyboard shortcut needs somewhere to advertise itself.
+fn search_field(ui: &mut Ui) {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size::CONTROL + 2.0),
+        egui::Sense::click(),
+    );
     let p = ui.painter();
-
-    if item.selected {
-        // Rounded on all four corners and inset from the panel edge: a pill
-        // that sits in the sidebar, rather than a tab reaching out of it.
-        p.rect_filled(rect, r, colour::CANVAS);
-    } else if response.hovered() {
-        p.rect_filled(rect, r, colour::GLASS_HOVER);
+    p.rect_filled(rect, radius::SM as f32, colour::INSET);
+    p.rect_stroke(
+        rect,
+        radius::SM as f32,
+        egui::Stroke::new(1.0, if response.hovered() { colour::LINE_STRONG } else { colour::LINE }),
+        egui::StrokeKind::Inside,
+    );
+    p.text(
+        egui::pos2(rect.left() + space::SM, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        egui_phosphor::thin::MAGNIFYING_GLASS,
+        egui::FontId::proportional(text::BODY),
+        colour::TEXT_FAINT,
+    );
+    p.text(
+        egui::pos2(rect.left() + space::SM + size::ICON_COL, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Search",
+        egui::FontId::proportional(text::SMALL),
+        colour::TEXT_FAINT,
+    );
+    // The shortcut chip, so the affordance teaches itself.
+    for (i, key) in ["K", "\u{2318}"].iter().enumerate() {
+        let w = 18.0;
+        let chip = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - space::SM - w / 2.0 - i as f32 * (w + 2.0), rect.center().y),
+            egui::vec2(w, 16.0),
+        );
+        p.rect_filled(chip, radius::SM as f32 - 2.0, colour::SURFACE_HOVER);
+        p.text(
+            chip.center(),
+            egui::Align2::CENTER_CENTER,
+            key,
+            egui::FontId::proportional(text::CAPTION),
+            colour::TEXT_MUTED,
+        );
     }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+}
 
+fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), size::NAV_ROW),
+        egui::Sense::click(),
+    );
+
+    let r = radius::SM as f32;
+    let p = ui.painter();
+    if item.selected {
+        p.rect_filled(rect, r, colour::SURFACE_ACTIVE);
+    } else if response.hovered() {
+        p.rect_filled(rect, r, colour::SURFACE);
+    }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -113,16 +234,24 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
     let p = ui.painter();
 
     if narrow {
-        // Icon centred; the label is the tooltip instead.
-        p.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            item.icon,
-            egui::FontId::proportional(text::HEADING),
-            fg,
-        );
+        if let Some(c) = item.dot {
+            p.circle_filled(rect.center(), 3.5, c);
+        } else {
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                item.icon,
+                egui::FontId::proportional(text::HEADING),
+                fg,
+            );
+        }
+        return response;
+    }
+
+    let x = rect.left() + space::SM;
+    if let Some(c) = item.dot {
+        p.circle_filled(egui::pos2(x + 6.0, rect.center().y), 3.5, c);
     } else {
-        let x = rect.left() + space::MD;
         p.text(
             egui::pos2(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -130,29 +259,35 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
             egui::FontId::proportional(text::HEADING),
             fg,
         );
-        p.text(
-            egui::pos2(x + size::ICON_COL, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            item.label,
-            egui::FontId::proportional(text::BODY),
-            fg,
-        );
     }
+    p.text(
+        egui::pos2(x + size::ICON_COL, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        item.label,
+        egui::FontId::proportional(text::BODY),
+        fg,
+    );
 
-    if item.badge > 0 && !narrow {
+    // A badge demands attention and takes the accent; a count is ambient and
+    // stays faint. Both right-aligned, never both present.
+    if item.badge > 0 {
         let label = item.badge.to_string();
         let galley =
             p.layout_no_wrap(label, egui::FontId::proportional(text::CAPTION), colour::ON_ACCENT);
-        let w = galley.size().x + space::SM;
-        let badge_rect = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - space::MD - w / 2.0, rect.center().y),
+        let w = galley.size().x + space::MD;
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - space::SM - w / 2.0, rect.center().y),
             egui::vec2(w, size::BADGE_H),
         );
-        p.rect_filled(badge_rect, radius::PILL as f32, colour::ACCENT);
-        p.galley(
-            badge_rect.center() - galley.size() / 2.0,
-            galley,
-            colour::ON_ACCENT,
+        p.rect_filled(badge, radius::PILL as f32, colour::DANGER);
+        p.galley(badge.center() - galley.size() / 2.0, galley, colour::TEXT);
+    } else if let Some(count) = &item.count {
+        p.text(
+            egui::pos2(rect.right() - space::SM, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            count,
+            egui::FontId::proportional(text::CAPTION),
+            colour::TEXT_FAINT,
         );
     }
 
@@ -167,10 +302,26 @@ pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
         .frame(
             egui::Frame::new()
                 .fill(colour::CANVAS)
-                .inner_margin(egui::Margin::symmetric(pad::PAGE.0 as i8, pad::PAGE.1 as i8)),
+                .inner_margin(egui::Margin::symmetric(space::XXL as i8, pad::PAGE.1 as i8)),
         )
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, body);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                // Cap the measure and centre it: past ~1080px the cards just
+                // stretch, and a task title 1400px wide is unreadable.
+                let avail = ui.available_width();
+                if avail > size::CONTENT_MAX {
+                    let side = (avail - size::CONTENT_MAX) / 2.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(side);
+                        ui.vertical(|ui| {
+                            ui.set_max_width(size::CONTENT_MAX);
+                            body(ui);
+                        });
+                    });
+                } else {
+                    body(ui);
+                }
+            });
         });
 }
 

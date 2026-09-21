@@ -22,34 +22,35 @@ pub mod colour {
     // ---- is expressed by elevation of tone and a hairline.
     /// The window. Blue-slate, never pure black — the blue is what makes the
     /// whole surface read as dusk rather than switched off.
-    pub const CANVAS: Color32 = Color32::from_rgb(0x0D, 0x11, 0x1A);
+    pub const CANVAS: Color32 = Color32::from_rgb(0x0B, 0x0C, 0x0E);
     /// The sidebar and other chrome that frames content.
-    pub const CHROME: Color32 = Color32::from_rgb(0x11, 0x16, 0x21);
+    pub const CHROME: Color32 = Color32::from_rgb(0x11, 0x12, 0x14);
     /// Cards and panels.
-    pub const SURFACE: Color32 = Color32::from_rgb(0x17, 0x1D, 0x2A);
+    pub const SURFACE: Color32 = Color32::from_rgb(0x15, 0x17, 0x19);
     /// A raised or hovered surface.
-    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1E, 0x25, 0x34);
+    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1B, 0x1E, 0x21);
     /// Selected rows and pressed controls.
-    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x26, 0x2E, 0x3F);
+    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x21, 0x24, 0x28);
     /// Inputs, which sit *below* the surface they are on.
-    pub const INSET: Color32 = Color32::from_rgb(0x0A, 0x0E, 0x16);
+    pub const INSET: Color32 = Color32::from_rgb(0x0E, 0x0F, 0x11);
 
     // ---- lines
-    pub const LINE: Color32 = Color32::from_rgb(0x28, 0x31, 0x43);
-    pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1C, 0x23, 0x31);
-    pub const LINE_STRONG: Color32 = Color32::from_rgb(0x38, 0x44, 0x5A);
+    pub const LINE: Color32 = Color32::from_rgb(0x23, 0x26, 0x29);
+    pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1A, 0x1D, 0x20);
+    pub const LINE_STRONG: Color32 = Color32::from_rgb(0x31, 0x35, 0x3A);
 
     // ---- text. Five levels, the way bencho.dev layers its ink scale: one
     // ---- step is rarely the right amount of de-emphasis.
-    pub const TEXT: Color32 = Color32::from_rgb(0xE9, 0xEC, 0xF4);
+    pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF3, 0xF5);
     /// Secondary: a value next to its label.
-    pub const TEXT_2: Color32 = Color32::from_rgb(0xBC, 0xC4, 0xD8);
-    /// Muted: labels, metadata.
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x96, 0xB0);
-    /// Faint: timestamps, ids.
-    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x66, 0x71, 0x8A);
-    /// Disabled.
-    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x48, 0x52, 0x68);
+    pub const TEXT_2: Color32 = Color32::from_rgb(0xC3, 0xC7, 0xCC);
+    /// Muted: labels, metadata. Lifted to clear 4.5:1 on a card.
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8A, 0x90, 0x99);
+    /// Faint: timestamps, ids. Lifted from the audit's 3.45:1 failure.
+    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x7B, 0x82, 0x8C);
+    /// Disabled and placeholders. Lifted from 2.47:1 — it is hint text people
+    /// are meant to read, not decoration.
+    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x76, 0x7C, 0x85);
 
     /// The one accent: a pale sky blue. Light enough that a filled control
     /// takes dark text, which is why `ON_ACCENT` is near-black rather than
@@ -59,6 +60,15 @@ pub mod colour {
     /// An accent-tinted surface, for selected rows and quiet emphasis.
     pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x14, 0x24, 0x31);
     pub const ON_ACCENT: Color32 = Color32::from_rgb(0x06, 0x14, 0x1E);
+
+    // ---- tinted pill backgrounds. A state pill is a tinted chip, not grey
+    // ---- text: one hue per meaning, readable at 10.5px.
+    pub const OK_BG: Color32 = Color32::from_rgb(0x12, 0x2A, 0x21);
+    pub const WARN_BG: Color32 = Color32::from_rgb(0x2B, 0x21, 0x13);
+    pub const DANGER_BG: Color32 = Color32::from_rgb(0x2C, 0x17, 0x18);
+    pub const AGENT_BG: Color32 = Color32::from_rgb(0x22, 0x1D, 0x33);
+    pub const INFO: Color32 = Color32::from_rgb(0x7F, 0xB4, 0xF5);
+    pub const INFO_BG: Color32 = Color32::from_rgb(0x14, 0x20, 0x2E);
 
     /// The warm counterpoint: gold where the light catches. Used sparingly —
     /// a highlight, never a surface. Cool everywhere and it reads as cold.
@@ -98,16 +108,17 @@ pub mod colour {
     // ---- state. Used as a dot, a pill or a thin rule; never a filled block.
     /// Desaturated to sit inside the dusk palette; a pure green would leap
     /// off this ground.
-    pub const OK: Color32 = Color32::from_rgb(0x7F, 0xD4, 0xB0);
-    pub const WARN: Color32 = Color32::from_rgb(0xEA, 0xC1, 0x7E);
-    pub const DANGER: Color32 = Color32::from_rgb(0xE5, 0x8A, 0x8A);
-    pub const AGENT: Color32 = Color32::from_rgb(0xC0, 0xAE, 0xE8);
-    pub const IDLE: Color32 = Color32::from_rgb(0x6A, 0x74, 0x8C);
+    pub const OK: Color32 = Color32::from_rgb(0x5F, 0xD3, 0x9B);
+    pub const WARN: Color32 = Color32::from_rgb(0xF0, 0xB3, 0x54);
+    pub const DANGER: Color32 = Color32::from_rgb(0xF2, 0x7A, 0x7A);
+    pub const AGENT: Color32 = Color32::from_rgb(0xB4, 0x9B, 0xF0);
+    pub const IDLE: Color32 = Color32::from_rgb(0x6A, 0x70, 0x79);
 
     /// The run log. Slightly darker than a card so it reads as a well.
-    pub const LOG_BG: Color32 = Color32::from_rgb(0x08, 0x0B, 0x12);
-    pub const LOG_TEXT: Color32 = Color32::from_rgb(0xC3, 0xCB, 0xDC);
-    pub const LOG_SEQ: Color32 = Color32::from_rgb(0x4A, 0x54, 0x6B);
+    pub const LOG_BG: Color32 = Color32::from_rgb(0x08, 0x09, 0x0B);
+    pub const LOG_TEXT: Color32 = Color32::from_rgb(0xC3, 0xC7, 0xCC);
+    /// Lifted from 2.60:1 — a gutter you cannot read is not a gutter.
+    pub const LOG_SEQ: Color32 = Color32::from_rgb(0x79, 0x7F, 0x88);
 }
 
 /// A 4pt rhythm. Anything off the scale is a bug or a commented exception.
@@ -163,8 +174,12 @@ pub mod pad {
 /// Buttons, nav items and table cells are all `BODY` on purpose: they are the
 /// same rank of thing and should not shift size between screens.
 pub mod text {
-    pub const DISPLAY: f32 = 26.0;
-    pub const TITLE: f32 = 18.0;
+    /// A stat tile's numeral. The largest thing on any screen.
+    pub const HERO: f32 = 32.0;
+    pub const DISPLAY: f32 = 24.0;
+    pub const TITLE: f32 = 19.0;
+    /// A card's own heading — a task title, a section name.
+    pub const CARD: f32 = 15.0;
     pub const HEADING: f32 = 14.0;
     pub const BODY: f32 = 13.0;
     pub const SMALL: f32 = 11.5;
@@ -179,6 +194,7 @@ pub mod radius {
     pub const SM: u8 = 6;
     pub const MD: u8 = 10;
     pub const LG: u8 = 14;
+    pub const XL: u8 = 18;
     pub const PILL: u8 = 99;
 }
 
@@ -186,7 +202,7 @@ pub mod radius {
 pub mod size {
     pub const ROW: f32 = 30.0;
     pub const CONTROL: f32 = 28.0;
-    pub const SIDEBAR_W: f32 = 212.0;
+    pub const SIDEBAR_W: f32 = 232.0;
     /// Avatar diameters. Two callers independently reached for `24.0` during
     /// the port, which is exactly the literal this module exists to prevent.
     pub const AVATAR_SM: f32 = 20.0;
@@ -203,7 +219,11 @@ pub mod size {
     /// structural response in the app, and the right one: it hands 160px back
     /// to the column that runs out first.
     pub const SIDEBAR_COLLAPSE_AT: f32 = 960.0;
-    pub const SIDEBAR_W_NARROW: f32 = 52.0;
+    pub const SIDEBAR_W_NARROW: f32 = 56.0;
+    /// The work column stops widening here; beyond it, cards just stretch.
+    pub const CONTENT_MAX: f32 = 1080.0;
+    /// A nav row, taller than a list row — it is a target, not data.
+    pub const NAV_ROW: f32 = 32.0;
     // No CONTENT_MAX: the body runs to the window edge. A centred measure suits
     // prose; a board wants every pixel.
 }
