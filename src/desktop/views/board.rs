@@ -1,4 +1,4 @@
-//! Board: the project list, and inside a project its flow, phases and tasks.
+//! Board: the project list, and inside a project its flow and its tasks.
 //!
 //! Two modes, chosen by `app.project`. The project detail screen opens with
 //! what the project *is* — name, a meta line of three facts, the description —
@@ -10,26 +10,27 @@
 //! not gate — a discipline may run ahead of the one to its left, so there is
 //! no arrow implying an order the data does not have.
 //!
-//! Below the strip everything is a card: a task is a `c::task_card`, and an
-//! unclaimed task is a slim card with a Claim button — the same shape the
-//! claim zone has on My tasks. The detail header itself is deliberately not a
-//! card; a card inside a page is a box around the page's own subject.
+//! Below the strip, the work itself, as a table on the same column machinery
+//! as the projects list. It was a column of cards grouped by phase; both
+//! halves of that were wrong. Cards cannot be compared down a page, which is
+//! the whole reason you open a project, and phases are a server-side detail —
+//! every project has one default phase and nobody here chooses it, so the
+//! headings were dividing the list by a fact with one value.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use egui::{Align, Layout, RichText};
+use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
+use super::projects::{AVATAR_OVERLAP, MAX_AVATARS, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
 use crate::desktop::design::{
-    avatar, cards as c, colour, shell, size, space, status_label, text, theme,
-    widgets as w,
+    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
+    viz, widgets as w,
 };
-use super::projects::{AVATAR_OVERLAP, MAX_AVATARS, PEOPLE_KEY, PROSE_W};
 use crate::desktop::App;
-
-const STATUSES: [&str; 6] = ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
-const KINDS: [&str; 2] = ["human", "agent"];
 
 /// The usual order of the flow. Anything the server reports that is not in
 /// here keeps its own order, after these — a new discipline should appear
@@ -38,15 +39,76 @@ const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
 
 /// Where a claim's reply is collected.
 const CLAIM_KEY: &str = "board:claim";
+/// Where an Add task's reply is collected. Under `board:` so the invalidation
+/// that follows a success drops the reply along with the stale list.
+const ADD_KEY: &str = "board:add-task";
+/// Which row the pointer was over last frame. A table row's own response only
+/// exists after its first cell, which is too late to tint that cell.
+const HOVER: &str = "board:tasks:hover";
+
+// ---- table geometry. Fixed so the columns line up with the header and with
+// ---- each other; the description takes whatever is left.
+const ROW_H: f32 = 38.0;
+/// The title is what the eye runs down, so it gets the widest fixed column;
+/// past this it truncates rather than pushing the row around.
+const COL_TASK: f32 = 260.0;
+/// The description's floor. Below this a one-liner is cut to nothing useful.
+const COL_DESCRIPTION: f32 = 180.0;
+/// A face plus a name that is usually two words.
+const COL_ASSIGNEE: f32 = 150.0;
+/// Just wide enough for the "P0" pill.
+const COL_PRIORITY: f32 = 52.0;
+const COL_STATUS: f32 = 104.0;
+const COL_CREATED: f32 = 78.0;
+
+/// The disciplines a task can be filed under. Same three the flow strip
+/// orders by.
+const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
+/// Priority, as the server stores it and as a person reads it. The value is a
+/// string because that is what `viz::select` slots hold; it becomes an int on
+/// submit.
+const PRIORITIES: [(&str, &str); 5] = [
+    ("0", "P0 Urgent"),
+    ("1", "P1 High"),
+    ("2", "P2 Normal"),
+    ("3", "P3 Low"),
+    ("4", "P4 Someday"),
+];
+/// What a new task defaults to: normal, not urgent. A form that defaults to P0
+/// produces a board where everything is P0.
+const DEFAULT_PRIORITY: &str = "2";
+
+/// The open Add task form. Every optional field is an `Option<String>` because
+/// that is the shape `viz::select` writes into.
+pub struct TaskDraft {
+    pub title: String,
+    pub body: String,
+    pub assignee: Option<String>,
+    pub discipline: Option<String>,
+    pub priority: Option<String>,
+}
+
+impl Default for TaskDraft {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            body: String::new(),
+            assignee: None,
+            discipline: None,
+            priority: Some(DEFAULT_PRIORITY.to_owned()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct State {
-    /// `None` means "any"; both filters go to the server as query params.
-    pub status: Option<&'static str>,
-    pub assignee_kind: Option<&'static str>,
     /// A claim is out; its reply invalidates the board when it lands.
     pub claiming: bool,
-    /// The open create form, if there is one.
+    /// The open create-project form, if there is one. Lives here rather than
+    /// in `projects.rs` because both screens share one `State`.
     pub creating: Option<super::projects::Draft>,
+    /// The open Add task form, if there is one.
+    pub adding: Option<TaskDraft>,
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -59,24 +121,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 // -------------------------------------------------------------- project detail
 
 fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
-    let status = app.board.status;
-    let kind = app.board.assignee_kind;
-
     let detail_key = format!("board:project:{project_id}");
     let flow_key = format!("board:flow:{project_id}");
-    let phases_key = format!("board:phases:{project_id}");
-    let tasks_key = format!(
-        "board:tasks:{project_id}:{}:{}",
-        status.unwrap_or("any"),
-        kind.unwrap_or("any")
-    );
-    let mut tasks_path = format!("/api/user/tasks?projectId={project_id}");
-    if let Some(s) = status {
-        tasks_path.push_str(&format!("&status={s}"));
-    }
-    if let Some(k) = kind {
-        tasks_path.push_str(&format!("&assigneeKind={k}"));
-    }
+    let tasks_key = format!("board:tasks:{project_id}");
+    let tasks_path = format!("/api/user/tasks?projectId={project_id}");
 
     let can_write = app.can_write();
     let net = app.net.as_mut().unwrap();
@@ -97,13 +145,24 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             None => {}
         }
     }
+    let net = app.net.as_mut().unwrap();
+
+    // A finished Add task: the list here, the flow strip, the sidebar counts
+    // and both personal lists all hold a board without it.
+    if net.data(ADD_KEY).is_some() {
+        net.invalidate_prefix("board:");
+        net.invalidate("home");
+        net.invalidate_prefix("task:");
+        net.invalidate_prefix("mytasks");
+        app.board.adding = None;
+    }
+    let net = app.net.as_mut().unwrap();
 
     net.get_once(&detail_key, &format!("/api/user/projects/{project_id}"));
     net.get_once(&flow_key, &format!("/api/user/projects/{project_id}/flow"));
-    net.get_once(&phases_key, &format!("/api/user/projects/{project_id}/phases"));
     net.get_once(&tasks_key, &tasks_path);
-    // The roster is ids; the meta line wants faces and names. Same key the
-    // list screen fills, so arriving from it costs nothing.
+    // The roster is ids; the meta line and the assignee picker want faces and
+    // names. Same key the list screen fills, so arriving from it costs nothing.
     net.get_once(PEOPLE_KEY, "/api/user/people");
 
     let detail = net.data(&detail_key).cloned();
@@ -116,30 +175,17 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let flow_loading = net.is_loading(&flow_key);
     let flow_error = net.error(&flow_key).map(str::to_string);
 
-    let mut phases = array(net.data(&phases_key));
-    phases.sort_by_key(|p| p.get("position").and_then(Value::as_i64).unwrap_or(0));
-    let phases_loading = net.is_loading(&phases_key);
-    let phases_error = net.error(&phases_key).map(str::to_string);
-
-    let tasks = array(net.data(&tasks_key));
+    let mut tasks = array(net.data(&tasks_key));
     let tasks_loading = net.is_loading(&tasks_key);
     let tasks_error = net.error(&tasks_key).map(str::to_string);
     let claim_error = net.error(CLAIM_KEY).map(str::to_string);
-    let busy = net.is_loading(CLAIM_KEY) || app.board.claiming;
+    let add_error = net.error(ADD_KEY).map(str::to_string);
+    let posting = net.is_loading(ADD_KEY);
 
-    // Tasks arrive for the whole project in one call; bucket them per phase,
-    // and index them by id so a blocker can be named rather than numbered.
-    let mut by_phase: HashMap<String, Vec<Value>> = HashMap::new();
-    let mut titles: HashMap<String, String> = HashMap::new();
-    for t in tasks {
-        titles.insert(str_at(&t, "id").to_string(), str_at(&t, "title").to_string());
-        by_phase.entry(str_at(&t, "phaseId").to_string()).or_default().push(t);
-    }
+    sort_tasks(&mut tasks);
 
     let mut back = false;
     let mut open_task: Option<String> = None;
-    let mut claim: Option<String> = None;
-    let mut filters_changed = false;
 
     if shell::back(ui, "Projects").clicked() {
         back = true;
@@ -156,7 +202,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
         ui.label(
-            egui::RichText::new(name)
+            RichText::new(name)
                 .size(text::TITLE)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                 .color(colour::TEXT),
@@ -194,71 +240,68 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         }
     }
 
-    ui.add_space(space::XL);
-    ui.horizontal(|ui| {
-        filters_changed |=
-            filter(ui, "board:filter:status", "Any status", &STATUSES, &mut app.board.status);
-        ui.add_space(space::SM);
-        filters_changed |=
-            filter(ui, "board:filter:kind", "Anyone", &KINDS, &mut app.board.assignee_kind);
-
-        if app.board.status.is_some() || app.board.assignee_kind.is_some() {
-            ui.add_space(space::SM);
-            if w::secondary(ui, "Clear", true).clicked() {
-                app.board.status = None;
-                app.board.assignee_kind = None;
-                filters_changed = true;
-            }
-        }
-    });
-
     if let Some(err) = claim_error {
         ui.add_space(space::SM);
         w::error(ui, &err);
     }
-    ui.add_space(space::LG);
 
-    if let Some(err) = phases_error {
+    // The button lives in the heading's trailing slot rather than under the
+    // table: the thing you add to is named right there.
+    let mut start_add = false;
+    let form_open = app.board.adding.is_some();
+    shell::section_count_with(ui, "Tasks", tasks.len(), |ui| {
+        // While the form is open the button would only re-open what is open.
+        if !form_open && w::primary(ui, "Add task", can_write).clicked() {
+            start_add = true;
+        }
+    });
+    if start_add {
+        app.board.adding = Some(TaskDraft::default());
+    }
+
+    if let Some(err) = &add_error {
+        w::error(ui, err);
+        ui.add_space(space::MD);
+    }
+
+    // Tasks can only be handed to people who are on the project, so the picker
+    // is this project's roster, not the whole company.
+    let members: Vec<(String, String)> = head
+        .get("memberIds")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .filter_map(|id| names.get(id).map(|n| (id.to_owned(), n.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut submit: Option<Value> = None;
+    let mut close_form = false;
+    if let Some(draft) = app.board.adding.as_mut() {
+        match add_form(ui, draft, &members, posting) {
+            Some(Form::Submit(body)) => submit = Some(body),
+            Some(Form::Cancel) => close_form = true,
+            None => {}
+        }
+        ui.add_space(space::LG);
+    }
+    if close_form {
+        app.board.adding = None;
+    }
+
+    if let Some(err) = tasks_error {
         w::error(ui, &err);
-    } else if phases.is_empty() {
-        if phases_loading {
-            w::loading(ui, "phases");
-        } else {
-            // The common case on a fresh project, so it teaches the next move
-            // rather than reporting an absence.
-            w::empty(
-                ui,
-                "No phases yet.",
-                "Phases hold the tasks. Add one to start planning this project.",
-            );
+    } else if tasks.is_empty() {
+        if tasks_loading {
+            w::loading(ui, "tasks");
+        } else if app.board.adding.is_none() {
+            w::empty(ui, "No tasks yet.", "Add one and assign it to someone on this project.");
         }
     } else {
-        for p in &phases {
-            let phase_id = str_at(p, "id");
-            let none = Vec::new();
-            let list = by_phase.get(phase_id).unwrap_or(&none);
-            let done = list.iter().filter(|t| str_at(t, "status") == "done").count();
-
-            phase_header(ui, p, done, list.len());
-
-            if let Some(err) = &tasks_error {
-                w::error(ui, err);
-            } else if list.is_empty() {
-                if tasks_loading {
-                    w::loading(ui, "tasks");
-                } else {
-                    w::empty(ui, "No tasks in this phase.", "");
-                }
-            } else {
-                for t in list {
-                    match task_card(ui, t, &titles, can_write && !busy) {
-                        Some(Hit::Open(id)) => open_task = Some(id),
-                        Some(Hit::Claim(id)) => claim = Some(id),
-                        None => {}
-                    }
-                }
-            }
-        }
+        table(ui, &tasks, &mut open_task);
+        ui.add_space(space::XXL);
     }
 
     if back {
@@ -268,15 +311,30 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         app.task = Some(id);
     }
     let net = app.net.as_mut().unwrap();
-    if filters_changed {
-        net.invalidate_prefix("board:tasks");
+    if let Some(body) = submit {
+        // Drop a previous attempt's error, so the banner belongs to this one.
+        net.invalidate(ADD_KEY);
+        net.post(ADD_KEY, &format!("/api/user/projects/{project_id}/tasks"), body);
     }
-    if let Some(id) = claim {
-        // Drop a previous claim's error, so the banner belongs to this attempt.
-        net.invalidate(CLAIM_KEY);
-        net.post(CLAIM_KEY, &format!("/api/user/tasks/{id}/claim"), Value::Null);
-        app.board.claiming = true;
+}
+
+/// Open work first, then what is finished, then what was abandoned; inside a
+/// group the urgent thing on top, and ties broken by age so the order does not
+/// shuffle between frames.
+fn sort_tasks(tasks: &mut [Value]) {
+    fn rank(status: &str) -> u8 {
+        match status {
+            "done" => 1,
+            "dropped" => 2,
+            _ => 0,
+        }
     }
+    tasks.sort_by(|a, b| {
+        rank(str_at(a, "status"))
+            .cmp(&rank(str_at(b, "status")))
+            .then(num_at(a, "priority").cmp(&num_at(b, "priority")))
+            .then(str_at(a, "createdAt").cmp(str_at(b, "createdAt")))
+    });
 }
 
 /// The three facts about a project, in one quiet row: when it started, who is
@@ -348,13 +406,13 @@ fn meta_line(
 
 /// A meta-line label: the word, not the fact.
 fn label(ui: &mut egui::Ui, s: &str) {
-    ui.label(egui::RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
 }
 
 /// A meta-line value. Full ink — the owner wants the numbers readable at a
 /// glance, and a muted figure is one the eye skips.
 fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
-    ui.label(egui::RichText::new(s).size(text::SMALL).color(colour::TEXT))
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT))
 }
 
 /// "3 days ago", with the absolute date for the hover.
@@ -399,7 +457,7 @@ fn description(ui: &mut egui::Ui, body: &str) {
             if i > 0 {
                 ui.add_space(space::MD);
             }
-            ui.label(egui::RichText::new(para).size(text::BODY).color(colour::TEXT_2));
+            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2));
         }
     });
 }
@@ -458,7 +516,7 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
                 ui.vertical(|ui| {
                     ui.set_width(width);
                     ui.label(
-                        egui::RichText::new(name)
+                        RichText::new(name)
                             .size(text::SMALL)
                             .family(egui::FontFamily::Name(theme::MEDIUM.into()))
                             .color(colour::TEXT_2),
@@ -468,9 +526,9 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
                     ui.add_space(space::SM);
                     // Right-aligned under the bar's far end, so the figures
                     // line up as a column of their own down the strip.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            egui::RichText::new(format!("{done}/{total}"))
+                            RichText::new(format!("{done}/{total}"))
                                 .size(text::CAPTION)
                                 .color(colour::TEXT),
                         );
@@ -487,186 +545,259 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
     }
 }
 
-/// The header above a phase's tasks: its number and name, how many tasks it
-/// holds, then its state and progress on the right.
-fn phase_header(ui: &mut egui::Ui, p: &Value, done: usize, total: usize) {
-    let position = p.get("position").and_then(Value::as_i64).unwrap_or(0);
-    let status = str_at(p, "status");
-    let gate = p.get("gate").and_then(Value::as_bool).unwrap_or(false);
-    let label = format!("{position:02} · {}", str_at(p, "name"));
+// --------------------------------------------------------------------- table
 
-    shell::section_count_with(ui, &label, total, |ui| {
-        w::muted(ui, &format!("{done} / {total}"));
-        ui.add_space(space::SM);
-        if gate {
-            c::chip(ui, "gate", c::Tone::Running, false);
-        }
-        c::chip(ui, status_label(status), c::status_tone(status), true);
-    });
+/// The project's tasks. Same frame, band, hover and keyboard machinery as the
+/// projects list — a task row should feel like a project row.
+fn table(ui: &mut egui::Ui, rows: &[Value], open: &mut Option<String>) {
+    let hover_id = egui::Id::new(HOVER);
+    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
+    let mut now: Option<usize> = None;
+    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
+
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
+        .show(ui, |ui| {
+            // Reserved now, painted once the header's extent is known: the
+            // band has to sit under the header text, not over it.
+            let band = ui.painter().add(egui::Shape::Noop);
+            let top = ui.cursor().top();
+            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
+
+            TableBuilder::new(ui)
+                .id_salt("board:tasks:table")
+                .vscroll(false)
+                .sense(egui::Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::exact(COL_TASK).clip(true))
+                .column(Column::remainder().at_least(COL_DESCRIPTION).clip(true))
+                .column(Column::exact(COL_ASSIGNEE).clip(true))
+                .column(Column::exact(COL_PRIORITY))
+                .column(Column::exact(COL_STATUS))
+                .column(Column::exact(COL_CREATED))
+                .header(size::CONTROL, |mut row| {
+                    for name in
+                        ["Task", "Description", "Assignee", "Priority", "Status", "Created"]
+                    {
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(name)
+                                    .size(text::CAPTION)
+                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                    .color(colour::TEXT_MUTED),
+                            );
+                        });
+                    }
+                })
+                .body(|mut body| {
+                    for (i, t) in rows.iter().enumerate() {
+                        body.row(ROW_H, |mut row| {
+                            row.set_hovered(was == Some(i));
+                            row.set_overline(i > 0);
+                            task_row(&mut row, t);
+                            responses.push(row.response());
+                        });
+                    }
+                });
+
+            // A row is hand-painted, so Tab does not reach it on its own.
+            // Handled after the table rather than inside the body closure,
+            // which holds the only `Ui` the focus ring can be drawn on.
+            for (i, response) in responses.into_iter().enumerate() {
+                let response = motion::operable_sm(ui, response);
+                if response.hovered() {
+                    now = Some(i);
+                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    *open = Some(str_at(&rows[i], "id").to_owned());
+                }
+            }
+
+            let band_rect = egui::Rect::from_min_max(
+                egui::pos2(ui.max_rect().left() - space::MD, top),
+                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
+            );
+            ui.painter().set(
+                band,
+                egui::Shape::rect_filled(
+                    band_rect,
+                    egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
+                    colour::CHROME,
+                ),
+            );
+            ui.painter().hline(
+                band_rect.x_range(),
+                band_rect.bottom(),
+                egui::Stroke::new(1.0, colour::LINE),
+            );
+        });
+
+    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
 }
 
-/// What a click on a card meant.
-enum Hit {
-    Open(String),
-    Claim(String),
-}
-
-/// One task. `titles` names blockers that are in this project's task list.
-///
-/// Unclaimed work drops to a slim card: it has no state worth four chips and
-/// no people, and the one thing to do with it is take it — the same shape the
-/// claim zone has on My tasks.
-fn task_card(
-    ui: &mut egui::Ui,
-    t: &Value,
-    titles: &HashMap<String, String>,
-    can_claim: bool,
-) -> Option<Hit> {
-    let status = str_at(t, "status").to_string();
-    let is_agent = str_at(t, "assigneeKind") == "agent";
-    let claimed = str_at(t, "claimedBy").to_string();
-    let person = str_at(t, "assigneePersonId").to_string();
-    let id = str_at(t, "id").to_string();
-    let title = str_at(t, "title").to_string();
-    let discipline = str_at(t, "discipline").to_string();
-    let assigned = is_agent || !claimed.is_empty() || !person.is_empty();
+fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
+    let status = str_at(t, "status");
     let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
 
-    if !assigned && !blocked {
-        return claimable_card(ui, &id, &title, &discipline, can_claim);
-    }
-
-    // The blocker's title where we hold it, its short id where the blocker
-    // lives in a phase the current filter excluded.
-    let waiting = blocked.then(|| {
-        let first = t
-            .get("blockedBy")
-            .and_then(Value::as_array)
-            .and_then(|b| b.first())
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        titles
-            .get(first)
-            .cloned()
-            .unwrap_or_else(|| first.get(..8).unwrap_or(first).to_string())
-    });
-
-    // Blockers beat the status column: a task marked in progress that waits on
-    // someone else is not in progress, and the chip should not claim it is.
-    let state = if blocked { "blocked" } else { status.as_str() };
-
-    let mut chips: Vec<(String, c::Tone, bool)> = vec![(age(t), c::Tone::Quiet, false)];
-    if !discipline.is_empty() {
-        chips.push((discipline.clone(), c::discipline_tone(&discipline), false));
-    }
-    chips.push((capitalise(status_label(state)), c::status_tone(state), true));
-
-    let context = match &waiting {
-        Some(what) => waiting_on(what),
-        None => str_at(t, "phaseName").to_string(),
-    };
-
-    let trailing: Vec<(String, c::Tone)> = if is_agent {
-        let label = if claimed.is_empty() { "agent".to_owned() } else { claimed.clone() };
-        vec![(label, c::Tone::Agent)]
-    } else {
-        Vec::new()
-    };
-    let seed = if claimed.is_empty() { person } else { claimed };
-    // The agent chip already names who holds it; a face beside it is noise.
-    let people: Vec<String> =
-        if is_agent || seed.is_empty() { Vec::new() } else { vec![seed] };
-
-    let hit = c::task_card(
-        ui,
-        &c::TaskCard {
-            title: &title,
-            chips: &chips,
-            context: &context,
-            trailing_chips: &trailing,
-            people: &people,
-        },
-    );
-    hit.clicked().then_some(Hit::Open(id))
-}
-
-/// An unclaimed task: a discipline, a title, and the one thing to do with it.
-fn claimable_card(
-    ui: &mut egui::Ui,
-    id: &str,
-    title: &str,
-    discipline: &str,
-    can_claim: bool,
-) -> Option<Hit> {
-    let mut claimed = false;
-    let hit = c::slim_card(ui, |ui| {
-        if !discipline.is_empty() {
-            c::chip(ui, discipline, c::discipline_tone(discipline), false);
-            ui.add_space(space::XS);
-        }
+    row.col(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
         ui.label(
-            egui::RichText::new(title)
+            RichText::new(str_at(t, "title"))
                 .size(text::BODY)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                 .color(colour::TEXT),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            claimed = w::button(ui, "Claim", w::Emphasis::Ghost, can_claim).clicked();
-            ui.add_space(space::SM);
-            w::muted(ui, "unassigned");
-        });
-    })
-    .interact(egui::Sense::click());
+        // Blockers beat the status column: a task marked in progress that
+        // waits on someone else is not in progress, and the chip beside its
+        // title is what says so.
+        if blocked {
+            c::chip(ui, "blocked", c::Tone::Blocked, false);
+        }
+    });
 
-    if claimed {
-        return Some(Hit::Claim(id.to_string()));
+    row.col(|ui| {
+        let body = str_at(t, "body").lines().next().unwrap_or("").trim();
+        let (copy, ink) = if body.is_empty() {
+            ("\u{2014}", colour::TEXT_FAINT)
+        } else {
+            (body, colour::TEXT_MUTED)
+        };
+        // One line. The column clips, and a wrapped cell would make one row
+        // taller than the rest of the table.
+        ui.label(RichText::new(copy).size(text::SMALL).color(ink));
+    });
+
+    row.col(|ui| {
+        let who = str_at(t, "assigneeName");
+        if who.is_empty() {
+            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+            return;
+        }
+        ui.spacing_mut().item_spacing.x = space::XS;
+        avatar::small(ui, who, size::AVATAR_SM);
+        ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
+    });
+
+    row.col(|ui| {
+        let p = num_at(t, "priority").clamp(0, 4);
+        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+    });
+
+    row.col(|ui| {
+        c::chip(ui, status_label(status), c::status_tone(status), true);
+    });
+
+    row.col(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(since(str_at(t, "createdAt")))
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
+        });
+    });
+}
+
+/// How loud a priority is allowed to be. P0 and P1 are the only ones worth
+/// colour; below normal the pill recedes, because a column of five tinted
+/// pills is a column you stop reading.
+fn priority_tone(priority: i64) -> c::Tone {
+    match priority {
+        0 => c::Tone::Blocked,
+        1 => c::Tone::Running,
+        2 => c::Tone::Neutral,
+        _ => c::Tone::Quiet,
     }
-    hit.clicked().then(|| Hit::Open(id.to_string()))
+}
+
+// ------------------------------------------------------------------ add task
+
+/// What the form said this frame.
+enum Form {
+    Submit(Value),
+    Cancel,
+}
+
+/// The Add task form, inline under the heading rather than in a modal.
+///
+/// Same trade the create-project form makes: covering the list to ask what to
+/// add to the list is worse than pushing it down a few rows.
+fn add_form(
+    ui: &mut egui::Ui,
+    draft: &mut TaskDraft,
+    members: &[(String, String)],
+    busy: bool,
+) -> Option<Form> {
+    let mut out = None;
+
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        w::field(ui, "Title", &mut draft.title, false, "What needs doing");
+        ui.add_space(space::MD);
+        w::field_multiline(ui, "Description", &mut draft.body, 2, "Any detail worth having.");
+        ui.add_space(space::MD);
+
+        let disciplines: Vec<(String, String)> =
+            DISCIPLINES.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
+        let priorities: Vec<(String, String)> =
+            PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            viz::select(ui, "Unassigned", members, &mut draft.assignee);
+            viz::select(ui, "Any discipline", &disciplines, &mut draft.discipline);
+            viz::select(ui, "P2 Normal", &priorities, &mut draft.priority);
+        });
+        ui.add_space(space::LG);
+
+        // An untitled task has nothing to be listed as, so Add stays off.
+        let ready = !draft.title.trim().is_empty() && !busy;
+        ui.horizontal(|ui| {
+            if w::primary(ui, if busy { "Adding…" } else { "Add" }, ready).clicked() {
+                out = Some(Form::Submit(serde_json::json!({
+                    "title": draft.title.trim(),
+                    "body": draft.body.trim(),
+                    "assigneeId": draft.assignee,
+                    "discipline": draft.discipline,
+                    "priority": draft
+                        .priority
+                        .as_deref()
+                        .and_then(|p| p.parse::<i32>().ok())
+                        .unwrap_or(2),
+                })));
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                out = Some(Form::Cancel);
+            }
+        });
+    });
+
+    out
 }
 
 // ---------------------------------------------------------------------- pieces
 
-/// A one-of-many dropdown over `options`, `None` meaning any. Returns true when
-/// the selection changed.
-fn filter(
-    ui: &mut egui::Ui,
-    id: &str,
-    any_label: &str,
-    options: &[&'static str],
-    slot: &mut Option<&'static str>,
-) -> bool {
-    let mut changed = false;
-    let selected = status_label(slot.unwrap_or(any_label)).to_string();
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(egui::RichText::new(selected).size(text::BODY))
-        .show_ui(ui, |ui| {
-            let any = egui::RichText::new(any_label).size(text::BODY);
-            if ui.selectable_label(slot.is_none(), any).clicked() && slot.is_some() {
-                *slot = None;
-                changed = true;
-            }
-            for opt in options {
-                let label = egui::RichText::new(status_label(opt)).size(text::BODY);
-                if ui.selectable_label(*slot == Some(*opt), label).clicked()
-                    && *slot != Some(*opt)
-                {
-                    *slot = Some(*opt);
-                    changed = true;
-                }
-            }
-        });
-    changed
+/// How long ago, in the two characters a table column has room for.
+fn since(ts: &str) -> String {
+    let Ok(then) = DateTime::parse_from_rfc3339(ts) else {
+        return String::new();
+    };
+    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
+        s if s < 3600 => format!("{}m", (s / 60).max(1)),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
-/// `w::blocked_by`'s wording, as a string — a card's context line is text, not
-/// a widget.
-/// ponytail: the same sentence lives in mytasks.rs. Fold them together the day
-/// a third screen needs it.
-fn waiting_on(what: &str) -> String {
-    format!("\u{2933} waiting on \u{201c}{what}\u{201d}")
-}
-
-/// How long since the task last moved, for the quiet leading chip.
+/// How long since the task last moved. Nothing in this file reads it any more
+/// — the table dates a task from when it was created — but it is part of this
+/// module's exported vocabulary and the task views are mid-rewrite, so it
+/// stays rather than being deleted out from under them.
+#[allow(dead_code)]
 pub(super) fn age(t: &Value) -> String {
     let Ok(then) = DateTime::parse_from_rfc3339(str_at(t, "updatedAt")) else {
         return "no activity".to_owned();
@@ -676,14 +807,6 @@ pub(super) fn age(t: &Value) -> String {
         s if s < 3600 => format!("{}m ago", s / 60),
         s if s < 86_400 => format!("{}h ago", s / 3600),
         s => format!("{}d ago", s / 86_400),
-    }
-}
-
-fn capitalise(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }
 
