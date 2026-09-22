@@ -283,16 +283,18 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 /// group the urgent thing on top, and ties broken by age so the order does not
 /// shuffle between frames.
 fn sort_tasks(tasks: &mut [Value]) {
-    fn rank(status: &str) -> u8 {
-        match status {
-            "done" => 1,
-            "dropped" => 2,
-            _ => 0,
+    // `doneAt` is what says a task is over: the terminal state differs by
+    // track — design stops at completed, engineering carries on to shipped —
+    // and only the stamp knows which one this task's assignee is on.
+    fn rank(t: &Value) -> u8 {
+        if str_at(t, "status") == "dropped" {
+            return 2;
         }
+        u8::from(!t.get("doneAt").map_or(true, Value::is_null))
     }
     tasks.sort_by(|a, b| {
-        rank(str_at(a, "status"))
-            .cmp(&rank(str_at(b, "status")))
+        rank(a)
+            .cmp(&rank(b))
             .then(num_at(a, "priority").cmp(&num_at(b, "priority")))
             .then(str_at(a, "createdAt").cmp(str_at(b, "createdAt")))
     });

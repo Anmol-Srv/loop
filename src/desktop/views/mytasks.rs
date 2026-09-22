@@ -37,9 +37,12 @@ struct State {
     priority: Option<String>,
 }
 
-/// The status vocabulary, in the order it reads in the menu.
-const STATUSES: [&str; 6] =
-    ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
+/// The status vocabulary, in the order it reads in the menu: both tracks' happy
+/// paths run left to right, then the two states either of them can land in.
+/// `handoff` is design-only and `shipped` engineering-only, but the menu offers
+/// every value — a personal list holds work from both tracks.
+const STATUSES: [&str; 7] =
+    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
 
 // ---- table geometry. Fixed so every group's columns line up with every
 // ---- other's; the description takes whatever is left.
@@ -264,8 +267,13 @@ fn blocked(t: &Value) -> bool {
     num(t, "blockersDone") < num(t, "blockersTotal")
 }
 
+/// Whether the task is off your plate. `doneAt` is the server's single answer
+/// for both tracks — it is stamped only at the terminal state, which is
+/// `completed` for design and `shipped` for engineering, so no status test can
+/// stand in for it. Dropped work is off the plate too without ever earning the
+/// stamp, which is why it rides alongside rather than being inferred.
 fn finished(t: &Value) -> bool {
-    matches!(str_at(t, "status"), Some("done") | Some("dropped"))
+    t.get("doneAt").is_some_and(|v| !v.is_null()) || str_at(t, "status") == Some("dropped")
 }
 
 /// The group a task is filed under. A task always has a project; the fallback
@@ -298,7 +306,7 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-/// "In review" from "in review". The vocabulary still comes from
+/// "In progress" from "in progress". The vocabulary still comes from
 /// `status_label`; this only decides where the sentence starts.
 fn sentence(s: &str) -> String {
     let mut chars = s.chars();

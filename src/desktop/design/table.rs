@@ -244,8 +244,19 @@ pub fn show(
                 .vscroll(false)
                 .sense(egui::Sense::click())
                 .cell_layout(Layout::left_to_right(Align::Center));
-            for c in cols.iter().zip(&visible).filter(|(_, v)| **v).map(|(c, _)| c) {
+            // Once the remainder column has been dropped every column left is
+            // fixed, so the table stops short of the frame it sits in — and
+            // the band and the row hover, which span the frame, hang past it.
+            // The last column takes the slack instead.
+            let fills = cols
+                .iter()
+                .zip(&visible)
+                .any(|(c, v)| *v && matches!(c.width, Width::Remainder(_)));
+            let last = visible.iter().rposition(|v| *v);
+            for (i, c) in cols.iter().enumerate().filter(|(i, _)| visible[*i]) {
+                let stretch = !fills && Some(i) == last;
                 builder = builder.column(match c.width {
+                    Width::Exact(w) if stretch => Column::remainder().at_least(w).clip(true),
                     Width::Exact(w) => Column::exact(w).clip(true),
                     Width::Remainder(min) => Column::remainder().at_least(min).clip(true),
                 });

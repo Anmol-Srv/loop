@@ -79,24 +79,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         ("Control Plane", "Airtribe engineering"),
         &groups,
         |ui| {
+            // The buttons are laid out first so they own their corner: a long
+            // address then truncates into what is left instead of running
+            // under them.
             ui.horizontal(|ui| {
-                if !me.is_empty() {
-                    avatar::small(ui, &me, size::AVATAR_MD);
-                    ui.add_space(space::XS);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        ui.label(
-                            egui::RichText::new(me.split('@').next().unwrap_or(&me))
-                                .size(text::SMALL)
-                                .color(colour::TEXT),
-                        );
-                        ui.label(
-                            egui::RichText::new(&role)
-                                .size(text::CAPTION)
-                                .color(colour::TEXT_FAINT),
-                        );
-                    });
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if w::icon_button(ui, icon::SIGN_OUT, "", w::Emphasis::Ghost, true)
                         .on_hover_text("Sign out")
@@ -110,6 +96,35 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                     {
                         refresh = true;
                     }
+                    if me.is_empty() {
+                        return;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        avatar::small(ui, &me, size::AVATAR_MD);
+                        ui.add_space(space::XS);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(me.split('@').next().unwrap_or(&me))
+                                        .size(text::SMALL)
+                                        .color(colour::TEXT),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            )
+                            .on_hover_text(me.as_str());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&role)
+                                        .size(text::CAPTION)
+                                        .color(colour::TEXT_FAINT),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            );
+                        });
+                    });
                 });
             });
         },

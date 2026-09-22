@@ -55,9 +55,17 @@ const VIZ_H: &str = "home:viz-h";
 /// Days in the completed chart. Seven, because the label says week.
 const WEEK: usize = 7;
 
-/// The status vocabulary, in the order it reads on the donut and in the
-/// filter menu. `status_label` turns each one into words.
-const STATUSES: [&str; 5] = ["done", "in_progress", "in_review", "blocked", "open"];
+/// The status vocabulary, in the order it reads in the filter menu: the two
+/// tracks' happy paths first, then the two states either track can land in.
+/// `status_label` turns each one into words.
+const STATUSES: [&str; 7] =
+    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+
+/// The donut's slices, finished-first so the ring fills clockwise from the
+/// outcome you want. `dropped` is absent on purpose: abandoned work is not
+/// work, and counting it made the centre percentage a share of a total nobody
+/// intends to finish.
+const DONUT: [&str; 6] = ["shipped", "completed", "in_progress", "handoff", "blocked", "open"];
 
 /// Table geometry. Fixed so the columns line up with the header and with each
 /// other; the task column takes whatever is left. Alignment is declared here
@@ -205,13 +213,18 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 /// Status as a ring. The centre carries the only number worth reading from
 /// across the room: how much of this is finished.
 fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
-    let count = |s: &str| rows.iter().filter(|t| bucket(t) == s).count();
-    let total = rows.len();
-    let done = count("done");
+    // Dropped work is off the board, so it is off the ring and out of the
+    // denominator too — otherwise the percentage measures the wrong pile.
+    let live: Vec<&&Value> = rows.iter().filter(|t| bucket(t) != "dropped").collect();
+    let count = |s: &str| live.iter().filter(|t| bucket(t) == s).count();
+    let total = live.len();
+    // `doneAt` is the server's one answer for both tracks: design ends at
+    // completed, engineering at shipped, and only the terminal state stamps it.
+    let done = live.iter().filter(|t| finished(t)).count();
     let pct = if total == 0 { 0 } else { done * 100 / total };
 
     viz::card(ui, "Status", &plural(total, "task"), min_body, |ui| {
-        let slices: Vec<viz::Slice<'_>> = STATUSES
+        let slices: Vec<viz::Slice<'_>> = DONUT
             .iter()
             .zip(LABELS)
             .map(|(status, label)| viz::Slice {
@@ -224,9 +237,10 @@ fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
     })
 }
 
-/// Sentence-cased status names, positionally matched to `STATUSES`. Built once
+/// Sentence-cased status names, positionally matched to `DONUT`. Built once
 /// rather than capitalising in the render loop.
-const LABELS: [&str; 5] = ["Done", "In progress", "In review", "Blocked", "Open"];
+const LABELS: [&str; 6] =
+    ["Shipped", "Completed", "In progress", "Handoff", "Blocked", "Open"];
 
 /// Progress per discipline, from the server's per-project rollup — the one
 /// number on this page that covers every task, not just the ones on screen.
@@ -278,14 +292,17 @@ fn discipline_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
 }
 
 /// Completions per day for the last week, bucketed on `doneAt` — the moment
-/// the task was moved to done, not the last time anyone touched it. The delta
+/// the task reached the end of its track, not the last time anyone touched it.
+/// Design ends at completed and engineering at shipped; the stamp knows. The delta
 /// compares the same measure over the previous week.
 fn completed_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
     let today = Local::now().date_naive();
     let mut buckets = vec![0.0_f32; WEEK];
     let mut previous = 0usize;
 
-    for t in rows.iter().filter(|t| str_at(t, "status") == Some("done")) {
+    // `doneAt` alone decides: it is stamped at whichever state ends the task's
+    // track, so there is no status to cross-check it against.
+    for t in rows {
         let Some(raw) = str_at(t, "doneAt") else { continue };
         let Ok(when) = DateTime::parse_from_rfc3339(raw) else { continue };
         let days = (today - when.with_timezone(&Local).date_naive()).num_days();
@@ -577,13 +594,23 @@ fn outstanding(t: &Value) -> i64 {
     (num(t, "blockersTotal") - num(t, "blockersDone")).max(0)
 }
 
+/// Whether the task is over. The server stamps `doneAt` at the terminal state
+/// of whichever track the assignee's department puts it on, so this is the one
+/// test that is right for both — `completed` is the end for design and the
+/// middle for engineering, and the status alone cannot tell you which.
+fn finished(t: &Value) -> bool {
+    t.get("doneAt").is_some_and(|v| !v.is_null())
+}
+
 /// The donut's hue per status. Deliberately not `status_colour`: a ring needs
 /// its unfinished remainder to read as the track, so "open" is a line colour.
+/// The rest match the chips, so a slice and a row agree on what green means.
 fn donut_tint(status: &str) -> Color32 {
     match status {
-        "done" => colour::OK,
+        "shipped" => colour::OK,
+        "completed" => colour::INFO,
         "in_progress" => colour::ACCENT,
-        "in_review" => colour::WARN,
+        "handoff" => colour::AGENT,
         "blocked" => colour::DANGER,
         _ => colour::LINE_STRONG,
     }
