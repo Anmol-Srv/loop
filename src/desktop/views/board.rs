@@ -54,9 +54,8 @@ const STATUS_CHIP_W: f32 = 96.0;
 pub struct Draft {
     pub title: String,
     pub description: String,
-    /// A person id, or `None` for unassigned — which is a real answer, not a
-    /// missing one.
-    pub lead: Option<String>,
+    /// Person ids, in the order they were picked. Empty is a real answer.
+    pub members: Vec<String>,
 }
 
 #[derive(Default)]
@@ -94,8 +93,8 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
     let net = app.net.as_mut().unwrap();
 
     net.get_once(PROJECTS_KEY, "/api/user/projects");
-    // The lead picker needs names, and the cards need them to resolve
-    // `leadId`. One fetch serves both.
+    // The assignee picker needs names, and the cards need them to resolve
+    // `memberIds`. One fetch serves both.
     net.get_once(PEOPLE_KEY, "/api/user/people");
 
     let list = array(net.data(PROJECTS_KEY));
@@ -234,14 +233,14 @@ fn create_form(
         );
         ui.add_space(space::MD);
 
-        w::caption(ui, "Lead");
+        w::caption(ui, "Assignees");
         ui.add_space(space::XXS);
         let options: Vec<(String, String)> = people
             .iter()
             .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
             .collect();
         ui.horizontal(|ui| {
-            viz::select(ui, "Unassigned", &options, &mut draft.lead);
+            viz::multi_select(ui, "Nobody yet", &options, &mut draft.members);
         });
         ui.add_space(space::LG);
 
@@ -253,7 +252,7 @@ fn create_form(
                 submit = Some(serde_json::json!({
                     "name": draft.title.trim(),
                     "description": draft.description.trim(),
-                    "leadId": draft.lead,
+                    "memberIds": draft.members,
                 }));
             }
             ui.add_space(space::XS);
@@ -273,7 +272,7 @@ fn create_form(
 /// One project. Returns true when it was clicked into.
 ///
 /// Compact and fixed-shape: name and status on top, one line of description,
-/// then who leads it and how far along it is. A brand new project has nothing
+/// then who is on it and how far along it is. A brand new project has nothing
 /// to measure, so its bar is an empty track and its count says so.
 fn project_card(
     ui: &mut egui::Ui,
@@ -306,7 +305,7 @@ fn project_card(
             .truncate(),
         );
 
-        // Push the footer to the bottom so every card's lead and bar sit on
+        // Push the footer to the bottom so every card's roster and bar sit on
         // the same line across the row.
         let footer_h = size::AVATAR_SM + space::SM + space::XS;
         let slack = ui.available_height() - footer_h;
@@ -315,13 +314,23 @@ fn project_card(
         }
 
         ui.horizontal(|ui| {
-            match names.get(str_at(p, "leadId")) {
-                Some(name) => {
-                    avatar::small(ui, name, size::AVATAR_SM);
-                    ui.add_space(space::XS);
-                    w::caption(ui, name);
-                }
-                None => w::caption(ui, "No lead"),
+            // The roster as a run of avatars; names come back on hover. A
+            // list of names would not fit in a third of the page.
+            let members: Vec<&str> = p
+                .get("memberIds")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .filter_map(|id| names.get(id).map(String::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if members.is_empty() {
+                w::caption(ui, "Nobody assigned");
+            }
+            for name in &members {
+                avatar::small(ui, name, size::AVATAR_SM).on_hover_text(*name);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if total > 0 {

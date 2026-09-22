@@ -7,7 +7,7 @@
 
 use egui::{Color32, Pos2, Response, RichText, Sense, Ui, Vec2};
 
-use super::tokens::{colour, radius, space, text};
+use super::tokens::{colour, radius, size, space, text};
 use super::{motion, theme};
 
 /// How many bars a figure shows before it collapses the rest into a count.
@@ -298,6 +298,27 @@ pub fn headline(ui: &mut Ui, value: &str, note: &str) {
     });
 }
 
+/// How wide a control's label is allowed to get before it truncates. A filter
+/// bar of five controls only fits if no one label can eat the row.
+const MAX_LABEL_W: f32 = 160.0;
+/// The caret's footprint. Hand-painted, because the vendored Nunito has no
+/// glyph for ▾ and a missing glyph renders as a hollow box.
+const CARET_W: f32 = 7.0;
+const CARET_H: f32 = 4.0;
+/// The gutter the caret sits in, so a label never crowds it.
+const CARET_COL: f32 = 14.0;
+/// A popup is at least this wide whatever the control measured — a two-word
+/// filter should not open a two-word menu.
+const MENU_MIN_W: f32 = 180.0;
+/// The multi-select checkbox. 14 reads as a checkbox at this type size; 12
+/// reads as a dot and 16 as a button. Its corner is half the control radius,
+/// because `radius::SM` on a 14pt square is a lozenge, not a box.
+const BOX: f32 = 14.0;
+const BOX_R: f32 = radius::SM as f32 / 2.0;
+/// The tick's width, and the weight it is drawn at. Two segments, no glyph.
+const TICK_W: f32 = 9.0;
+const TICK_STROKE: f32 = 2.0;
+
 /// A filter control that shows whether it is set.
 ///
 /// Three states worth telling apart, so all three get their own fill rather
@@ -312,10 +333,9 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         text::SMALL,
         egui::FontFamily::Name(if active { theme::SEMIBOLD } else { theme::MEDIUM }.into()),
     );
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), font, colour::TEXT);
-    let caret_w = if caret { 14.0 } else { 0.0 };
+    let ink = if active { colour::ACCENT } else { colour::TEXT_2 };
+    let galley = truncated(ui, label, font, ink, MAX_LABEL_W);
+    let caret_w = if caret { CARET_COL } else { 0.0 };
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(galley.size().x + space::MD * 2.0 + caret_w, HEIGHT),
         Sense::click(),
@@ -350,21 +370,146 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         ),
         egui::StrokeKind::Inside,
     );
-    let ink = if active { colour::ACCENT } else { colour::TEXT_2 };
     p.galley(
         egui::pos2(rect.left() + space::MD, rect.center().y - galley.size().y / 2.0),
         galley,
         ink,
     );
     if caret {
-        p.text(
-            egui::pos2(rect.right() - space::SM, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            "\u{25BE}",
-            egui::FontId::proportional(text::CAPTION),
+        caret_at(
+            p,
+            egui::pos2(rect.right() - space::SM - CARET_W / 2.0, rect.center().y),
             if active { colour::ACCENT } else { colour::TEXT_MUTED },
         );
     }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// One line, ellipsised rather than wrapped. A control that grows a second
+/// line breaks the height every other control on the bar agreed to.
+fn truncated(
+    ui: &Ui,
+    label: &str,
+    font: egui::FontId,
+    ink: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+    ui.painter().layout_job(job)
+}
+
+/// The disclosure triangle, as geometry. See `CARET_W`.
+fn caret_at(p: &egui::Painter, centre: Pos2, ink: Color32) {
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(centre.x - CARET_W / 2.0, centre.y - CARET_H / 2.0),
+            egui::pos2(centre.x + CARET_W / 2.0, centre.y - CARET_H / 2.0),
+            egui::pos2(centre.x, centre.y + CARET_H / 2.0),
+        ],
+        ink,
+        egui::Stroke::NONE,
+    ));
+}
+
+/// A tick, as two segments. Same reason as the caret: no glyph to borrow.
+fn tick_at(p: &egui::Painter, centre: Pos2, ink: Color32) {
+    let stroke = egui::Stroke::new(TICK_STROKE, ink);
+    let elbow = egui::pos2(centre.x - TICK_W * 0.14, centre.y + TICK_W * 0.30);
+    p.line_segment(
+        [egui::pos2(centre.x - TICK_W / 2.0, centre.y + TICK_W * 0.02), elbow],
+        stroke,
+    );
+    p.line_segment(
+        [elbow, egui::pos2(centre.x + TICK_W / 2.0, centre.y - TICK_W * 0.34)],
+        stroke,
+    );
+}
+
+/// The popup's own surface. egui's stock menu frame is a different radius and
+/// a different fill from every card in the app; this is the app's.
+fn menu_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::MD)
+        .inner_margin(egui::Margin::same(space::XS as i8))
+}
+
+/// One row of a menu.
+///
+/// `check` picks which indicator the row carries: a checkbox on the left for a
+/// set you are building up, a tick on the right for a choice that replaces the
+/// last one. Both are painted, both are the same row otherwise — a menu whose
+/// rows differ in height between the two pickers reads as two components.
+fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), size::CONTROL), Sense::click());
+    let response = motion::operable(ui, response, radius::SM as f32);
+
+    let fill = if selected {
+        colour::ACCENT_SOFT
+    } else {
+        motion::hover_fill(
+            ui,
+            response.id.with("fill"),
+            response.hovered(),
+            colour::TRANSPARENT,
+            colour::SURFACE_HOVER,
+        )
+    };
+    let ink = if selected || response.hovered() {
+        colour::TEXT
+    } else {
+        colour::TEXT_2
+    };
+    // The gutter the indicator occupies: a box on the left, a tick on the
+    // right. Text is inset past whichever one this row has.
+    let left = rect.left() + space::SM + if check { BOX + space::SM } else { 0.0 };
+    let right_gutter = if check { space::SM } else { space::SM + TICK_W };
+    let galley = truncated(
+        ui,
+        label,
+        egui::FontId::proportional(text::BODY),
+        ink,
+        (rect.right() - right_gutter - left).max(1.0),
+    );
+
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, fill);
+    p.galley(
+        egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
+    );
+
+    if check {
+        let box_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + space::SM + BOX / 2.0, rect.center().y),
+            Vec2::splat(BOX),
+        );
+        if selected {
+            p.rect_filled(box_rect, BOX_R, colour::ACCENT);
+            tick_at(p, box_rect.center(), colour::ON_ACCENT);
+        } else {
+            p.rect_stroke(
+                box_rect,
+                BOX_R,
+                egui::Stroke::new(1.0, colour::LINE_STRONG),
+                egui::StrokeKind::Inside,
+            );
+        }
+    } else if selected {
+        tick_at(
+            p,
+            egui::pos2(rect.right() - space::SM - TICK_W / 2.0, rect.center().y),
+            colour::ACCENT,
+        );
+    }
+
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -391,16 +536,72 @@ pub fn select(
     let response = filter(ui, &shown, slot.is_some(), true);
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .frame(menu_frame())
+        .width(response.rect.width().max(MENU_MIN_W))
         .show(|ui| {
-            let entry = RichText::new(any).size(text::BODY);
-            if ui.selectable_label(slot.is_none(), entry).clicked() {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if menu_row(ui, any, slot.is_none(), false).clicked() {
                 *slot = None;
             }
             for (value, label) in options {
-                let entry = RichText::new(label).size(text::BODY);
-                if ui.selectable_label(slot.as_deref() == Some(value), entry).clicked() {
+                if menu_row(ui, label, slot.as_deref() == Some(value), false).clicked() {
                     *slot = Some(value.clone());
                 }
+            }
+        });
+    response
+}
+
+/// A `filter` that opens a menu of checkable people.
+///
+/// `chosen` holds person ids in the order they were picked. The control's
+/// label summarises the set: the placeholder when empty, the one name when
+/// there is one, "Anmol +2" past that.
+pub fn multi_select(
+    ui: &mut Ui,
+    placeholder: &str,
+    options: &[(String, String)],
+    chosen: &mut Vec<String>,
+) -> Response {
+    let name = |id: &String| {
+        options
+            .iter()
+            .find(|(v, _)| v == id)
+            .map(|(_, l)| l.as_str())
+            .unwrap_or("?")
+    };
+    let shown = match chosen.as_slice() {
+        [] => placeholder.to_owned(),
+        [one] => name(one).to_owned(),
+        [first, rest @ ..] => format!("{} +{}", name(first), rest.len()),
+    };
+
+    let response = filter(ui, &shown, !chosen.is_empty(), true);
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(menu_frame())
+        .width(response.rect.width().max(MENU_MIN_W))
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (value, label) in options {
+                let on = chosen.contains(value);
+                if menu_row(ui, label, on, true).clicked() {
+                    if on {
+                        chosen.retain(|c| c != value);
+                    } else {
+                        chosen.push(value.clone());
+                    }
+                }
+            }
+            // Picking a set leaves the menu open, so it needs a way out that is
+            // not "click somewhere harmless".
+            ui.add_space(space::XXS);
+            let (rule, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(rule, 0.0, colour::LINE);
+            ui.add_space(space::XXS);
+            if menu_row(ui, "Done", false, false).clicked() {
+                ui.close();
             }
         });
     response

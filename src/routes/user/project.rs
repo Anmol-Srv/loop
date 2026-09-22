@@ -23,9 +23,9 @@ pub struct CreateProjectBody {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// Who is answerable for this project. `None` is a real answer.
+    /// The roster. Empty is a real answer.
     #[serde(default)]
-    pub lead_id: Option<Uuid>,
+    pub member_ids: Vec<Uuid>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -46,7 +46,7 @@ async fn create(
         body.key,
         body.name,
         body.description,
-        body.lead_id,
+        body.member_ids,
     )
     .await?;
     Ok(ApiResponse::ok(project))

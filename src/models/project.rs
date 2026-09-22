@@ -10,7 +10,10 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub status: String,
-    pub lead_id: Option<Uuid>,
+    /// Everyone on the roster. Not a `sqlx::FromRow` column: the controller
+    /// fills it from `project_member` after the row is read.
+    #[sqlx(default)]
+    pub member_ids: Vec<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
