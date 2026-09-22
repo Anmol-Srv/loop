@@ -22,7 +22,9 @@
 //! load is `team[]` from one grouped query.
 //!
 //! Approvals are gone from this page: the inbox owns them, and the table's
-//! "Mine" filter covers what used to be the claim list.
+//! "Mine" filter covers what used to be the claim list. Nobody takes work
+//! here: a task is handed out when it is written, and its assignee is the
+//! only one who can move it.
 
 use std::collections::HashMap;
 
@@ -40,7 +42,6 @@ use crate::desktop::App;
 const HOME: &str = "home";
 /// The table's rows: the whole workspace, unfiltered.
 const TASKS: &str = "home:tasks";
-const CLAIM: &str = "home:claim";
 
 /// `App` owns no home state, and this view is the only thing that reads these
 /// filters, so they live in egui's temp store rather than growing the struct.
@@ -93,7 +94,6 @@ pub struct State {
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
-    let can_write = app.can_write();
     let my_person_id = me_str(app, "personId");
 
     let filters_id = egui::Id::new(FILTERS);
@@ -101,21 +101,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let net = app.net.as_mut().unwrap();
 
-    // A finished claim has changed rows every other view has cached.
-    if net.data(CLAIM).is_some() {
-        net.invalidate(CLAIM);
-        net.invalidate(HOME);
-        net.invalidate(TASKS);
-        net.invalidate_prefix("board:");
-        net.invalidate_prefix("task:");
-    }
     net.get_once(HOME, "/api/user/home");
     net.get_once(TASKS, "/api/user/tasks");
 
     let loading = net.is_loading(HOME) || net.is_loading(TASKS);
     let error = net.error(HOME).or_else(|| net.error(TASKS)).map(str::to_owned);
-    let claim_error = net.error(CLAIM).map(str::to_owned);
-    let busy = net.is_loading(CLAIM);
     let home = net.data(HOME).cloned().unwrap_or(Value::Null);
     let tasks = net.data(TASKS).cloned().unwrap_or(Value::Null);
 
@@ -151,10 +141,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         |_| {},
     );
 
-    if let Some(err) = &claim_error {
-        w::error(ui, &format!("That did not go through. {err}"));
-        ui.add_space(space::MD);
-    }
 
     if let Some(err) = &error {
         w::error(ui, err);
@@ -189,22 +175,18 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
     let mut open_task: Option<String> = None;
-    let mut claim: Option<String> = None;
 
     if shown.is_empty() {
         w::empty(
             ui,
             "Nothing matches those filters.",
-            "Clear one of them, or claim something that has no owner yet.",
+            "Clear one of them to see more.",
         );
     } else {
-        table(ui, &shown, &known, &owners, can_write && !busy, &mut open_task, &mut claim);
+        table(ui, &shown, &known, &owners, &mut open_task);
     }
     ui.add_space(space::XXL);
 
-    if let Some(id) = claim {
-        net.post(CLAIM, &format!("/api/user/tasks/{id}/claim"), Value::Null);
-    }
     if let Some(id) = open_task {
         app.task = Some(id);
     }
@@ -481,15 +463,10 @@ fn table(
     rows: &[&Value],
     known: &HashMap<&str, &str>,
     owners: &HashMap<&str, &str>,
-    can_claim: bool,
     open_task: &mut Option<String>,
-    claim: &mut Option<String>,
 ) {
-    // Claim is offered on the row under the pointer only, and the table tracks
-    // that a frame behind — so it is read before the rows are drawn.
-    let hot = table::hovered(ui, TABLE);
     let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        task_row(row, rows[i], known, owners, can_claim && hot == Some(i), claim);
+        task_row(row, rows[i], known, owners);
     });
     if let Some(i) = clicked {
         *open_task = str_at(rows[i], "id").map(str::to_owned);
@@ -501,8 +478,6 @@ fn task_row(
     t: &Value,
     known: &HashMap<&str, &str>,
     owners: &HashMap<&str, &str>,
-    offer_claim: bool,
-    claim: &mut Option<String>,
 ) {
     let status = bucket(t);
     let discipline = str_at(t, "discipline").unwrap_or_default();
@@ -545,11 +520,6 @@ fn task_row(
         table::cell(ui, &COLS[6], |ui| match owner(t, owners) {
             Some(seed) => {
                 avatar::small(ui, &seed, size::AVATAR_SM);
-            }
-            None if offer_claim => {
-                if w::ghost(ui, "Claim").clicked() {
-                    *claim = str_at(t, "id").map(str::to_owned);
-                }
             }
             None => w::caption(ui, "\u{2014}"),
         });

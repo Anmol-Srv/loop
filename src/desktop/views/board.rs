@@ -36,8 +36,6 @@ use crate::desktop::App;
 /// rather than vanish because this list has not caught up.
 const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
 
-/// Where a claim's reply is collected.
-const CLAIM_KEY: &str = "board:claim";
 /// Where an Add task's reply is collected. Under `board:` so the invalidation
 /// that follows a success drops the reply along with the stale list.
 const ADD_KEY: &str = "board:add-task";
@@ -109,8 +107,6 @@ impl Default for TaskDraft {
 
 #[derive(Default)]
 pub struct State {
-    /// A claim is out; its reply invalidates the board when it lands.
-    pub claiming: bool,
     /// The open create-project form, if there is one. Lives here rather than
     /// in `projects.rs` because both screens share one `State`.
     pub creating: Option<super::projects::Draft>,
@@ -134,24 +130,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let tasks_path = format!("/api/user/tasks?projectId={project_id}");
 
     let can_write = app.can_write();
-    let net = app.net.as_mut().unwrap();
-
-    // Fold in a claim that has come back, before anything reads the cache. On
-    // success the board and the home screen both hold the old assignee; on
-    // failure the reply stays put so the row below can show why.
-    if app.board.claiming && !net.is_loading(CLAIM_KEY) {
-        match net.peek(CLAIM_KEY) {
-            Some(Ok(_)) => {
-                app.board.claiming = false;
-                // `board:claim` is itself under this prefix, so the reply is
-                // dropped along with the stale lists. That is what we want.
-                net.invalidate_prefix("board:");
-                net.invalidate("home");
-            }
-            Some(Err(_)) => app.board.claiming = false,
-            None => {}
-        }
-    }
     let net = app.net.as_mut().unwrap();
 
     // A finished Add task: the list here, the flow strip, the sidebar counts
@@ -184,7 +162,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut tasks = array(net.data(&tasks_key));
     let tasks_loading = net.is_loading(&tasks_key);
     let tasks_error = net.error(&tasks_key).map(str::to_string);
-    let claim_error = net.error(CLAIM_KEY).map(str::to_string);
     let add_error = net.error(ADD_KEY).map(str::to_string);
     let posting = net.is_loading(ADD_KEY);
 
@@ -254,10 +231,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         flow_strip(ui, f);
     }
 
-    if let Some(err) = claim_error {
-        ui.add_space(space::MD);
-        w::error(ui, &err);
-    }
 
     // The button lives in the heading's trailing slot rather than under the
     // table: the thing you add to is named right there.
