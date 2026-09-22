@@ -371,6 +371,41 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
     response
 }
 
+/// A `filter` and the menu it opens.
+///
+/// `None` is the leading "any" entry, so clearing a choice is the same gesture
+/// as making one. The dashboard's filters and the project form's lead picker
+/// are the same control — one popup implementation, so they cannot drift.
+pub fn select(
+    ui: &mut Ui,
+    any: &str,
+    options: &[(String, String)],
+    slot: &mut Option<String>,
+) -> Response {
+    let shown = slot
+        .as_deref()
+        .and_then(|v| options.iter().find(|(value, _)| value == v))
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| any.to_owned());
+
+    let response = filter(ui, &shown, slot.is_some(), true);
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            let entry = RichText::new(any).size(text::BODY);
+            if ui.selectable_label(slot.is_none(), entry).clicked() {
+                *slot = None;
+            }
+            for (value, label) in options {
+                let entry = RichText::new(label).size(text::BODY);
+                if ui.selectable_label(slot.as_deref() == Some(value), entry).clicked() {
+                    *slot = Some(value.clone());
+                }
+            }
+        });
+    response
+}
+
 /// Every control on the filter bar is this tall, including the clear button,
 /// so the bar reads as one strip rather than as controls of two heights.
 pub const HEIGHT: f32 = 30.0;

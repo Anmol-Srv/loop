@@ -18,7 +18,8 @@ use serde_json::Value;
 
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
 use crate::desktop::design::{
-    cards as c, colour, shell, space, status_label, text, theme, widgets as w,
+    avatar, cards as c, colour, shell, size, space, status_label, text, theme, viz,
+    widgets as w,
 };
 use crate::desktop::App;
 
@@ -32,6 +33,22 @@ const FLOW_ORDER: [&str; 3] = ["design", "frontend", "backend"];
 
 /// Where a claim's reply is collected.
 const CLAIM_KEY: &str = "board:claim";
+const PROJECTS_KEY: &str = "board:projects";
+const PEOPLE_KEY: &str = "board:people";
+/// Where a create's reply is collected.
+const CREATE_KEY: &str = "board:create";
+
+/// What the create form holds. `None` on `State::creating` means the form is
+/// closed, which is also how the Create project button knows not to redraw
+/// itself over an open form.
+#[derive(Default)]
+pub struct Draft {
+    pub title: String,
+    pub description: String,
+    /// A person id, or `None` for unassigned — which is a real answer, not a
+    /// missing one.
+    pub lead: Option<String>,
+}
 
 #[derive(Default)]
 pub struct State {
@@ -40,6 +57,8 @@ pub struct State {
     pub assignee_kind: Option<&'static str>,
     /// A claim is out; its reply invalidates the board when it lands.
     pub claiming: bool,
+    /// The open create form, if there is one.
+    pub creating: Option<Draft>,
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -52,17 +71,33 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 // ---------------------------------------------------------------- project list
 
 fn projects(app: &mut App, ui: &mut egui::Ui) {
+    let can_write = app.can_write();
     let net = app.net.as_mut().unwrap();
-    net.get_once("board:projects", "/api/user/projects");
 
-    let list = array(net.data("board:projects"));
-    let loading = net.is_loading("board:projects");
-    let error = net.error("board:projects").map(str::to_string);
+    // A finished create has invalidated the list, the sidebar counts and every
+    // rollup that counts projects.
+    if net.data(CREATE_KEY).is_some() {
+        net.invalidate(CREATE_KEY);
+        net.invalidate(PROJECTS_KEY);
+        net.invalidate("home");
+        app.board.creating = None;
+    }
+    let net = app.net.as_mut().unwrap();
 
-    // One `/flow` per project — the same request count the old per-project
-    // `/phases` fetch cost, and it answers the question the card actually asks
-    // (how much of the work is done, not how many phases are closed).
-    // `get_once` caches, so this is once per project for the session.
+    net.get_once(PROJECTS_KEY, "/api/user/projects");
+    // The lead picker needs names, and the cards need them to resolve
+    // `leadId`. One fetch serves both.
+    net.get_once(PEOPLE_KEY, "/api/user/people");
+
+    let list = array(net.data(PROJECTS_KEY));
+    let people = array(net.data(PEOPLE_KEY));
+    let loading = net.is_loading(PROJECTS_KEY);
+    let error = net.error(PROJECTS_KEY).map(str::to_string);
+    let create_error = net.error(CREATE_KEY).map(str::to_string);
+    let creating = net.is_loading(CREATE_KEY);
+
+    // One `/flow` per project — cached, so once per project per session. A
+    // project with no tasks still answers, with zeroes.
     let mut flows: HashMap<String, Value> = HashMap::new();
     for p in &list {
         let id = str_at(p, "id");
@@ -76,7 +111,39 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    shell::page_title(ui, "Projects", "", |_| {});
+    let names: HashMap<String, String> = people
+        .iter()
+        .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
+        .collect();
+
+    let mut start_create = false;
+    shell::page_title(
+        ui,
+        "Projects",
+        &subtitle(list.len(), loading),
+        |ui| {
+            // The form is the button's own state: while it is open the button
+            // would only re-open what is already open.
+            if app.board.creating.is_none() && w::primary(ui, "Create project", can_write).clicked()
+            {
+                start_create = true;
+            }
+        },
+    );
+    if start_create {
+        app.board.creating = Some(Draft::default());
+    }
+
+    if let Some(err) = &create_error {
+        w::error(ui, err);
+        ui.add_space(space::MD);
+    }
+
+    let mut submit: Option<Value> = None;
+    if let Some(draft) = app.board.creating.as_mut() {
+        submit = create_form(ui, draft, &people, creating);
+        ui.add_space(space::LG);
+    }
 
     if let Some(err) = error {
         w::error(ui, &err);
@@ -85,70 +152,182 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
     if list.is_empty() {
         if loading {
             w::loading(ui, "projects");
-        } else {
-            w::empty(ui, "No projects yet.", "Create one with: acp project new <key> <name>");
+        } else if app.board.creating.is_none() {
+            w::empty(
+                ui,
+                "No projects yet.",
+                "Create one and it will appear here. Phases and tasks come after.",
+            );
         }
-        return;
     }
 
     let mut open: Option<String> = None;
     for p in &list {
-        let id = str_at(p, "id").to_string();
-        let name = str_at(p, "name").to_string();
-        let key = str_at(p, "key").to_string();
-        let status = str_at(p, "status").to_string();
-        let flow = flows.get(&id);
-        let counts = flow.map(|f| (num_at(f, "done"), num_at(f, "total")));
-
-        let hover_id = ui.next_auto_id();
-        let hovered = ui.ctx().data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
-        let out = c::surface(ui, hovered, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(&name)
-                        .size(text::CARD)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
-                );
-                ui.add_space(space::SM);
-                w::mono_caption(ui, &key);
-                ui.add_space(space::SM);
-                c::chip(ui, status_label(&status), c::status_tone(&status), true);
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match counts {
-                        Some((done, total)) => w::muted(ui, &format!("{done} of {total} done")),
-                        None => w::muted(ui, "progress loading"),
-                    }
-                });
-            });
-            ui.add_space(space::SM);
-            let (done, total) = counts.unwrap_or((0, 0));
-            w::progress(ui, fraction(done, total), ui.available_width(), colour::ACCENT);
-            // Where the work stands per discipline, in one muted line: it is
-            // the same question the detail screen's flow strip answers, and a
-            // project card is the place you ask it first.
-            if let Some(line) = flow.map(per_discipline).filter(|l| !l.is_empty()) {
-                ui.add_space(space::SM);
-                w::muted(ui, &line);
-            }
-        });
-
-        let hit = out.response.interact(egui::Sense::click());
-        ui.ctx().data_mut(|d| d.insert_temp(hover_id, hit.hovered()));
-        if hit.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if hit.clicked() {
-            open = Some(id);
+        if project_card(ui, p, flows.get(str_at(p, "id")), &names) {
+            open = Some(str_at(p, "id").to_string());
         }
         ui.add_space(space::SM);
     }
 
+    let net = app.net.as_mut().unwrap();
+    if let Some(body) = submit {
+        net.post(CREATE_KEY, "/api/user/projects", body);
+    }
     if let Some(id) = open {
         app.project = Some(id);
     }
+}
+
+fn subtitle(n: usize, loading: bool) -> String {
+    match (n, loading) {
+        (0, true) => String::new(),
+        (1, _) => "1 project".to_owned(),
+        (n, _) => format!("{n} projects"),
+    }
+}
+
+/// The create form, inline under the header rather than in a modal.
+///
+/// Returns the request body once, on the frame Create is clicked. A modal was
+/// the obvious first thought and the wrong one: this is a three-field form on
+/// a page with room for it, and covering the list to ask what to add to the
+/// list is a worse trade than pushing it down.
+fn create_form(
+    ui: &mut egui::Ui,
+    draft: &mut Draft,
+    people: &[Value],
+    busy: bool,
+) -> Option<Value> {
+    let mut submit = None;
+    let mut cancel = false;
+
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        w::heading(ui, "New project");
+        ui.add_space(space::MD);
+
+        w::field(ui, "Title", &mut draft.title, false, "Checkout redesign");
+        ui.add_space(space::MD);
+        w::field_multiline(
+            ui,
+            "Description",
+            &mut draft.description,
+            3,
+            "What this project is for, and what done looks like.",
+        );
+        ui.add_space(space::MD);
+
+        w::caption(ui, "Lead");
+        ui.add_space(space::XXS);
+        let options: Vec<(String, String)> = people
+            .iter()
+            .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
+            .collect();
+        ui.horizontal(|ui| {
+            viz::select(ui, "Unassigned", &options, &mut draft.lead);
+        });
+        ui.add_space(space::LG);
+
+        // A project with no title has nothing to be called and nothing to
+        // derive a key from, so Create stays off until there is one.
+        let ready = !draft.title.trim().is_empty() && !busy;
+        ui.horizontal(|ui| {
+            if w::primary(ui, if busy { "Creating…" } else { "Create" }, ready).clicked() {
+                submit = Some(serde_json::json!({
+                    "name": draft.title.trim(),
+                    "description": draft.description.trim(),
+                    "leadId": draft.lead,
+                }));
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    });
+
+    if cancel {
+        *draft = Draft::default();
+        return None;
+    }
+    submit
+}
+
+/// One project. Returns true when it was clicked into.
+///
+/// A brand new project has no phases and no tasks, so the progress bar would
+/// be a full-width empty track saying nothing. It only appears once there is
+/// work to measure.
+fn project_card(
+    ui: &mut egui::Ui,
+    p: &Value,
+    flow: Option<&Value>,
+    names: &HashMap<String, String>,
+) -> bool {
+    let hover_id = ui.next_auto_id();
+    let hovered = ui.ctx().data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
+    let counts = flow.map(|f| (num_at(f, "done"), num_at(f, "total")));
+    let total = counts.map(|(_, t)| t).unwrap_or(0);
+
+    let out = c::surface(ui, hovered, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(str_at(p, "name"))
+                    .size(text::CARD)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
+            ui.add_space(space::SM);
+            w::mono_caption(ui, str_at(p, "key"));
+            ui.add_space(space::SM);
+            c::chip(ui, status_label(str_at(p, "status")), c::status_tone(str_at(p, "status")), true);
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                match counts {
+                    Some((done, t)) if t > 0 => w::muted(ui, &format!("{done} of {t} done")),
+                    Some(_) => w::muted(ui, "No tasks yet"),
+                    None => w::muted(ui, "progress loading"),
+                }
+            });
+        });
+
+        let description = str_at(p, "description");
+        if !description.is_empty() {
+            ui.add_space(space::XS);
+            w::muted(ui, description);
+        }
+
+        if total > 0 {
+            ui.add_space(space::SM);
+            let (done, t) = counts.unwrap_or((0, 0));
+            w::progress(ui, fraction(done, t), ui.available_width(), colour::ACCENT);
+            if let Some(line) = flow.map(per_discipline).filter(|l| !l.is_empty()) {
+                ui.add_space(space::SM);
+                w::muted(ui, &line);
+            }
+        }
+
+        // The lead is the last line because it answers "who do I ask", which
+        // is the question after "what is this and how far along is it".
+        let lead = names.get(str_at(p, "leadId")).map(String::as_str);
+        ui.add_space(space::SM);
+        ui.horizontal(|ui| match lead {
+            Some(name) => {
+                avatar::small(ui, name, size::AVATAR_SM);
+                ui.add_space(space::XS);
+                w::caption(ui, name);
+            }
+            None => w::caption(ui, "No lead"),
+        });
+    });
+
+    let hit = out.response.interact(egui::Sense::click());
+    ui.ctx().data_mut(|d| d.insert_temp(hover_id, hit.hovered()));
+    if hit.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    hit.clicked()
 }
 
 /// "design 2/5 · frontend 1/3" — the flow, folded onto one line for a card.

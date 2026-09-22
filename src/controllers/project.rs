@@ -6,19 +6,81 @@ use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::project::Project;
 
+/// Turn a project name into a key: lowercase, words joined by hyphens.
+///
+/// The create form asks for a title and nothing else, because a key is a
+/// detail of the URL and not a decision worth making twice. `resolve_key`
+/// below is what makes the derived key unique.
+pub fn slug(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    s.chars().take(48).collect()
+}
+
+/// The first free key of the form `slug`, `slug-2`, `slug-3`.
+///
+/// Two people creating "Checkout redesign" at the same instant can still
+/// collide; the insert's unique violation catches that and reports a
+/// conflict. This is about the ordinary case, where the second project of the
+/// same name should just work.
+async fn resolve_key(state: &AppState, slug: &str) -> AppResult<String> {
+    let taken: Vec<String> = sqlx::query_scalar(
+        "SELECT key FROM project WHERE key = $1 OR key LIKE $1 || '-%'",
+    )
+    .bind(slug)
+    .fetch_all(&state.db)
+    .await?;
+
+    if !taken.iter().any(|k| k == slug) {
+        return Ok(slug.to_owned());
+    }
+    for n in 2.. {
+        let candidate = format!("{slug}-{n}");
+        if !taken.iter().any(|k| *k == candidate) {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("the loop returns")
+}
+
 pub async fn create(
     state: &AppState,
     actor: &Actor,
-    key: String,
+    key: Option<String>,
     name: String,
+    description: String,
+    lead_id: Option<Uuid>,
 ) -> AppResult<Outcome<Project>> {
-    if key.trim().is_empty() || name.trim().is_empty() {
-        return Err(AppError::BadRequest("key and name are required".into()));
+    if name.trim().is_empty() {
+        return Err(AppError::BadRequest("a name is required".into()));
     }
+
+    // A caller that names its own key means it (the CLI, a replayed proposal);
+    // everything else derives one from the title.
+    let key = match key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()) {
+        Some(explicit) => explicit,
+        None => {
+            let slug = slug(&name);
+            if slug.is_empty() {
+                return Err(AppError::BadRequest("a name needs at least one letter or digit".into()));
+            }
+            resolve_key(state, &slug).await?
+        }
+    };
 
     // The id is decided up front so a proposal can name the row it will create.
     let id = Uuid::new_v4();
-    let patch = json!({ "key": key, "name": name });
+    let patch = json!({
+        "key": key,
+        "name": name,
+        "description": description,
+        "lead_id": lead_id,
+    });
 
     if !actor.can_apply {
         let change_id = propose(&state.db, actor, TargetType::Project, id, Op::Create, patch).await?;
@@ -28,12 +90,14 @@ pub async fn create(
     let mut tx = state.db.begin().await?;
 
     let project: Project = sqlx::query_as(
-        "INSERT INTO project (id, key, name) VALUES ($1, $2, $3)
-         RETURNING id, key, name, status, lead_id, created_at, updated_at",
+        "INSERT INTO project (id, key, name, description, lead_id) VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, key, name, description, status, lead_id, created_at, updated_at",
     )
     .bind(id)
     .bind(&key)
     .bind(&name)
+    .bind(&description)
+    .bind(lead_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -52,7 +116,7 @@ pub async fn create(
 
 pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
     let projects = sqlx::query_as(
-        "SELECT id, key, name, status, lead_id, created_at, updated_at
+        "SELECT id, key, name, description, status, lead_id, created_at, updated_at
          FROM project ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)

@@ -490,6 +490,29 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &
     .inner
 }
 
+/// A labelled input for something with more than one line in it. Fixed at
+/// `rows` rather than growing, so a form does not reflow while it is typed in.
+pub fn field_multiline(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    rows: usize,
+    hint: &str,
+) -> Response {
+    ui.vertical(|ui| {
+        caption(ui, label);
+        ui.add_space(space::XXS);
+        ui.add_sized(
+            [ui.available_width(), size::CONTROL * rows as f32],
+            egui::TextEdit::multiline(value)
+                .desired_rows(rows)
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED))
+                .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
+        )
+    })
+    .inner
+}
+
 // ---------------------------------------------------------------- states
 
 /// Empty, loading and error are the three states every fetched thing has.

@@ -16,8 +16,16 @@ use crate::response::ApiResponse;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateProjectBody {
-    pub key: String,
+    /// Optional: the form does not ask for one, and the controller derives it
+    /// from the name. The CLI still passes an explicit key.
+    #[serde(default)]
+    pub key: Option<String>,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Who is answerable for this project. `None` is a real answer.
+    #[serde(default)]
+    pub lead_id: Option<Uuid>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -32,7 +40,15 @@ async fn create(
     Json(body): Json<CreateProjectBody>,
 ) -> AppResult<ApiResponse<Outcome<Project>>> {
     caller.can_mutate()?;
-    let project = controllers::project::create(&state, &caller.actor, body.key, body.name).await?;
+    let project = controllers::project::create(
+        &state,
+        &caller.actor,
+        body.key,
+        body.name,
+        body.description,
+        body.lead_id,
+    )
+    .await?;
     Ok(ApiResponse::ok(project))
 }
 

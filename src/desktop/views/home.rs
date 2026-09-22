@@ -400,47 +400,21 @@ fn filter_bar(
             .collect();
         disciplines.sort_unstable();
         disciplines.dedup();
-        menu(
-            ui,
-            state.discipline.clone().unwrap_or_else(|| "All disciplines".to_owned()),
-            state.discipline.is_some(),
-            "All disciplines",
-            disciplines.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect(),
-            &mut state.discipline,
-        );
+        let options: Vec<(String, String)> =
+            disciplines.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
+        viz::select(ui, "All disciplines", &options, &mut state.discipline);
 
-        let status_label_now = state
-            .status
-            .as_deref()
-            .map(|s| sentence(status_label(s)))
-            .unwrap_or_else(|| "Any status".to_owned());
-        menu(
-            ui,
-            status_label_now,
-            state.status.is_some(),
-            "Any status",
-            STATUSES.iter().map(|s| ((*s).to_owned(), sentence(status_label(s)))).collect(),
-            &mut state.status,
-        );
+        let options: Vec<(String, String)> = STATUSES
+            .iter()
+            .map(|s| ((*s).to_owned(), sentence(status_label(s))))
+            .collect();
+        viz::select(ui, "Any status", &options, &mut state.status);
 
         let names: Vec<(String, String)> = projects
             .iter()
             .filter_map(|p| Some((str_at(p, "id")?.to_owned(), str_at(p, "name")?.to_owned())))
             .collect();
-        let project_now = state
-            .project
-            .as_deref()
-            .and_then(|id| names.iter().find(|(p, _)| p == id))
-            .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| "All projects".to_owned());
-        menu(
-            ui,
-            project_now,
-            state.project.is_some(),
-            "All projects",
-            names,
-            &mut state.project,
-        );
+        viz::select(ui, "All projects", &names, &mut state.project);
 
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
@@ -464,33 +438,6 @@ fn filter_bar(
         });
     });
     ui.add_space(space::MD);
-}
-
-/// One filter control and the popup it opens. `None` is the leading "any"
-/// entry, so clearing a filter is the same gesture as setting one.
-fn menu(
-    ui: &mut egui::Ui,
-    label: String,
-    active: bool,
-    any: &str,
-    options: Vec<(String, String)>,
-    slot: &mut Option<String>,
-) {
-    let response = viz::filter(ui, &label, active, true);
-    egui::Popup::menu(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-        .show(|ui| {
-            let entry = RichText::new(any).size(text::BODY);
-            if ui.selectable_label(slot.is_none(), entry).clicked() {
-                *slot = None;
-            }
-            for (value, name) in &options {
-                let entry = RichText::new(name).size(text::BODY);
-                if ui.selectable_label(slot.as_ref() == Some(value), entry).clicked() {
-                    *slot = Some(value.clone());
-                }
-            }
-        });
 }
 
 fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {

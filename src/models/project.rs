@@ -8,6 +8,7 @@ pub struct Project {
     pub id: Uuid,
     pub key: String,
     pub name: String,
+    pub description: String,
     pub status: String,
     pub lead_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
