@@ -1,0 +1,20 @@
+name: airtribe-prod-db
+version: 0.1.0
+description: >
+  Read-only production Postgres lookups for Airtribe via psql. One tool, prod_db_query:
+  single SELECT/WITH/EXPLAIN statement, server-side READ ONLY transaction, statement and
+  lock timeouts, row cap, PII column redaction, role write-capability check. The connection
+  URL stays in the process environment; it is never printed, never put on a command line.
+author: Anmol
+provides_tools:
+  - prod_db_query
+requires_env:
+  - name: AIRTRIBE_PROD_READONLY_DATABASE_URL
+    description: "postgresql:// URL of the read-only production role (DigitalOcean managed PG)."
+    prompt: "Read-only production database URL"
+    password: true
+optional_env:
+  - name: AIRTRIBE_PROD_DB_CA
+    description: "Path to the DigitalOcean CA certificate. Present => sslmode=verify-full; absent => sslmode=require (encrypted, chain not verified)."
+    prompt: "Path to prod DB CA certificate (or empty)"
+    password: false

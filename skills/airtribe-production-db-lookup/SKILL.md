@@ -23,38 +23,23 @@ The only accepted credential source is the Airtribe profile environment variable
 AIRTRIBE_PROD_READONLY_DATABASE_URL
 ```
 
-Production TLS additionally requires:
+The lookup tool is `prod_db_query` (Hermes plugin `airtribe-prod-db`, source `hermes-plugins/airtribe-prod-db/`). It reads the URL from the profile environment and never prints it; connects through `psql` with libpq env vars, so nothing appears on a command line; runs `BEGIN READ ONLY` with `default_transaction_read_only=on`, a 15s statement timeout and a 2s lock timeout; accepts exactly one SELECT/WITH/EXPLAIN/SHOW statement; caps rows (default 20, max 200); redacts PII-named columns; verifies the connected role has no superuser/create/write grants and refuses otherwise; rolls back every path.
 
-```text
-NODE_EXTRA_CA_CERTS=/Users/anmol/.hermes/profiles/airtribe/certs/prod-db-ca.pem
-```
+TLS: with no CA file the tool uses `sslmode=require` (encrypted, chain unverified). Place DigitalOcean's cluster CA at `~/.hermes/profiles/airtribe/certs/prod-db-ca.crt` (or set `AIRTRIBE_PROD_DB_CA`) and it switches to `verify-full` automatically. Never ask for a certificate or credential in chat; if the tool is missing, stop and report that the profile environment or plugin is not configured.
 
-- Set the URL through the local profile secret workflow, using `templates/airtribe-profile.env.example` as the variable-name reference.
 - Never include the URL, password, host, port, database name, or decoded connection fields in a skill, command, task brief, control-plane task record, source file, PR, log, or chat response.
 - Treat a URL pasted into chat as exposed. Do not copy it from conversation history; rotate the underlying password through normal operations.
-- The configured database principal must be a true database-level read-only role. The wrapper checks privileged flags plus relation, sequence, and schema-create grants before every lookup; it rejects a role with write capability rather than trusting the URL label.
-- Obtain the CA PEM/bundle only from the approved Airtribe infrastructure or secret-management owner. Keep it outside every repository, protect it from group/world writes, and never replace `rejectUnauthorized: true` with an insecure TLS setting.
-- Run `/Users/anmol/Drive/Airtribe/airtribe-control-plane/scripts/install_airtribe_prod_db_ca.js` once to select and validate the PEM through a local native picker. It copies the bundle to the profile, writes only `NODE_EXTRA_CA_CERTS`, and never prints the certificate path or contents.
-- Run the guarded client only through `/Users/anmol/Drive/Airtribe/airtribe-control-plane/scripts/run_prod_readonly_query.js`. It parses only the two required profile variables, then spawns a new Node child with `NODE_EXTRA_CA_CERTS` present from process start. This safely avoids a Desktop restart and a late dotenv-load TLS failure.
+- The configured database principal must be a true database-level read-only role. The tool checks this before every lookup and rejects a write-capable role rather than trusting the URL label.
 
 ## Procedure
 
 1. **Confirm the route and model.** Load `airtribe-triage`, then inspect current committed models, migrations, route/controller code, and focused tests. Determine the precise entity and durable identifier before production access.
    - Completion: entity table/model, expected fields, timezone semantics, and side effects are evidence-backed.
 
-2. **Install or replace the approved CA bundle when needed.** From the `mycohort-api` dependency root, use `terminal` to run:
-   ```text
-   node /Users/anmol/Drive/Airtribe/airtribe-control-plane/scripts/install_airtribe_prod_db_ca.js
-   ```
-   This opens a native local picker; select only the approved PEM from the infrastructure owner. It does not connect to production.
-   - Completion: output confirms `certificate_installed: true` and `profile_env_updated: true` without revealing paths or contents.
+2. **Readiness.** Confirm `prod_db_query` is in your tool list. Call it once with `select 1` and check the reply says `role_read_only: true` and `transaction: READ ONLY, rolled back`. If the tool is absent or errors on configuration, stop; do not ask for the credential or certificate in chat.
+   - Completion: a `select 1` round trip succeeded with `role_read_only: true`.
 
-3. **Run a local readiness check.** From the `mycohort-api` dependency root, use `terminal` to run:
-   ```text
-   node /Users/anmol/Drive/Airtribe/airtribe-control-plane/scripts/run_prod_readonly_query.js --doctor
-   ```
-   It reports only local readiness, driver availability, and whether the approved CA bundle is configured/readable—never the URL or certificate path. The runner launches the query process with the CA present at Node startup but the doctor itself does not connect, so `database_role_verified_read_only` remains false at this stage.
-   - Completion: the output says `ready: true`. If absent or invalid, stop; do not ask for the credential in chat.
+3. **Learn the schema from code, not from production.** Column names come from committed models and migrations; use `information_schema` through the tool only to confirm a doubt.
 
 4. **Write a narrow lookup file outside the product repository.** Use a task-local artifact path and a single query that:
    - selects only needed non-PII fields;
@@ -64,12 +49,8 @@ NODE_EXTRA_CA_CERTS=/Users/anmol/.hermes/profiles/airtribe/certs/prod-db-ca.pem
    - contains no locks, DDL, DML, control commands, multiple statements, or privileged functions.
    - Completion: a reviewer can explain why every selected field and predicate is needed.
 
-5. **Run the guarded query.** Use `terminal` from the `mycohort-api` dependency root to run:
-   ```text
-   node /Users/anmol/Drive/Airtribe/airtribe-control-plane/scripts/run_prod_readonly_query.js --sql-file <task-artifact-query.sql> --max-rows 2
-   ```
-   The wrapper resolves the repository `pg` driver, requires TLS verification, opens `BEGIN TRANSACTION READ ONLY`, verifies that the connected role has no privileged/write/create grants, sets connection/statement/lock timeouts, rejects write-like SQL, rolls back on every path, and redacts common PII-named fields.
-   - Completion: output confirms both `transaction_read_only: true` and `database_role_verified_read_only: true`, returns no more than the requested bound, and identifies exactly one target or stops as ambiguous.
+5. **Run the guarded query.** Call `prod_db_query` with `sql` (the single statement from step 4) and `max_rows` (normally 2). Leave `redact` at its default unless the task needs the value and it will not be stored in evidence.
+   - Completion: the reply shows `role_read_only: true`, `truncated: false`, and identifies exactly one target or stops as ambiguous. Record only the redacted result and the statement in the task evidence.
 
 6. **Use the result according to the operation class.**
    - `prod-read-lookup`: provide a minimal redacted finding with source/schema evidence.
@@ -91,11 +72,11 @@ If the lookup finds multiple plausible sessions, missing timezone context, or an
 ## Pitfalls
 
 - Read-only transaction mode is defense in depth, not a substitute for a database role with no write grants.
-- `SELECT` can still expose sensitive data; select minimal fields and leave the wrapper’s redaction on.
-- Do not invoke `prod_readonly_query.js` directly from a shell that late-loads the profile `.env`; use `run_prod_readonly_query.js` so Node sees the custom CA before startup.
+- `SELECT` can still expose sensitive data; select minimal fields and leave the tool's redaction on.
+- Do not bypass the tool with `terminal` + `psql`; the tool is the audited path and the only one with the role and statement guards.
 - Do not give a raw SQL query to Jev or any remote model. Jev receives only sanitized routing context, if used at all.
 - Do not use the wrapper for schema migrations, operational writes, or a convenience production console.
 
 ## Verification
 
-Run `node tests/test_prod_readonly_query.js` and `node tests/test_prod_db_ca_setup.js` from the control-plane repo root after changing the helpers. A real lookup is valid only if the wrapper confirms read-only mode, the result is bounded/redacted, exactly one record matches, and no credential value appears in the evidence.
+Run `python3 -m unittest airtribe-prod-db.test_query` from `hermes-plugins/` after changing the plugin. A real lookup is valid only if the wrapper confirms read-only mode, the result is bounded/redacted, exactly one record matches, and no credential value appears in the evidence.
