@@ -67,6 +67,27 @@ pub fn text_cell(ui: &mut Ui, col: &Col, s: &str, ink: egui::Color32) {
     });
 }
 
+/// A row's own name: body size, semibold. The one text in a row that carries
+/// weight, and four tables spelled it out identically. Separate from
+/// `strong_cell` because three of them sit beside a chip in the same cell.
+pub fn strong_label(ui: &mut Ui, s: &str, ink: egui::Color32) {
+    ui.add(
+        egui::Label::new(
+            RichText::new(s)
+                .size(text::BODY)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(ink),
+        )
+        .truncate()
+        .selectable(false),
+    );
+}
+
+/// `strong_label` in a cell of its own, for a title with nothing beside it.
+pub fn strong_cell(ui: &mut Ui, col: &Col, s: &str, ink: egui::Color32) {
+    cell(ui, col, |ui| strong_label(ui, s, ink));
+}
+
 /// A muted secondary text cell, "—" when empty.
 pub fn muted_cell(ui: &mut Ui, col: &Col, s: &str) {
     let (s, ink) = if s.is_empty() {
@@ -185,4 +206,10 @@ pub fn show(
 
     ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
     clicked
+}
+
+/// Which row the pointer was over last frame, for a cell that is only offered
+/// on hover. Reads the slot `show` writes, with the same one-frame lag.
+pub fn hovered(ui: &Ui, id: &str) -> Option<usize> {
+    ui.ctx().data(|d| d.get_temp(egui::Id::new(id).with("hover"))).flatten()
 }

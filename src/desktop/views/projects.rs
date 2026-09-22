@@ -17,14 +17,13 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use egui::{Align, Layout, RichText};
-use egui_extras::{Column, TableBuilder};
+use egui::RichText;
 use serde_json::Value;
 
 use super::board::{array, fraction, num_at, str_at};
+use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme, viz,
-    widgets as w,
+    avatar, cards as c, colour, shell, size, space, status_label, text, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -32,9 +31,8 @@ const PROJECTS_KEY: &str = "board:projects";
 pub(super) const PEOPLE_KEY: &str = "board:people";
 /// Where a create's reply is collected.
 const CREATE_KEY: &str = "board:create";
-/// Which row the pointer was over last frame. A table row's own response only
-/// exists after its first cell, which is too late to tint that cell.
-const HOVER: &str = "projects:hover";
+/// The table's id: its scroll salt, and the slot its hover is tracked in.
+const TABLE: &str = "projects:table";
 
 /// How far each avatar in the roster sits over the one before it.
 pub(super) const AVATAR_OVERLAP: f32 = 6.0;
@@ -46,7 +44,6 @@ pub(super) const PROSE_W: f32 = 640.0;
 
 // ---- table geometry. Fixed so the columns line up with the header and with
 // ---- each other; the description takes whatever is left.
-const ROW_H: f32 = 38.0;
 /// A project name is the thing being scanned for, so it gets the widest fixed
 /// column — past this a name truncates rather than pushing the row around.
 const COL_NAME: f32 = 220.0;
@@ -61,6 +58,17 @@ const COL_PROGRESS: f32 = 140.0;
 const PROGRESS_BAR_W: f32 = 90.0;
 const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
+
+/// Alignment lives with the width, so "Progress" and "Created" sit over the
+/// figures beneath them rather than at the other end of the column.
+const COLS: [Col; 6] = [
+    Col::left("Project", COL_NAME),
+    Col::fill("Description", COL_DESCRIPTION),
+    Col::left("Assignees", COL_PEOPLE),
+    Col::right("Progress", COL_PROGRESS),
+    Col::left("Status", COL_STATUS),
+    Col::right("Created", COL_CREATED),
+];
 
 /// What the trailing controls on a draft-task row need: three menus, a Remove,
 /// and the gaps between them. The title input takes the rest.
@@ -236,93 +244,12 @@ fn table(
     names: &HashMap<String, String>,
     open: &mut Option<String>,
 ) {
-    let hover_id = egui::Id::new(HOVER);
-    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
-    let mut now: Option<usize> = None;
-    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
-
-    egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
-        .show(ui, |ui| {
-            // Reserved now, painted once the header's extent is known: the
-            // band has to sit under the header text, not over it.
-            let band = ui.painter().add(egui::Shape::Noop);
-            let top = ui.cursor().top();
-            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
-
-            TableBuilder::new(ui)
-                .id_salt("projects:table")
-                .vscroll(false)
-                .sense(egui::Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::exact(COL_NAME).clip(true))
-                .column(Column::remainder().at_least(COL_DESCRIPTION).clip(true))
-                .column(Column::exact(COL_PEOPLE))
-                .column(Column::exact(COL_PROGRESS))
-                .column(Column::exact(COL_STATUS))
-                .column(Column::exact(COL_CREATED))
-                .header(size::CONTROL, |mut row| {
-                    for name in
-                        ["Project", "Description", "Assignees", "Progress", "Status", "Created"]
-                    {
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(name)
-                                    .size(text::CAPTION)
-                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                    .color(colour::TEXT_MUTED),
-                            );
-                        });
-                    }
-                })
-                .body(|mut body| {
-                    for (i, p) in rows.iter().enumerate() {
-                        body.row(ROW_H, |mut row| {
-                            row.set_hovered(was == Some(i));
-                            row.set_overline(i > 0);
-                            project_row(&mut row, p, flows.get(str_at(p, "id")), names);
-                            responses.push(row.response());
-                        });
-                    }
-                });
-
-            // A row is hand-painted, so Tab does not reach it on its own.
-            // Handled after the table rather than inside the body closure,
-            // which holds the only `Ui` the focus ring can be drawn on.
-            for (i, response) in responses.into_iter().enumerate() {
-                let response = motion::operable_sm(ui, response);
-                if response.hovered() {
-                    now = Some(i);
-                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if response.clicked() {
-                    *open = Some(str_at(&rows[i], "id").to_owned());
-                }
-            }
-
-            let band_rect = egui::Rect::from_min_max(
-                egui::pos2(ui.max_rect().left() - space::MD, top),
-                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
-            );
-            ui.painter().set(
-                band,
-                egui::Shape::rect_filled(
-                    band_rect,
-                    egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
-                    colour::CHROME,
-                ),
-            );
-            ui.painter().hline(
-                band_rect.x_range(),
-                band_rect.bottom(),
-                egui::Stroke::new(1.0, colour::LINE),
-            );
-        });
-
-    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
+    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
+        project_row(row, &rows[i], flows.get(str_at(&rows[i], "id")), names);
+    });
+    if let Some(i) = clicked {
+        *open = Some(str_at(&rows[i], "id").to_owned());
+    }
 }
 
 fn project_row(
@@ -334,50 +261,37 @@ fn project_row(
     let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
     let status = str_at(p, "status");
 
-    row.col(|ui| {
-        ui.label(
-            RichText::new(str_at(p, "name"))
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-    });
+    row.col(|ui| table::strong_cell(ui, &COLS[0], str_at(p, "name"), colour::TEXT));
+
+    // One line. The column clips, and a wrapped cell would make one row taller
+    // than the rest of the table.
+    row.col(|ui| table::muted_cell(ui, &COLS[1], str_at(p, "description")));
+
+    row.col(|ui| table::cell(ui, &COLS[2], |ui| roster(ui, p, names)));
 
     row.col(|ui| {
-        let description = str_at(p, "description");
-        let (copy, ink) = if description.is_empty() {
-            ("No description", colour::TEXT_FAINT)
-        } else {
-            (description, colour::TEXT_MUTED)
-        };
-        // One line. The column clips, and a wrapped cell would make one row
-        // taller than the rest of the table.
-        ui.label(RichText::new(copy).size(text::SMALL).color(ink));
-    });
-
-    row.col(|ui| roster(ui, p, names));
-
-    row.col(|ui| {
-        if total > 0 {
-            w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
-            ui.add_space(space::SM);
-            ui.label(
-                RichText::new(format!("{done}/{total}")).size(text::CAPTION).color(colour::TEXT),
-            );
-        } else {
-            w::caption(ui, "\u{2014}");
-        }
-    });
-
-    row.col(|ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), true);
-    });
-
-    row.col(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(age(p)).size(text::SMALL).color(colour::TEXT_MUTED));
+        // Right-aligned, so the cell builds from its right edge inward: the
+        // figure first, then the bar to its left.
+        table::cell(ui, &COLS[3], |ui| {
+            if total > 0 {
+                ui.label(
+                    RichText::new(format!("{done}/{total}")).size(text::BODY).color(colour::TEXT),
+                );
+                ui.add_space(space::SM);
+                w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
+            } else {
+                w::caption(ui, "\u{2014}");
+            }
         });
     });
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[4], |ui| {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
+        });
+    });
+
+    row.col(|ui| table::muted_cell(ui, &COLS[5], &age(p)));
 }
 
 /// The overlapping stack of faces on a project. Five fit where three would
@@ -518,7 +432,7 @@ fn tasks_section(ui: &mut egui::Ui, draft: &mut Draft, assignable: &[(String, St
     w::heading(ui, "Tasks");
     ui.add_space(space::XS);
     w::caption(ui, "Handed out with the project. Rows left blank are dropped.");
-    ui.add_space(space::SM);
+    ui.add_space(space::MD);
 
     let disciplines: Vec<(String, String)> =
         DISCIPLINES.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
@@ -544,7 +458,7 @@ fn tasks_section(ui: &mut egui::Ui, draft: &mut Draft, assignable: &[(String, St
         draft.tasks.remove(i);
     }
 
-    ui.add_space(space::XXS);
+    ui.add_space(space::SM);
     if w::secondary(ui, "Add task", true).clicked() {
         draft.tasks.push(DraftTask::default());
     }

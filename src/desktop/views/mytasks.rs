@@ -15,13 +15,11 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use egui::{Align, Layout, RichText};
-use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
+use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, motion, radius, shell, size, space, status_label, text, theme, viz,
-    widgets as w,
+    cards as c, colour, shell, space, status_label, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -31,11 +29,9 @@ const MINE: &str = "mytasks:mine";
 /// Whether finished rows are shown. Which project the pointer is over gets its
 /// own id per group, derived from this one.
 const FINISHED: &str = "mytasks:finished";
-const HOVER: &str = "mytasks:hover";
 
 // ---- table geometry. Fixed so every group's columns line up with every
 // ---- other's; the description takes whatever is left.
-const ROW_H: f32 = 38.0;
 /// The title is what is being scanned for, so it gets the widest fixed column;
 /// past this it truncates rather than pushing the row around.
 const COL_TASK: f32 = 300.0;
@@ -45,6 +41,15 @@ const COL_DESCRIPTION: f32 = 180.0;
 const COL_PRIORITY: f32 = 52.0;
 const COL_STATUS: f32 = 104.0;
 const COL_UPDATED: f32 = 78.0;
+
+/// Alignment lives with the width, so "Updated" sits over the age beneath it.
+const COLS: [Col; 5] = [
+    Col::left("Task", COL_TASK),
+    Col::fill("Description", COL_DESCRIPTION),
+    Col::left("Priority", COL_PRIORITY),
+    Col::left("Status", COL_STATUS),
+    Col::right("Updated", COL_UPDATED),
+];
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // ponytail: one flag, so it lives in egui's temp store rather than growing
@@ -138,90 +143,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 // --------------------------------------------------------------------- table
 
 fn table(ui: &mut egui::Ui, salt: &str, rows: &[&Value], open_task: &mut Option<String>) {
-    let hover_id = egui::Id::new(HOVER).with(salt);
-    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
-    let mut now: Option<usize> = None;
-    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
-
-    egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
-        .show(ui, |ui| {
-            // Reserved now, painted once the header's extent is known: the
-            // band has to sit under the header text, not over it.
-            let band = ui.painter().add(egui::Shape::Noop);
-            let top = ui.cursor().top();
-            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
-
-            TableBuilder::new(ui)
-                .id_salt(salt)
-                .vscroll(false)
-                .sense(egui::Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::exact(COL_TASK).clip(true))
-                .column(Column::remainder().at_least(COL_DESCRIPTION).clip(true))
-                .column(Column::exact(COL_PRIORITY))
-                .column(Column::exact(COL_STATUS))
-                .column(Column::exact(COL_UPDATED))
-                .header(size::CONTROL, |mut row| {
-                    for name in ["Task", "Description", "Priority", "Status", "Updated"] {
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(name)
-                                    .size(text::CAPTION)
-                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                    .color(colour::TEXT_MUTED),
-                            );
-                        });
-                    }
-                })
-                .body(|mut body| {
-                    for (i, t) in rows.iter().enumerate() {
-                        body.row(ROW_H, |mut row| {
-                            row.set_hovered(was == Some(i));
-                            row.set_overline(i > 0);
-                            task_row(&mut row, t);
-                            responses.push(row.response());
-                        });
-                    }
-                });
-
-            // A row is hand-painted, so Tab does not reach it on its own.
-            // Handled after the table rather than inside the body closure,
-            // which holds the only `Ui` the focus ring can be drawn on.
-            for (i, response) in responses.into_iter().enumerate() {
-                let response = motion::operable_sm(ui, response);
-                if response.hovered() {
-                    now = Some(i);
-                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if response.clicked() {
-                    *open_task = str_at(rows[i], "id").map(str::to_owned);
-                }
-            }
-
-            let band_rect = egui::Rect::from_min_max(
-                egui::pos2(ui.max_rect().left() - space::MD, top),
-                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
-            );
-            ui.painter().set(
-                band,
-                egui::Shape::rect_filled(
-                    band_rect,
-                    egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
-                    colour::CHROME,
-                ),
-            );
-            ui.painter().hline(
-                band_rect.x_range(),
-                band_rect.bottom(),
-                egui::Stroke::new(1.0, colour::LINE),
-            );
-        });
-
-    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
+    // One table per project group, so the id is the group's own.
+    let clicked = table::show(ui, salt, &COLS, rows.len(), |row, i| {
+        task_row(row, rows[i]);
+    });
+    if let Some(i) = clicked {
+        *open_task = str_at(rows[i], "id").map(str::to_owned);
+    }
 }
 
 fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
@@ -229,51 +157,43 @@ fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
     let done = finished(t);
 
     row.col(|ui| {
-        ui.label(
-            RichText::new(str_at(t, "title").unwrap_or_default())
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                // Finished work stays legible and stops competing: the rows
-                // above it are the ones with something to decide.
-                .color(if done { colour::TEXT_MUTED } else { colour::TEXT }),
-        );
-        // Blocked rides behind the title rather than replacing the status: the
-        // status is still true, the blocker is the reason it is not moving.
-        if blocked(t) {
-            ui.add_space(space::XS);
-            c::chip(ui, "blocked", c::Tone::Blocked, false);
-        }
+        table::cell(ui, &COLS[0], |ui| {
+            // Finished work stays legible and stops competing: the rows above
+            // it are the ones with something to decide.
+            let ink = if done { colour::TEXT_MUTED } else { colour::TEXT };
+            table::strong_label(ui, str_at(t, "title").unwrap_or_default(), ink);
+            // Blocked rides behind the title rather than replacing the status:
+            // the status is still true, the blocker is why it is not moving.
+            if blocked(t) {
+                ui.add_space(space::XS);
+                c::chip(ui, "blocked", c::Tone::Blocked, false);
+            }
+        });
     });
 
+    // One line. The column clips, and a wrapped cell would make one row taller
+    // than the rest of the table.
     row.col(|ui| {
         let body = str_at(t, "body").unwrap_or_default().trim();
-        let (copy, ink) = match body.lines().next() {
-            Some(first) if !first.is_empty() => (first, colour::TEXT_MUTED),
-            // One line. The column clips, and a wrapped cell would make one
-            // row taller than the rest of the table.
-            _ => ("\u{2014}", colour::TEXT_FAINT),
-        };
-        ui.label(RichText::new(copy).size(text::SMALL).color(ink));
+        table::muted_cell(ui, &COLS[1], body.lines().next().unwrap_or(""));
     });
 
     row.col(|ui| {
-        if let Some(p) = t.get("priority").and_then(Value::as_i64) {
-            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
-        }
-    });
-
-    row.col(|ui| {
-        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
-    });
-
-    row.col(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(age(str_at(t, "updatedAt").unwrap_or_default()))
-                    .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
-            );
+        table::cell(ui, &COLS[2], |ui| {
+            if let Some(p) = t.get("priority").and_then(Value::as_i64) {
+                c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+            }
         });
+    });
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[3], |ui| {
+            c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
+        });
+    });
+
+    row.col(|ui| {
+        table::muted_cell(ui, &COLS[4], &age(str_at(t, "updatedAt").unwrap_or_default()));
     });
 }
 

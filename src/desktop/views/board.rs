@@ -21,14 +21,13 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use egui::{Align, Layout, RichText};
-use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
 use super::projects::{AVATAR_OVERLAP, MAX_AVATARS, PEOPLE_KEY, PROSE_W};
+use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
 use crate::desktop::design::{
-    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
-    viz, widgets as w,
+    avatar, cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -42,13 +41,11 @@ const CLAIM_KEY: &str = "board:claim";
 /// Where an Add task's reply is collected. Under `board:` so the invalidation
 /// that follows a success drops the reply along with the stale list.
 const ADD_KEY: &str = "board:add-task";
-/// Which row the pointer was over last frame. A table row's own response only
-/// exists after its first cell, which is too late to tint that cell.
-const HOVER: &str = "board:tasks:hover";
+/// The table's id: its scroll salt, and the slot its hover is tracked in.
+const TABLE: &str = "board:tasks:table";
 
 // ---- table geometry. Fixed so the columns line up with the header and with
 // ---- each other; the description takes whatever is left.
-const ROW_H: f32 = 38.0;
 /// The title is what the eye runs down, so it gets the widest fixed column;
 /// past this it truncates rather than pushing the row around.
 const COL_TASK: f32 = 260.0;
@@ -60,6 +57,16 @@ const COL_ASSIGNEE: f32 = 150.0;
 const COL_PRIORITY: f32 = 52.0;
 const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
+
+/// Alignment lives with the width, so "Created" sits over the age beneath it.
+const COLS: [Col; 6] = [
+    Col::left("Task", COL_TASK),
+    Col::fill("Description", COL_DESCRIPTION),
+    Col::left("Assignee", COL_ASSIGNEE),
+    Col::left("Priority", COL_PRIORITY),
+    Col::left("Status", COL_STATUS),
+    Col::right("Created", COL_CREATED),
+];
 
 /// The disciplines a task can be filed under. Same three the flow strip
 /// orders by.
@@ -217,7 +224,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         }
     });
 
-    ui.add_space(space::MD);
+    ui.add_space(space::XXS);
     let (done, total) = flow
         .as_ref()
         .map(|f| (num_at(f, "done"), num_at(f, "total")))
@@ -241,7 +248,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 
     if let Some(err) = claim_error {
-        ui.add_space(space::SM);
+        ui.add_space(space::MD);
         w::error(ui, &err);
     }
 
@@ -547,96 +554,15 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
 
 // --------------------------------------------------------------------- table
 
-/// The project's tasks. Same frame, band, hover and keyboard machinery as the
-/// projects list — a task row should feel like a project row.
+/// The project's tasks, on the shared table — so a task row is the same row
+/// the projects list draws, down to the alignment of its dates.
 fn table(ui: &mut egui::Ui, rows: &[Value], open: &mut Option<String>) {
-    let hover_id = egui::Id::new(HOVER);
-    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
-    let mut now: Option<usize> = None;
-    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
-
-    egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
-        .show(ui, |ui| {
-            // Reserved now, painted once the header's extent is known: the
-            // band has to sit under the header text, not over it.
-            let band = ui.painter().add(egui::Shape::Noop);
-            let top = ui.cursor().top();
-            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
-
-            TableBuilder::new(ui)
-                .id_salt("board:tasks:table")
-                .vscroll(false)
-                .sense(egui::Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::exact(COL_TASK).clip(true))
-                .column(Column::remainder().at_least(COL_DESCRIPTION).clip(true))
-                .column(Column::exact(COL_ASSIGNEE).clip(true))
-                .column(Column::exact(COL_PRIORITY))
-                .column(Column::exact(COL_STATUS))
-                .column(Column::exact(COL_CREATED))
-                .header(size::CONTROL, |mut row| {
-                    for name in
-                        ["Task", "Description", "Assignee", "Priority", "Status", "Created"]
-                    {
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(name)
-                                    .size(text::CAPTION)
-                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                    .color(colour::TEXT_MUTED),
-                            );
-                        });
-                    }
-                })
-                .body(|mut body| {
-                    for (i, t) in rows.iter().enumerate() {
-                        body.row(ROW_H, |mut row| {
-                            row.set_hovered(was == Some(i));
-                            row.set_overline(i > 0);
-                            task_row(&mut row, t);
-                            responses.push(row.response());
-                        });
-                    }
-                });
-
-            // A row is hand-painted, so Tab does not reach it on its own.
-            // Handled after the table rather than inside the body closure,
-            // which holds the only `Ui` the focus ring can be drawn on.
-            for (i, response) in responses.into_iter().enumerate() {
-                let response = motion::operable_sm(ui, response);
-                if response.hovered() {
-                    now = Some(i);
-                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if response.clicked() {
-                    *open = Some(str_at(&rows[i], "id").to_owned());
-                }
-            }
-
-            let band_rect = egui::Rect::from_min_max(
-                egui::pos2(ui.max_rect().left() - space::MD, top),
-                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
-            );
-            ui.painter().set(
-                band,
-                egui::Shape::rect_filled(
-                    band_rect,
-                    egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
-                    colour::CHROME,
-                ),
-            );
-            ui.painter().hline(
-                band_rect.x_range(),
-                band_rect.bottom(),
-                egui::Stroke::new(1.0, colour::LINE),
-            );
-        });
-
-    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
+    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
+        task_row(row, &rows[i]);
+    });
+    if let Some(i) = clicked {
+        *open = Some(str_at(&rows[i], "id").to_owned());
+    }
 }
 
 fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
@@ -644,62 +570,51 @@ fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
     let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
 
     row.col(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        ui.label(
-            RichText::new(str_at(t, "title"))
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-        // Blockers beat the status column: a task marked in progress that
-        // waits on someone else is not in progress, and the chip beside its
-        // title is what says so.
-        if blocked {
-            c::chip(ui, "blocked", c::Tone::Blocked, false);
-        }
-    });
-
-    row.col(|ui| {
-        let body = str_at(t, "body").lines().next().unwrap_or("").trim();
-        let (copy, ink) = if body.is_empty() {
-            ("\u{2014}", colour::TEXT_FAINT)
-        } else {
-            (body, colour::TEXT_MUTED)
-        };
-        // One line. The column clips, and a wrapped cell would make one row
-        // taller than the rest of the table.
-        ui.label(RichText::new(copy).size(text::SMALL).color(ink));
-    });
-
-    row.col(|ui| {
-        let who = str_at(t, "assigneeName");
-        if who.is_empty() {
-            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
-            return;
-        }
-        ui.spacing_mut().item_spacing.x = space::XS;
-        avatar::small(ui, who, size::AVATAR_SM);
-        ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
-    });
-
-    row.col(|ui| {
-        let p = num_at(t, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
-    });
-
-    row.col(|ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), true);
-    });
-
-    row.col(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(since(str_at(t, "createdAt")))
-                    .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
-            );
+        table::cell(ui, &COLS[0], |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            table::strong_label(ui, str_at(t, "title"), colour::TEXT);
+            // Blockers beat the status column: a task marked in progress that
+            // waits on someone else is not in progress, and the chip beside its
+            // title is what says so.
+            if blocked {
+                c::chip(ui, "blocked", c::Tone::Blocked, false);
+            }
         });
     });
+
+    // One line. The column clips, and a wrapped cell would make one row taller
+    // than the rest of the table.
+    row.col(|ui| {
+        table::muted_cell(ui, &COLS[1], str_at(t, "body").lines().next().unwrap_or("").trim());
+    });
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[2], |ui| {
+            let who = str_at(t, "assigneeName");
+            if who.is_empty() {
+                ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+                return;
+            }
+            ui.spacing_mut().item_spacing.x = space::XS;
+            avatar::small(ui, who, size::AVATAR_SM);
+            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
+        });
+    });
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[3], |ui| {
+            let p = num_at(t, "priority").clamp(0, 4);
+            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        });
+    });
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[4], |ui| {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
+        });
+    });
+
+    row.col(|ui| table::muted_cell(ui, &COLS[5], &since(str_at(t, "createdAt"))));
 }
 
 /// How loud a priority is allowed to be. P0 and P1 are the only ones worth

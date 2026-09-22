@@ -123,14 +123,13 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         if shell::back(ui, "Back").clicked() {
             leave = true;
         }
-        ui.add_space(space::XS);
         w::id(ui, task_id);
     });
     if leave {
         app.task = None;
         return;
     }
-    ui.add_space(space::SM);
+    ui.add_space(space::XS);
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     let Some(task) = task else {
@@ -177,16 +176,16 @@ fn heading(ui: &mut egui::Ui, task: &Value, status: &str) {
         ui.add_space(space::SM);
         c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
     });
-    ui.add_space(space::SM);
+    ui.add_space(space::XXS);
 }
 
 /// Everything a task *is*, on one line: where it lives, who holds it, how
 /// urgent, what kind of work, how old.
 ///
 /// A line, not a card and not a label grid. Six facts in a two-column table
-/// would be the tallest thing on the page and the least read; run together
-/// with separators they are one glance. Returns the project id when the
-/// project name is clicked.
+/// would be the tallest thing on the page and the least read; set out along
+/// one line, a fact's width apart, they are one glance. Returns the project id
+/// when the project name is clicked.
 fn meta_line(ui: &mut egui::Ui, task: &Value) -> Option<String> {
     let mut open_project = None;
     ui.horizontal_wrapped(|ui| {
@@ -197,7 +196,7 @@ fn meta_line(ui: &mut egui::Ui, task: &Value) -> Option<String> {
             open_project = str_of(task, "projectId").map(str::to_owned);
         }
 
-        sep(ui);
+        ui.add_space(space::XL);
         match str_of(task, "assigneeName") {
             Some(name) if !name.is_empty() => {
                 let seed = str_of(task, "assigneeEmail").unwrap_or(name);
@@ -208,23 +207,23 @@ fn meta_line(ui: &mut egui::Ui, task: &Value) -> Option<String> {
         }
 
         if let Some(p) = task.get("priority").and_then(Value::as_i64) {
-            sep(ui);
+            ui.add_space(space::XL);
             c::chip(ui, &format!("P{p}"), priority_tone(p), false);
         }
 
         let discipline = str_of(task, "discipline").unwrap_or_default();
         if !discipline.is_empty() {
-            sep(ui);
+            ui.add_space(space::XL);
             w::discipline(ui, discipline);
         }
 
         if let Some(created) = str_of(task, "createdAt") {
-            sep(ui);
+            ui.add_space(space::XL);
             label(ui, "Created");
             value(ui, &ago(created));
         }
         if let Some(done) = str_of(task, "doneAt") {
-            sep(ui);
+            ui.add_space(space::XL);
             label(ui, "Done");
             value(ui, &ago(done));
         }
@@ -251,10 +250,6 @@ fn value(ui: &mut egui::Ui, s: &str) {
     ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT));
 }
 
-fn sep(ui: &mut egui::Ui) {
-    ui.label(RichText::new("\u{00b7}").size(text::SMALL).color(colour::TEXT_FAINT));
-}
-
 /// The task's own words, at a prose measure. Paragraphs split on a blank line,
 /// because that is how whoever filed it typed them.
 fn description(ui: &mut egui::Ui, task: &Value) {
@@ -268,7 +263,7 @@ fn description(ui: &mut egui::Ui, task: &Value) {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
         for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
             if i > 0 {
-                ui.add_space(space::SM);
+                ui.add_space(space::MD);
             }
             ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2));
         }
@@ -476,22 +471,13 @@ fn run_log(
         local.fired_at = Instant::now();
     }
 
-    // A section heading with a pill beside it. `shell::section` owns the label
-    // alone, so the row is hand-painted here in the same type and colour.
-    ui.add_space(space::LG);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Run log")
-                .size(text::SMALL)
-                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED),
-        );
+    // The heading carries a live pill, which is what `section_with`'s trailing
+    // slot is for — it was hand-painted here before that existed.
+    shell::section_with(ui, "Run log", |ui| {
         if live {
-            ui.add_space(space::SM);
             w::pill(ui, "live", colour::ACCENT);
         }
     });
-    ui.add_space(space::SM);
 
     if let Some(err) = &local.log_error {
         failed(ui, "Could not load the run log", err);

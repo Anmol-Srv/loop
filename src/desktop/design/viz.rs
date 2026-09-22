@@ -608,8 +608,10 @@ pub fn multi_select(
 }
 
 /// Every control on the filter bar is this tall, including the clear button,
-/// so the bar reads as one strip rather than as controls of two heights.
-pub const HEIGHT: f32 = 30.0;
+/// so the bar reads as one strip rather than as controls of two heights. It is
+/// `size::CONTROL` rather than a number of its own: a form row that mixes a
+/// picker with a button was mixing 30 with 28.
+pub const HEIGHT: f32 = size::CONTROL;
 
 /// The escape hatch: only drawn when something is filtered, because a clear
 /// button next to four unset filters is a control that does nothing.

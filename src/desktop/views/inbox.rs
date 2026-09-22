@@ -9,7 +9,7 @@
 use egui::{Color32, RichText};
 use serde_json::Value;
 
-use crate::desktop::design::{avatar, colour, size, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, shell, size, space, text, widgets as w};
 use crate::desktop::App;
 
 const APPROVE: &str = "inbox:approve";
@@ -48,18 +48,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     header(ui, changes.len(), can_write);
 
     if let Some(err) = &mutation_error {
-        ui.add_space(space::MD);
         w::error(ui, &format!("That did not go through. {err}"));
+        ui.add_space(space::MD);
     }
 
     if let Some(err) = &list_error {
-        ui.add_space(space::MD);
         w::error(ui, &format!("Could not load the queue. {err}"));
         return;
     }
 
     if changes.is_empty() {
-        ui.add_space(space::MD);
         if list_loading {
             w::loading(ui, "Loading the queue");
         } else {
@@ -68,7 +66,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    ui.add_space(space::LG);
     for change in &changes {
         card(ui, net, change, can_write, busy);
         ui.add_space(space::MD);
@@ -76,20 +73,18 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn header(ui: &mut egui::Ui, count: usize, can_write: bool) {
-    ui.horizontal(|ui| {
-        w::title(ui, "Pending approvals");
-        if count > 0 {
-            ui.add_space(space::XXS);
-            w::pill(ui, &count.to_string(), colour::ACCENT);
-        }
-    });
-    ui.add_space(space::XXS);
     let note = if can_write {
         "Proposals wait here until a person decides."
     } else {
         "Read only. This token can see the queue but not decide on it."
     };
-    w::muted(ui, note);
+    // The page header every other screen uses. This one drew its own, which is
+    // how it ended up with no space at all under the subtitle.
+    shell::page_title(ui, "Pending approvals", note, |ui| {
+        if count > 0 {
+            w::pill(ui, &count.to_string(), colour::ACCENT);
+        }
+    });
 }
 
 fn card(

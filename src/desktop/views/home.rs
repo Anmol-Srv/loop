@@ -28,12 +28,12 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Datelike, Local, Utc};
 use egui::{Align, Color32, Layout, RichText};
-use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
+use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, motion, radius, shell, size, space, status_colour, status_label,
-    text, theme, tokens, viz, widgets as w,
+    avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, theme,
+    tokens, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -45,9 +45,8 @@ const CLAIM: &str = "home:claim";
 /// `App` owns no home state, and this view is the only thing that reads these
 /// filters, so they live in egui's temp store rather than growing the struct.
 const FILTERS: &str = "home:filters";
-/// Which row the pointer was over last frame. A table row's own response only
-/// exists after its first cell, which is too late to tint that cell.
-const HOVER: &str = "home:hover";
+/// The table's id: its scroll salt, and the slot its hover is tracked in.
+const TABLE: &str = "home:table";
 
 /// Last frame's tallest figure, so all four cards agree on a height.
 const VIZ_H: &str = "home:viz-h";
@@ -60,8 +59,8 @@ const WEEK: usize = 7;
 const STATUSES: [&str; 5] = ["done", "in_progress", "in_review", "blocked", "open"];
 
 /// Table geometry. Fixed so the columns line up with the header and with each
-/// other; the task column takes whatever is left.
-const ROW_H: f32 = 38.0;
+/// other; the task column takes whatever is left. Alignment is declared here
+/// too, so "Updated" and the age beneath it cannot disagree.
 const COL_DOT: f32 = 22.0;
 const COL_DISCIPLINE: f32 = 88.0;
 const COL_STATUS: f32 = 104.0;
@@ -69,6 +68,17 @@ const COL_PROJECT: f32 = 150.0;
 const COL_PHASE: f32 = 120.0;
 const COL_OWNER: f32 = 70.0;
 const COL_UPDATED: f32 = 78.0;
+
+const COLS: [Col; 8] = [
+    Col::left("", COL_DOT),
+    Col::fill("Task", COL_PROJECT),
+    Col::left("Discipline", COL_DISCIPLINE),
+    Col::left("Status", COL_STATUS),
+    Col::left("Project", COL_PROJECT),
+    Col::left("Phase", COL_PHASE),
+    Col::left("Owner", COL_OWNER),
+    Col::right("Updated", COL_UPDATED),
+];
 
 /// What the table is filtered to. Every field is "no filter" when unset, so
 /// `Default` is the unfiltered view.
@@ -475,100 +485,15 @@ fn table(
     open_task: &mut Option<String>,
     claim: &mut Option<String>,
 ) {
-    let hover_id = egui::Id::new(HOVER);
-    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
-    let mut now: Option<usize> = None;
-    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
-
-    egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
-        .show(ui, |ui| {
-            // Reserved now, painted once the header's extent is known: the
-            // band has to sit under the header text, not over it.
-            let band = ui.painter().add(egui::Shape::Noop);
-            let top = ui.cursor().top();
-            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
-
-            TableBuilder::new(ui)
-                .id_salt("home:table")
-                .vscroll(false)
-                .sense(egui::Sense::click())
-                .cell_layout(Layout::left_to_right(Align::Center))
-                .column(Column::exact(COL_DOT))
-                .column(Column::remainder().at_least(COL_PROJECT).clip(true))
-                .column(Column::exact(COL_DISCIPLINE))
-                .column(Column::exact(COL_STATUS))
-                .column(Column::exact(COL_PROJECT).clip(true))
-                .column(Column::exact(COL_PHASE).clip(true))
-                .column(Column::exact(COL_OWNER))
-                .column(Column::exact(COL_UPDATED))
-                .header(size::CONTROL, |mut row| {
-                    for name in
-                        ["", "Task", "Discipline", "Status", "Project", "Phase", "Owner", "Updated"]
-                    {
-                        row.col(|ui| {
-                            ui.label(
-                                RichText::new(name)
-                                    .size(text::CAPTION)
-                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                    .color(colour::TEXT_FAINT),
-                            );
-                        });
-                    }
-                })
-                .body(|mut body| {
-                    for (i, t) in rows.iter().enumerate() {
-                        body.row(ROW_H, |mut row| {
-                            row.set_hovered(was == Some(i));
-                            row.set_overline(i > 0);
-                            task_row(&mut row, t, known, owners, can_claim && was == Some(i), claim);
-                            responses.push(row.response());
-                        });
-                    }
-                });
-
-            // A row is hand-painted, so Tab does not reach it on its own.
-            // Handled after the table rather than inside the body closure,
-            // which holds the only `Ui` the focus ring can be drawn on.
-            for (i, response) in responses.into_iter().enumerate() {
-                let response = motion::operable_sm(ui, response);
-                if response.hovered() {
-                    now = Some(i);
-                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if response.clicked() {
-                    *open_task = str_at(rows[i], "id").map(str::to_owned);
-                }
-            }
-
-            let band_rect = egui::Rect::from_min_max(
-                egui::pos2(ui.max_rect().left() - space::MD, top),
-                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
-            );
-            ui.painter().set(
-                band,
-                egui::Shape::rect_filled(
-                    band_rect,
-                    egui::CornerRadius {
-                        nw: radius::LG,
-                        ne: radius::LG,
-                        sw: 0,
-                        se: 0,
-                    },
-                    colour::CHROME,
-                ),
-            );
-            ui.painter().hline(
-                band_rect.x_range(),
-                band_rect.bottom(),
-                egui::Stroke::new(1.0, colour::LINE),
-            );
-        });
-
-    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
+    // Claim is offered on the row under the pointer only, and the table tracks
+    // that a frame behind — so it is read before the rows are drawn.
+    let hot = table::hovered(ui, TABLE);
+    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
+        task_row(row, rows[i], known, owners, can_claim && hot == Some(i), claim);
+    });
+    if let Some(i) = clicked {
+        *open_task = str_at(rows[i], "id").map(str::to_owned);
+    }
 }
 
 fn task_row(
@@ -582,54 +507,56 @@ fn task_row(
     let status = bucket(t);
     let discipline = str_at(t, "discipline").unwrap_or_default();
 
-    row.col(|ui| w::dot(ui, status_colour(status)));
+    row.col(|ui| table::cell(ui, &COLS[0], |ui| w::dot(ui, status_colour(status))));
 
     row.col(|ui| {
-        ui.label(
-            RichText::new(str_at(t, "title").unwrap_or_default())
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-        // The blocker rides behind the title rather than in its own column:
-        // it is a footnote on the task, not a property every row has.
-        if status == "blocked" {
-            ui.add_space(space::XS);
-            w::caption(ui, &format!("\u{21b3} waiting on {}", blocker(t, known)));
-        }
-    });
-
-    row.col(|ui| {
-        if !discipline.is_empty() {
-            c::chip(ui, discipline, c::discipline_tone(discipline), false);
-        }
-    });
-    row.col(|ui| {
-        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), status != "blocked");
-    });
-    row.col(|ui| w::caption(ui, str_at(t, "projectName").unwrap_or_default()));
-    row.col(|ui| w::caption(ui, str_at(t, "phaseName").unwrap_or_default()));
-
-    row.col(|ui| match owner(t, owners) {
-        Some(seed) => {
-            avatar::small(ui, &seed, size::AVATAR_SM);
-        }
-        None if offer_claim => {
-            if w::ghost(ui, "Claim").clicked() {
-                *claim = str_at(t, "id").map(str::to_owned);
+        table::cell(ui, &COLS[1], |ui| {
+            table::strong_label(ui, str_at(t, "title").unwrap_or_default(), colour::TEXT);
+            // The blocker rides behind the title rather than in its own column:
+            // it is a footnote on the task, not a property every row has.
+            if status == "blocked" {
+                ui.add_space(space::XS);
+                w::caption(ui, &format!("\u{21b3} waiting on {}", blocker(t, known)));
             }
-        }
-        None => w::caption(ui, "\u{2014}"),
+        });
     });
 
     row.col(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(age(str_at(t, "updatedAt").unwrap_or_default()))
-                    .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+        table::cell(ui, &COLS[2], |ui| {
+            if !discipline.is_empty() {
+                c::chip(ui, discipline, c::discipline_tone(discipline), false);
+            }
+        });
+    });
+    row.col(|ui| {
+        table::cell(ui, &COLS[3], |ui| {
+            c::chip(
+                ui,
+                &sentence(status_label(status)),
+                c::status_tone(status),
+                status != "blocked",
             );
         });
+    });
+    row.col(|ui| table::muted_cell(ui, &COLS[4], str_at(t, "projectName").unwrap_or_default()));
+    row.col(|ui| table::muted_cell(ui, &COLS[5], str_at(t, "phaseName").unwrap_or_default()));
+
+    row.col(|ui| {
+        table::cell(ui, &COLS[6], |ui| match owner(t, owners) {
+            Some(seed) => {
+                avatar::small(ui, &seed, size::AVATAR_SM);
+            }
+            None if offer_claim => {
+                if w::ghost(ui, "Claim").clicked() {
+                    *claim = str_at(t, "id").map(str::to_owned);
+                }
+            }
+            None => w::caption(ui, "\u{2014}"),
+        });
+    });
+
+    row.col(|ui| {
+        table::muted_cell(ui, &COLS[7], &age(str_at(t, "updatedAt").unwrap_or_default()));
     });
 }
 

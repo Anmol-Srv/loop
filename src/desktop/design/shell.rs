@@ -394,7 +394,7 @@ pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
-    ui.add_space(space::SM);
+    ui.add_space(space::MD);
 }
 
 /// A section heading with a count beside it, the count a shade fainter.
@@ -433,7 +433,7 @@ pub fn section_count_with(
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
-    ui.add_space(space::SM);
+    ui.add_space(space::MD);
 }
 
 /// A section heading inside a page body.
@@ -445,5 +445,5 @@ pub fn section(ui: &mut Ui, label: &str) {
             .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
             .color(colour::TEXT_MUTED),
     );
-    ui.add_space(space::SM);
+    ui.add_space(space::MD);
 }
