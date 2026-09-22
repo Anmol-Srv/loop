@@ -247,10 +247,17 @@ pub fn discipline_colour(discipline: &str) -> Color32 {
 /// Width of the discipline column, so every row in every list agrees.
 pub const DISCIPLINE_W: f32 = 62.0;
 
+/// The dot beside a status.
+///
+/// `shipped` and `completed` both read as finished, but only one of them is
+/// the end of the engineering track, so shipped takes the confident green and
+/// completed the cooler blue. `handoff` is design's "it is someone else's
+/// turn", which is the same shape of fact as an agent holding something.
 pub fn status_colour(status: &str) -> Color32 {
     match status {
-        "done" => colour::OK,
-        "in_review" => colour::WARN,
+        "shipped" => colour::OK,
+        "completed" | "done" => colour::INFO,
+        "handoff" => colour::AGENT,
         "in_progress" | "active" => colour::ACCENT,
         "blocked" => colour::DANGER,
         "dropped" => colour::TEXT_FAINT,
@@ -258,11 +265,11 @@ pub fn status_colour(status: &str) -> Color32 {
     }
 }
 
-/// Human-facing label, so `in_review` never reaches the screen.
+/// Human-facing label, so no underscore ever reaches the screen.
 pub fn status_label(status: &str) -> &str {
     match status {
-        "in_review" => "in review",
         "in_progress" => "in progress",
+        "handoff" => "handoff",
         other => other,
     }
 }

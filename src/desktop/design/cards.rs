@@ -52,9 +52,16 @@ pub fn discipline_tone(discipline: &str) -> Tone {
 }
 
 /// The tone a task status is drawn in.
+///
+/// Shipped is the only state that means the work is out in the world, so it
+/// gets the one confident green; completed is finished-but-not-out and takes
+/// the cooler blue. They used to be the same word and the same colour, which
+/// is exactly the distinction the two tracks exist to draw.
 pub fn status_tone(status: &str) -> Tone {
     match status {
-        "done" => Tone::Ok,
+        "shipped" => Tone::Ok,
+        "completed" | "done" => Tone::Info,
+        "handoff" => Tone::Agent,
         "in_progress" | "active" => Tone::Running,
         "blocked" => Tone::Blocked,
         _ => Tone::Neutral,

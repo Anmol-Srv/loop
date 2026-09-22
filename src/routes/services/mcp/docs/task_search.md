@@ -9,7 +9,7 @@ with no arguments returns every task, ordered by priority then age.
 |---|---|---|---|
 | `projectId` | uuid | no | All tasks in the project, across phases. |
 | `phaseId` | uuid | no | Tasks in one phase. |
-| `status` | string | no | `open`, `in_progress`, `in_review`, `blocked`, `done`, `dropped`. |
+| `status` | string | no | `open`, `in_progress`, `handoff`, `completed`, `shipped`, `blocked`, `dropped`. |
 | `assigneeEmail` | string | no | Email of the assigned person. |
 | `assigneeKind` | string | no | `human` or `agent`. |
 
