@@ -518,14 +518,21 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
                     w::progress(ui, fraction(done, total), width, discipline_colour(name));
                     ui.add_space(space::SM);
                     // Right-aligned under the bar's far end, so the figures
-                    // line up as a column of their own down the strip.
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("{done}/{total}"))
-                                .size(text::CAPTION)
-                                .color(colour::TEXT),
-                        );
-                    });
+                    // line up as a column of their own down the strip. Given
+                    // its own row of fixed height: a bare `with_layout` in a
+                    // vertical takes every pixel left on the page and centres
+                    // the figure halfway down it.
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, size::ROW),
+                        Layout::right_to_left(Align::Center),
+                        |ui| {
+                            ui.label(
+                                RichText::new(format!("{done}/{total}"))
+                                    .size(text::CAPTION)
+                                    .color(colour::TEXT),
+                            );
+                        },
+                    );
                 });
             }
         });

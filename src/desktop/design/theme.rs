@@ -132,16 +132,16 @@ pub fn install(ctx: &egui::Context) {
         s.spacing.scroll.floating_allocated_width = 0.0;
         s.spacing.scroll.bar_inner_margin = space::XXS;
         s.spacing.scroll.bar_outer_margin = 0.0;
-        // No track at all, and a handle that is invisible until the pointer
-        // is in the area it scrolls. Opacity is the only knob egui exposes
-        // here; the colour comes from the widget visuals.
+        // No scrollbar at all: no track, no handle, in any state. Scrolling
+        // still works — the trackpad is the affordance on a Mac — the bar
+        // just never paints. Opacity is the only knob egui exposes here.
         s.spacing.scroll.foreground_color = true;
         s.spacing.scroll.dormant_background_opacity = 0.0;
         s.spacing.scroll.active_background_opacity = 0.0;
         s.spacing.scroll.interact_background_opacity = 0.0;
         s.spacing.scroll.dormant_handle_opacity = 0.0;
-        s.spacing.scroll.active_handle_opacity = 0.30;
-        s.spacing.scroll.interact_handle_opacity = 0.60;
+        s.spacing.scroll.active_handle_opacity = 0.0;
+        s.spacing.scroll.interact_handle_opacity = 0.0;
 
         use egui::{FontId, TextStyle};
         s.text_styles = [
