@@ -54,6 +54,11 @@ fn projects_table() {
                 });
         });
     harness.run();
+    // Pretend the pointer sat on the last row last frame, so the render shows
+    // the hover state — the one that is easy to get subtly wrong.
+    harness.ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::new("projects:table").with("hover"), Some(2usize))
+    });
     harness.step();
     save(&mut harness, "projects-table");
 }

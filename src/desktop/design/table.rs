@@ -131,9 +131,18 @@ pub fn show(
         .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
         .show(ui, |ui| {
             // Reserved now, painted once the header's extent is known: the
-            // band has to sit under the header text, not over it.
+            // band has to sit under the header text, not over it. The same
+            // for the row hover and the separators: egui_extras would paint
+            // them itself, but only across the table's own rect, which stops
+            // `space::MD` short of the frame on either side — a hover that
+            // does not reach the edge reads as a box inside the row.
             let band = ui.painter().add(egui::Shape::Noop);
+            let rows_paint = ui.painter().add(egui::Shape::Noop);
             let top = ui.cursor().top();
+            let x_range = egui::Rangef::new(
+                ui.max_rect().left() - space::MD,
+                ui.max_rect().right() + space::MD,
+            );
             ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
 
             let mut builder = TableBuilder::new(ui)
@@ -166,8 +175,6 @@ pub fn show(
                 .body(|mut body| {
                     for i in 0..n {
                         body.row(ROW_H, |mut r| {
-                            r.set_hovered(was == Some(i));
-                            r.set_overline(i > 0);
                             row(&mut r, i);
                             responses.push(r.response());
                         });
@@ -185,10 +192,37 @@ pub fn show(
                 }
             }
 
-            let band_rect = egui::Rect::from_min_max(
-                egui::pos2(ui.max_rect().left() - space::MD, top),
-                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
-            );
+            // Rows sit directly under the header at a fixed pitch, so their
+            // rects are known without asking the table.
+            let mut shapes: Vec<egui::Shape> = Vec::with_capacity(n + 1);
+            let first_row = top + size::CONTROL;
+            for i in 0..n {
+                let row_top = first_row + i as f32 * ROW_H;
+                if i > 0 {
+                    shapes.push(egui::Shape::hline(
+                        x_range,
+                        row_top,
+                        egui::Stroke::new(1.0, colour::LINE),
+                    ));
+                }
+                if was == Some(i) {
+                    // The last row shares the frame's rounded bottom; a square
+                    // fill there would poke out of the corners.
+                    let corners = if i + 1 == n {
+                        egui::CornerRadius { nw: 0, ne: 0, sw: radius::LG, se: radius::LG }
+                    } else {
+                        egui::CornerRadius::ZERO
+                    };
+                    shapes.push(egui::Shape::rect_filled(
+                        egui::Rect::from_x_y_ranges(x_range, row_top..=row_top + ROW_H),
+                        corners,
+                        colour::SURFACE_HOVER,
+                    ));
+                }
+            }
+            ui.painter().set(rows_paint, egui::Shape::Vec(shapes));
+
+            let band_rect = egui::Rect::from_x_y_ranges(x_range, top..=top + size::CONTROL);
             ui.painter().set(
                 band,
                 egui::Shape::rect_filled(
