@@ -1,4 +1,5 @@
 pub mod board;
+pub mod projects;
 pub mod chrome;
 pub mod inbox;
 pub mod login;
