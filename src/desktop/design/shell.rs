@@ -131,19 +131,45 @@ pub fn sidebar(
 }
 
 /// The product mark and name.
+/// The mark, as an alpha mask.
+///
+/// The source art is a white glyph on a black disc. Stored as luminance-only
+/// so the black never renders — a bitmap with its own background would sit on
+/// the sidebar as a slightly-wrong-coloured square — and so the mark can be
+/// tinted like any other ink.
+const MARK: &[u8] = include_bytes!("../../../assets/mark.png");
+const MARK_SIZE: f32 = 26.0;
+
+fn mark_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_insert_with(egui::Id::new("brand:mark"), || {
+            let decoded = image::load_from_memory(MARK).expect("the mark is baked in").to_luma_alpha8();
+            let (w, h) = decoded.dimensions();
+            // Every pixel is white; the alpha carries the shape, so a tint
+            // applied at draw time colours the whole mark at once.
+            let pixels: Vec<egui::Color32> = decoded
+                .pixels()
+                .map(|p| egui::Color32::from_white_alpha(p.0[1]))
+                .collect();
+            ctx.load_texture(
+                "brand:mark",
+                egui::ColorImage { size: [w as usize, h as usize], pixels, source_size: egui::vec2(w as f32, h as f32) },
+                egui::TextureOptions::LINEAR,
+            )
+        })
+        .clone()
+    })
+}
+
 fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(26.0), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, radius::SM as f32, colour::ACCENT);
-        p.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "A",
-            egui::FontId::proportional(text::SMALL),
-            colour::ON_ACCENT,
+        let texture = mark_texture(ui.ctx());
+        ui.add(
+            egui::Image::new(&texture)
+                .fit_to_exact_size(egui::Vec2::splat(MARK_SIZE))
+                .tint(colour::TEXT),
         );
-        ui.add_space(space::XS);
+        ui.add_space(space::SM);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.label(

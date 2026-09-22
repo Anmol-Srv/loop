@@ -646,14 +646,38 @@ pub const HEIGHT: f32 = size::CONTROL;
 /// carries the affordance instead — it says what it searches, which a
 /// magnifier never did.
 pub fn search(ui: &mut Ui, hint: &str, value: &mut String) -> Response {
-    let response = ui.add_sized(
-        [SEARCH_W, HEIGHT],
+    // Painted here rather than left to egui's own frame: a `TextEdit`'s
+    // default fill, corner radius and focus stroke are none of the three the
+    // filter controls beside it use, and the mismatch is the whole reason the
+    // bar looked like two different toolbars pushed together.
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(SEARCH_W, HEIGHT), Sense::hover());
+    let id = ui.make_persistent_id(("search", rect.left() as i32));
+    let focused = ui.memory(|m| m.has_focus(id));
+
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, colour::SURFACE);
+    p.rect_stroke(
+        rect,
+        radius::SM as f32,
+        egui::Stroke::new(1.0, if focused { colour::ACCENT } else { colour::LINE }),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(space::MD, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inner.add(
         egui::TextEdit::singleline(value)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .desired_width(f32::INFINITY)
             .hint_text(RichText::new(hint).size(text::SMALL).color(colour::TEXT_FAINT))
             .font(egui::FontId::proportional(text::SMALL))
-            .margin(egui::Margin::symmetric(space::MD as i8, 0)),
-    );
-    response
+            .text_color(colour::TEXT)
+            .margin(egui::Margin::ZERO),
+    )
 }
 
 /// Wide enough for a few words of a task title. Fixed, because a search box

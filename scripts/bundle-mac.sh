@@ -34,31 +34,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# A generated icon beats the blank default and costs nothing.
+# The real mark, on the app's own canvas colour, rounded like every other Mac
+# icon. Generated from the same alpha mask the sidebar draws, so the two can
+# never drift.
 ICONSET=$(mktemp -d)/icon.iconset
 mkdir -p "$ICONSET"
-python3 - "$ICONSET" <<'PY'
-import subprocess, sys, pathlib
-out = pathlib.Path(sys.argv[1])
-svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
-<rect width="1024" height="1024" rx="228" fill="#1C1B19"/>
-<circle cx="512" cy="512" r="250" fill="none" stroke="#2F5CE5" stroke-width="56"/>
-<circle cx="512" cy="262" r="74" fill="#6A3DC4"/>
-</svg>'''
-src = out.parent / "icon.svg"
-src.write_text(svg)
-for size in (16, 32, 64, 128, 256, 512, 1024):
-    for scale, suffix in ((1, ""), (2, "@2x")):
-        px = size * scale
-        if px > 1024:
-            continue
-        name = out / f"icon_{size}x{size}{suffix}.png"
-        subprocess.run(["qlmanage", "-t", "-s", str(px), "-o", str(out), str(src)],
-                       capture_output=True)
-        produced = out / "icon.svg.png"
-        if produced.exists():
-            produced.rename(name)
-PY
+python3 scripts/make-icon.py "$ICONSET"
 if command -v iconutil >/dev/null && ls "$ICONSET"/*.png >/dev/null 2>&1; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/icon.icns" 2>/dev/null || true
 fi

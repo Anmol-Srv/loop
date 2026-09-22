@@ -58,13 +58,15 @@ const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
 
 /// Alignment lives with the width, so "Created" sits over the age beneath it.
+/// Ranked by what a narrow window can do without. Title, assignee and status
+/// are the three facts this table exists for and never drop.
 const COLS: [Col; 6] = [
     Col::left("Task", COL_TASK),
-    Col::fill("Description", COL_DESCRIPTION),
+    Col::fill("Description", COL_DESCRIPTION).rank(3),
     Col::left("Assignee", COL_ASSIGNEE),
-    Col::left("Priority", COL_PRIORITY),
+    Col::left("Priority", COL_PRIORITY).rank(1),
     Col::left("Status", COL_STATUS),
-    Col::right("Created", COL_CREATED),
+    Col::right("Created", COL_CREATED).rank(2),
 ];
 
 /// The open Add task form. Every optional field is an `Option<String>` because
@@ -465,56 +467,46 @@ fn table(ui: &mut egui::Ui, rows: &[Value], open: &mut Option<String>) {
     }
 }
 
-fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     let status = str_at(t, "status");
     let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[0], |ui| {
-            ui.spacing_mut().item_spacing.x = space::SM;
-            table::strong_label(ui, str_at(t, "title"), colour::TEXT);
-            // Blockers beat the status column: a task marked in progress that
-            // waits on someone else is not in progress, and the chip beside its
-            // title is what says so.
-            if blocked {
-                c::chip(ui, "blocked", c::Tone::Blocked, false);
-            }
-        });
+    row.at(0, |ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        table::strong_label(ui, str_at(t, "title"), colour::TEXT);
+        // Blockers beat the status column: a task marked in progress that
+        // waits on someone else is not in progress, and the chip beside its
+        // title is what says so.
+        if blocked {
+            c::chip(ui, "blocked", c::Tone::Blocked, false);
+        }
     });
 
     // One line. The column clips, and a wrapped cell would make one row taller
     // than the rest of the table.
-    row.col(|ui| {
-        table::muted_cell(ui, &COLS[1], str_at(t, "body").lines().next().unwrap_or("").trim());
+    row.muted(1, str_at(t, "body").lines().next().unwrap_or("").trim());
+
+    row.at(2, |ui| {
+        let who = str_at(t, "assigneeName");
+        if who.is_empty() {
+            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+            return;
+        }
+        ui.spacing_mut().item_spacing.x = space::XS;
+        avatar::small(ui, who, size::AVATAR_SM);
+        ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[2], |ui| {
-            let who = str_at(t, "assigneeName");
-            if who.is_empty() {
-                ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
-                return;
-            }
-            ui.spacing_mut().item_spacing.x = space::XS;
-            avatar::small(ui, who, size::AVATAR_SM);
-            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
-        });
+    row.at(3, |ui| {
+        let p = num_at(t, "priority").clamp(0, 4);
+        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[3], |ui| {
-            let p = num_at(t, "priority").clamp(0, 4);
-            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
-        });
+    row.at(4, |ui| {
+        c::chip(ui, status_label(status), c::status_tone(status), true);
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[4], |ui| {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
-        });
-    });
-
-    row.col(|ui| table::muted_cell(ui, &COLS[5], &since(str_at(t, "createdAt"))));
+    row.muted(5, &since(str_at(t, "createdAt")));
 }
 
 /// How loud a priority is allowed to be. P0 and P1 are the only ones worth

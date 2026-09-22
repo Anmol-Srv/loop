@@ -60,13 +60,16 @@ const COL_CREATED: f32 = 78.0;
 
 /// Alignment lives with the width, so "Progress" and "Created" sit over the
 /// figures beneath them rather than at the other end of the column.
+/// Ranked by what a narrow window can do without: the description goes
+/// first, then the created date, then the task count — progress says the same
+/// thing in less room. Name, progress and status never drop.
 const COLS: [Col; 6] = [
     Col::left("Project", COL_NAME),
-    Col::fill("Description", COL_DESCRIPTION),
-    Col::right("Tasks", COL_TASKS),
+    Col::fill("Description", COL_DESCRIPTION).rank(3),
+    Col::right("Tasks", COL_TASKS).rank(1),
     Col::left("Progress", COL_PROGRESS),
     Col::left("Status", COL_STATUS),
-    Col::right("Created", COL_CREATED),
+    Col::right("Created", COL_CREATED).rank(2),
 ];
 
 /// What the trailing controls on a draft-task row need: three menus, a Remove,
@@ -240,56 +243,46 @@ pub fn table(
     }
 }
 
-fn project_row(
-    row: &mut egui_extras::TableRow<'_, '_>,
-    p: &Value,
-    flow: Option<&Value>,
-) {
+fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) {
     let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
     let status = str_at(p, "status");
 
-    row.col(|ui| table::strong_cell(ui, &COLS[0], str_at(p, "name"), colour::TEXT));
+    row.strong(0, str_at(p, "name"), colour::TEXT);
 
     // One line. The column clips, and a wrapped cell would make one row taller
     // than the rest of the table.
-    row.col(|ui| table::muted_cell(ui, &COLS[1], str_at(p, "description")));
+    row.muted(1, str_at(p, "description"));
 
     // Who is on a project is whoever holds its tasks, so the number of tasks
     // is the honest figure here; the faces live on the task rows themselves.
-    row.col(|ui| {
+    if total > 0 {
+        row.text(2, &total.to_string(), colour::TEXT);
+    } else {
+        row.muted(2, "");
+    }
+
+    // The bar first, at a fixed width, then a percentage. A "3/8" here varied
+    // in width and dragged the bar's left edge around with it, and said the
+    // same thing as the Tasks column beside it.
+    row.at(3, |ui| {
         if total > 0 {
-            table::text_cell(ui, &COLS[2], &total.to_string(), colour::TEXT);
-        } else {
-            table::muted_cell(ui, &COLS[2], "");
+            w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(format!("{}%", done * 100 / total))
+                    .size(text::SMALL)
+                    .color(colour::TEXT),
+            );
         }
+        // No tasks: nothing, not a dash. The Tasks column beside it has
+        // already said "\u{2014}", and two dashes in a row read as one wide one.
     });
 
-    row.col(|ui| {
-        // The bar first, at a fixed width, then a percentage. A "3/8" here
-        // varied in width and dragged the bar's left edge around with it, and
-        // said the same thing as the Tasks column beside it.
-        table::cell(ui, &COLS[3], |ui| {
-            if total > 0 {
-                w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
-                ui.add_space(space::SM);
-                ui.label(
-                    RichText::new(format!("{}%", done * 100 / total))
-                        .size(text::SMALL)
-                        .color(colour::TEXT),
-                );
-            }
-            // No tasks: nothing, not a dash. The Tasks column beside it has
-            // already said "—", and two dashes in a row read as one wide one.
-        });
+    row.at(4, |ui| {
+        c::chip(ui, status_label(status), c::status_tone(status), true);
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[4], |ui| {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
-        });
-    });
-
-    row.col(|ui| table::muted_cell(ui, &COLS[5], &age(p)));
+    row.muted(5, &age(p));
 }
 
 /// A person as the assignee menu shows them: name and department, because

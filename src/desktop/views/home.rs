@@ -73,12 +73,13 @@ const COL_UPDATED: f32 = 78.0;
 const COLS: [Col; 8] = [
     Col::left("", COL_DOT),
     Col::fill("Task", COL_PROJECT),
-    Col::left("Discipline", COL_DISCIPLINE),
+    Col::left("Discipline", COL_DISCIPLINE).rank(2),
     Col::left("Status", COL_STATUS),
     Col::left("Project", COL_PROJECT),
-    Col::left("Phase", COL_PHASE),
+    // Phase goes first: it is one server-managed value on every row today.
+    Col::left("Phase", COL_PHASE).rank(4),
     Col::left("Owner", COL_OWNER),
-    Col::right("Updated", COL_UPDATED),
+    Col::right("Updated", COL_UPDATED).rank(3),
 ];
 
 /// What the table is filtered to. Every field is "no filter" when unset, so
@@ -491,7 +492,7 @@ fn table(
 }
 
 fn task_row(
-    row: &mut egui_extras::TableRow<'_, '_>,
+    row: &mut table::Cells<'_, '_, '_>,
     t: &Value,
     known: &HashMap<&str, &str>,
     owners: &HashMap<&str, &str>,
@@ -499,52 +500,37 @@ fn task_row(
     let status = bucket(t);
     let discipline = str_at(t, "discipline").unwrap_or_default();
 
-    row.col(|ui| table::cell(ui, &COLS[0], |ui| w::dot(ui, status_colour(status))));
+    row.at(0, |ui| w::dot(ui, status_colour(status)));
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[1], |ui| {
-            table::strong_label(ui, str_at(t, "title").unwrap_or_default(), colour::TEXT);
-            // The blocker rides behind the title rather than in its own column:
-            // it is a footnote on the task, not a property every row has.
-            if status == "blocked" {
-                ui.add_space(space::XS);
-                w::caption(ui, &format!("\u{21b3} waiting on {}", blocker(t, known)));
-            }
-        });
+    row.at(1, |ui| {
+        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), colour::TEXT);
+        // The blocker rides behind the title rather than in its own column:
+        // it is a footnote on the task, not a property every row has.
+        if status == "blocked" {
+            ui.add_space(space::XS);
+            w::caption(ui, &format!("\u{21b3} waiting on {}", blocker(t, known)));
+        }
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[2], |ui| {
-            if !discipline.is_empty() {
-                c::chip(ui, discipline, c::discipline_tone(discipline), false);
-            }
-        });
+    row.at(2, |ui| {
+        if !discipline.is_empty() {
+            c::chip(ui, discipline, c::discipline_tone(discipline), false);
+        }
     });
-    row.col(|ui| {
-        table::cell(ui, &COLS[3], |ui| {
-            c::chip(
-                ui,
-                &sentence(status_label(status)),
-                c::status_tone(status),
-                status != "blocked",
-            );
-        });
+    row.at(3, |ui| {
+        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), status != "blocked");
     });
-    row.col(|ui| table::muted_cell(ui, &COLS[4], str_at(t, "projectName").unwrap_or_default()));
-    row.col(|ui| table::muted_cell(ui, &COLS[5], str_at(t, "phaseName").unwrap_or_default()));
+    row.muted(4, str_at(t, "projectName").unwrap_or_default());
+    row.muted(5, str_at(t, "phaseName").unwrap_or_default());
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[6], |ui| match owner(t, owners) {
-            Some(seed) => {
-                avatar::small(ui, &seed, size::AVATAR_SM);
-            }
-            None => w::caption(ui, "\u{2014}"),
-        });
+    row.at(6, |ui| match owner(t, owners) {
+        Some(seed) => {
+            avatar::small(ui, &seed, size::AVATAR_SM);
+        }
+        None => w::caption(ui, "\u{2014}"),
     });
 
-    row.col(|ui| {
-        table::muted_cell(ui, &COLS[7], &age(str_at(t, "updatedAt").unwrap_or_default()));
-    });
+    row.muted(7, &age(str_at(t, "updatedAt").unwrap_or_default()));
 }
 
 /// The avatar seed for whoever holds the task: a teammate's email, or the

@@ -56,13 +56,15 @@ const COL_PROJECT: f32 = 150.0;
 const COL_CREATED: f32 = 78.0;
 
 /// Alignment lives with the width, so "Created" sits over the age beneath it.
+/// Ranked by what a narrow window can do without. Title, status and project
+/// are why you open this screen, so they stay.
 const COLS: [Col; 6] = [
     Col::left("Task", COL_TASK),
-    Col::fill("Description", COL_DESCRIPTION),
-    Col::left("Priority", COL_PRIORITY),
+    Col::fill("Description", COL_DESCRIPTION).rank(3),
+    Col::left("Priority", COL_PRIORITY).rank(1),
     Col::left("Status", COL_STATUS),
     Col::left("Project", COL_PROJECT),
-    Col::right("Created", COL_CREATED),
+    Col::right("Created", COL_CREATED).rank(2),
 ];
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -211,51 +213,39 @@ fn keep(t: &Value, state: &State) -> bool {
 
 // --------------------------------------------------------------------- table
 
-fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     let status = str_at(t, "status").unwrap_or("open");
     let done = finished(t);
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[0], |ui| {
-            // Finished work stays legible and stops competing: the rows above
-            // it are the ones with something to decide.
-            let ink = if done { colour::TEXT_MUTED } else { colour::TEXT };
-            table::strong_label(ui, str_at(t, "title").unwrap_or_default(), ink);
-            // Blocked rides behind the title rather than replacing the status:
-            // the status is still true, the blocker is why it is not moving.
-            if blocked(t) {
-                ui.add_space(space::XS);
-                c::chip(ui, "blocked", c::Tone::Blocked, false);
-            }
-        });
+    row.at(0, |ui| {
+        // Finished work stays legible and stops competing: the rows above it
+        // are the ones with something to decide.
+        let ink = if done { colour::TEXT_MUTED } else { colour::TEXT };
+        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), ink);
+        // Blocked rides behind the title rather than replacing the status:
+        // the status is still true, the blocker is why it is not moving.
+        if blocked(t) {
+            ui.add_space(space::XS);
+            c::chip(ui, "blocked", c::Tone::Blocked, false);
+        }
     });
 
     // One line. The column clips, and a wrapped cell would make one row taller
     // than the rest of the table.
-    row.col(|ui| {
-        let body = str_at(t, "body").unwrap_or_default().trim();
-        table::muted_cell(ui, &COLS[1], body.lines().next().unwrap_or(""));
+    row.muted(1, str_at(t, "body").unwrap_or_default().trim().lines().next().unwrap_or(""));
+
+    row.at(2, |ui| {
+        if let Some(p) = t.get("priority").and_then(Value::as_i64) {
+            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        }
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[2], |ui| {
-            if let Some(p) = t.get("priority").and_then(Value::as_i64) {
-                c::chip(ui, &format!("P{p}"), priority_tone(p), false);
-            }
-        });
+    row.at(3, |ui| {
+        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
     });
 
-    row.col(|ui| {
-        table::cell(ui, &COLS[3], |ui| {
-            c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
-        });
-    });
-
-    row.col(|ui| table::muted_cell(ui, &COLS[4], project_of(t)));
-
-    row.col(|ui| {
-        table::muted_cell(ui, &COLS[5], &age(str_at(t, "createdAt").unwrap_or_default()));
-    });
+    row.muted(4, project_of(t));
+    row.muted(5, &age(str_at(t, "createdAt").unwrap_or_default()));
 }
 
 // -------------------------------------------------------------------- pieces
