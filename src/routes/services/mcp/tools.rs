@@ -43,7 +43,7 @@ pub fn all() -> Vec<ToolDef> {
                 json!({
                     "projectId": uuid,
                     "phaseId": uuid,
-                    "status": { "type": "string", "enum": crate::models::task::TASK_STATUSES },
+                    "status": { "type": "string", "enum": crate::models::task::ALL_STATUSES },
                     "assigneeEmail": { "type": "string" },
                     "assigneeKind": { "type": "string", "enum": ["human", "agent"] },
                 }),
@@ -95,7 +95,7 @@ pub fn all() -> Vec<ToolDef> {
             input_schema: schema(
                 json!({
                     "taskId": uuid,
-                    "status": { "type": "string", "enum": crate::models::task::TASK_STATUSES },
+                    "status": { "type": "string", "enum": crate::models::task::ALL_STATUSES },
                     "personEmail": { "type": "string" },
                     "agentLabel": { "type": "string" },
                 }),

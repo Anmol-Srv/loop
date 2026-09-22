@@ -6,5 +6,7 @@ pub mod artifact;
 pub mod approval;
 pub mod work;
 pub mod run_log;
+pub mod label;
 pub mod people;
+pub mod note;
 pub mod home;

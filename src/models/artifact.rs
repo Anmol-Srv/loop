@@ -3,7 +3,10 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const ARTIFACT_KINDS: [&str; 3] = ["pr", "doc", "link"];
+/// What a piece of evidence is. `pr` and `commit` close engineering work,
+/// `figma` closes design work, `doc` and `link` are context that closes
+/// nothing.
+pub const ARTIFACT_KINDS: [&str; 5] = ["pr", "commit", "figma", "doc", "link"];
 pub const PARENT_TYPES: [&str; 3] = ["project", "phase", "task"];
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

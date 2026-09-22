@@ -5,7 +5,7 @@ use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::task::{
-    task_row_select, Task, TaskFilter, TaskRow, TASK_COLUMNS, TASK_STATUSES,
+    statuses_for, task_row_select, terminal_of, Task, TaskFilter, TaskRow, TASK_COLUMNS,
 };
 
 pub enum Assignee {
@@ -98,14 +98,9 @@ pub async fn set_status(
     actor: &Actor,
     id: Uuid,
     status: String,
+    manual_reason: Option<String>,
 ) -> AppResult<Outcome<Task>> {
-    if !TASK_STATUSES.contains(&status.as_str()) {
-        return Err(AppError::BadRequest(format!(
-            "status must be one of {}", TASK_STATUSES.join(", ")
-        )));
-    }
-
-    let patch = json!({ "status": status });
+    let patch = json!({ "status": status, "manual_reason": manual_reason });
 
     if !actor.can_apply {
         // A proposal against a row that does not exist could never be replayed.
@@ -114,36 +109,91 @@ pub async fn set_status(
         return Ok(Outcome::Proposed { change_id });
     }
 
-    // A task is moved by the person it is assigned to. Everyone else can see
-    // it; an admin can override, which is what an admin is for. Checked here,
-    // not in the route, so the CLI and a replayed proposal obey the same rule.
-    let (assignee, admin): (Option<Uuid>, bool) = sqlx::query_as(
+    // Everything the rules below need, in one read: who holds it, what track
+    // that puts it on, and what evidence is already attached.
+    let (assignee, department, admin, prs, figmas): (
+        Option<Uuid>,
+        Option<String>,
+        bool,
+        i64,
+        i64,
+    ) = sqlx::query_as(
         "SELECT t.assignee_person_id,
-                EXISTS (SELECT 1 FROM person WHERE id = $2 AND role = 'admin')
-           FROM task t WHERE t.id = $1",
+                own.department,
+                EXISTS (SELECT 1 FROM person WHERE id = $2 AND role = 'admin'),
+                (SELECT count(*) FROM artifact a
+                  WHERE a.parent_type = 'task' AND a.parent_id = t.id
+                    AND a.kind IN ('pr', 'commit')),
+                (SELECT count(*) FROM artifact a
+                  WHERE a.parent_type = 'task' AND a.parent_id = t.id
+                    AND a.kind = 'figma')
+           FROM task t
+           LEFT JOIN person own ON own.id = t.assignee_person_id
+          WHERE t.id = $1",
     )
     .bind(id)
     .bind(actor.person_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("task not found".into()))?;
-    if !admin && (actor.person_id.is_none() || assignee != actor.person_id) {
+
+    let department = department.as_deref();
+    let allowed = statuses_for(department);
+    if !allowed.contains(&status.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "a {} task goes to one of {}",
+            department.unwrap_or("unassigned"),
+            allowed.join(", ")
+        )));
+    }
+
+    // A task is moved by the person it is assigned to; an admin can override,
+    // which is what an admin is for. Shipping is the exception: it records a
+    // fact about production rather than about ownership, so anyone who knows
+    // it went out may say so. Checked here, not in the route, so the CLI and
+    // a replayed proposal obey the same rule.
+    let mine = actor.person_id.is_some() && assignee == actor.person_id;
+    if !admin && !mine && status != "shipped" {
         return Err(AppError::Forbidden(
             "only the person this task is assigned to can move it".into(),
         ));
     }
 
+    // Leaving the work behind means saying how it was finished. The manual
+    // reason is the escape hatch for work that never had a PR — it is
+    // recorded rather than waved through, so the board can still answer
+    // "how did this get done".
+    let reason = manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
+    let needs = match (department, status.as_str()) {
+        (Some("design"), "handoff") => Some(("a Figma link", figmas > 0)),
+        (Some("design"), _) => None,
+        (_, "completed") => Some(("a PR or commit", prs > 0)),
+        _ => None,
+    };
+    if let Some((what, have)) = needs {
+        if !have && reason.is_none() {
+            return Err(AppError::BadRequest(format!(
+                "attach {what} first, or say why it was done without one"
+            )));
+        }
+    }
+
     let mut tx = state.db.begin().await?;
 
-    // done_at follows the status: set on the way into done, cleared on the
-    // way out, so a reopened task does not keep claiming a finish date.
+    // `done_at` is stamped at the track's terminal state and cleared on the
+    // way out, so a reopened task does not keep claiming a finish date and
+    // the dashboard counts one thing across both tracks.
+    let finished = status == terminal_of(department);
     let task: Task = sqlx::query_as(&format!(
         "UPDATE task SET status = $2, updated_at = now(),
-                done_at = CASE WHEN $2 = 'done' THEN coalesce(done_at, now()) ELSE NULL END
+                manual_reason = $4,
+                done_at = CASE WHEN $3 THEN coalesce(done_at, now()) ELSE NULL END
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
     .bind(id)
     .bind(&status)
+    .bind(finished)
+    .bind(&reason)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("task not found".into()))?;

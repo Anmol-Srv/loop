@@ -2,8 +2,44 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-pub const TASK_STATUSES: [&str; 6] =
-    ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
+/// The two tracks a task can run on, chosen by its assignee's department.
+///
+/// Engineering ends when the work is in production; design ends when it has
+/// been handed over. They share the states that mean the same thing, which is
+/// why `completed` appears in both — mid-flow for engineering, terminal for
+/// design.
+pub const ENG_FLOW: [&str; 4] = ["open", "in_progress", "completed", "shipped"];
+pub const DESIGN_FLOW: [&str; 4] = ["open", "in_progress", "handoff", "completed"];
+
+/// Reachable from anywhere on either track, and not part of either's order.
+pub const ASIDE: [&str; 2] = ["blocked", "dropped"];
+
+/// The flow for a department. An unassigned task has no department and so no
+/// track; engineering is the default because it is the larger half of the
+/// team and because `open` is all an unassigned task can be anyway.
+pub fn flow_of(department: Option<&str>) -> &'static [&'static str] {
+    match department {
+        Some("design") => &DESIGN_FLOW,
+        _ => &ENG_FLOW,
+    }
+}
+
+/// The state that means "finished" on this track. `done_at` is stamped here
+/// and nowhere else, so the dashboard counts one thing.
+pub fn terminal_of(department: Option<&str>) -> &'static str {
+    flow_of(department).last().expect("a flow is never empty")
+}
+
+/// Every state either track can produce. For a schema or a filter menu that
+/// has no one task in hand; `statuses_for` is what a real task is checked
+/// against.
+pub const ALL_STATUSES: [&str; 7] =
+    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+
+/// Every state a task on this track may hold.
+pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
+    flow_of(department).iter().chain(ASIDE.iter()).copied().collect()
+}
 
 /// The departments a person can belong to. A task's discipline is whoever
 /// holds it, so this is the only place the vocabulary is written down.
@@ -24,6 +60,9 @@ pub struct Task {
     pub claimed_by: Option<String>,
     pub claim_expires_at: Option<DateTime<Utc>>,
     pub blocked_by: Vec<Uuid>,
+    /// Why this was completed with nothing to point at. Only ever set by the
+    /// transition that had no evidence.
+    pub manual_reason: Option<String>,
     pub done_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -64,7 +103,7 @@ pub struct TaskFilter {
 
 pub const TASK_COLUMNS: &str = "id, phase_id, title, body, status, priority, \
     assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
-    claim_expires_at, blocked_by, done_at, created_at, updated_at";
+    claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at";
 
 /// The `SELECT ... FROM` for a `TaskRow`, ending before any `WHERE`.
 ///

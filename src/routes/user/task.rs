@@ -31,6 +31,10 @@ pub struct CreateTaskBody {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTaskBody {
     pub status: String,
+    /// Why the work is finished with nothing to point at. Only read on a
+    /// transition that would otherwise need evidence.
+    #[serde(default)]
+    pub manual_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,7 +117,10 @@ async fn update(
     Json(body): Json<UpdateTaskBody>,
 ) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
-    Ok(ApiResponse::ok(controllers::task::set_status(&state, &caller.actor, id, body.status).await?))
+    Ok(ApiResponse::ok(
+        controllers::task::set_status(&state, &caller.actor, id, body.status, body.manual_reason)
+            .await?,
+    ))
 }
 
 async fn assign(

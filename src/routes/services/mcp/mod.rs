@@ -170,7 +170,16 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
                     ))
                 }
                 (Some(status), None, None) => {
-                    to_value(controllers::task::set_status(state, actor, id, status).await?)
+                    to_value(
+                        controllers::task::set_status(
+                            state,
+                            actor,
+                            id,
+                            status,
+                            opt_str_arg(&args, "manualReason"),
+                        )
+                        .await?,
+                    )
                 }
                 (None, person, agent) => {
                     let to = match (person, agent) {

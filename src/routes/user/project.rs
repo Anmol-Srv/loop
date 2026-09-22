@@ -24,9 +24,23 @@ pub struct CreateProjectBody {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Linear's project properties. Every one is optional; a project with a
+    /// name is a project.
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    #[serde(default)]
+    pub start_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    pub target_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    pub label_ids: Vec<Uuid>,
     /// Work handed out in the same breath as the project is made.
     #[serde(default)]
     pub tasks: Vec<NewTask>,
+}
+
+fn default_priority() -> i32 {
+    2
 }
 
 pub fn routes() -> Router<AppState> {
@@ -49,6 +63,10 @@ async fn create(
         body.key,
         body.name,
         body.description,
+        body.priority,
+        body.start_date,
+        body.target_date,
+        body.label_ids,
         body.tasks,
     )
     .await?;

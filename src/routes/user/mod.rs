@@ -9,3 +9,5 @@ pub mod me;
 pub mod agent;
 pub mod people;
 pub mod home;
+pub mod label;
+pub mod note;

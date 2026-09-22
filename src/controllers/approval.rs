@@ -159,6 +159,13 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             Some(str_at("key")?),
             str_at("name")?,
             p.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            p.get("priority").and_then(Value::as_i64).unwrap_or(2) as i32,
+            p.get("start_date").and_then(Value::as_str).and_then(|d| d.parse().ok()),
+            p.get("target_date").and_then(Value::as_str).and_then(|d| d.parse().ok()),
+            p.get("label_ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
             Vec::new(),
         )
         .await?
@@ -199,7 +206,14 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
         ("task", "update") => {
             // Which key the patch carries says which controller made it.
             if p.get("status").is_some() {
-                task::set_status(state, actor, change.target_id, str_at("status")?).await?;
+                task::set_status(
+                    state,
+                    actor,
+                    change.target_id,
+                    str_at("status")?,
+                    p.get("manual_reason").and_then(Value::as_str).map(str::to_string),
+                )
+                .await?;
             } else if let Some(blockers) = p.get("blocked_by").and_then(Value::as_array) {
                 let blockers = blockers
                     .iter()

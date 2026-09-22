@@ -78,8 +78,20 @@ pub async fn create(
     key: Option<String>,
     name: String,
     description: String,
+    priority: i32,
+    start_date: Option<chrono::NaiveDate>,
+    target_date: Option<chrono::NaiveDate>,
+    label_ids: Vec<Uuid>,
     tasks: Vec<NewTask>,
 ) -> AppResult<Outcome<Project>> {
+    if !(0..=4).contains(&priority) {
+        return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+    }
+    if let (Some(start), Some(target)) = (start_date, target_date) {
+        if target < start {
+            return Err(AppError::BadRequest("the target date is before the start date".into()));
+        }
+    }
     if name.trim().is_empty() {
         return Err(AppError::BadRequest("a name is required".into()));
     }
@@ -106,6 +118,10 @@ pub async fn create(
         "key": key,
         "name": name,
         "description": description,
+        "priority": priority,
+        "start_date": start_date,
+        "target_date": target_date,
+        "label_ids": label_ids,
         "tasks": tasks,
     });
 
@@ -117,13 +133,17 @@ pub async fn create(
     let mut tx = state.db.begin().await?;
 
     let project: Project = sqlx::query_as(
-        "INSERT INTO project (id, key, name, description) VALUES ($1, $2, $3, $4)
-         RETURNING id, key, name, description, status, created_at, updated_at",
+        "INSERT INTO project (id, key, name, description, priority, start_date, target_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, key, name, description, status, priority, start_date, target_date, created_at, updated_at",
     )
     .bind(id)
     .bind(&key)
     .bind(&name)
     .bind(&description)
+    .bind(priority)
+    .bind(start_date)
+    .bind(target_date)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -134,6 +154,20 @@ pub async fn create(
     })?;
 
     record(&mut tx, actor, TargetType::Project, project.id, Op::Create, patch).await?;
+    sqlx::query(
+        "INSERT INTO project_label (project_id, label_id) SELECT $1, unnest($2::uuid[])
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(&label_ids)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+            AppError::BadRequest("one of those labels does not exist".into())
+        }
+        _ => AppError::Database(e),
+    })?;
 
     // The default phase and the form's tasks, in the same transaction: a
     // project that exists with half its tasks is not what anyone submitted.
@@ -242,26 +276,39 @@ async fn insert_task(
 }
 
 pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
-    let projects: Vec<Project> = sqlx::query_as(
-        "SELECT id, key, name, description, status, created_at, updated_at
-         FROM project ORDER BY created_at DESC",
+    let mut projects: Vec<Project> = sqlx::query_as(
+        "SELECT id, key, name, description, status, priority, start_date, target_date, created_at, updated_at\n         FROM project ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await?;
+
+    // One query for every project's labels, then folded in — a join would
+    // repeat the project row per label and make the caller de-duplicate.
+    let labelled = super::label::by_project(state).await?;
+    for p in &mut projects {
+        p.labels = labelled.iter().filter(|(id, _)| *id == p.id).map(|(_, l)| l.clone()).collect();
+    }
 
     Ok(projects)
 }
 
 /// One project with its roster, for the detail screen.
 pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
-    sqlx::query_as(
-        "SELECT id, key, name, description, status, created_at, updated_at
-         FROM project WHERE id = $1",
+    let mut project: Project = sqlx::query_as(
+        "SELECT id, key, name, description, status, priority, start_date, target_date, created_at, updated_at\n         FROM project WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| AppError::NotFound("project not found".into()))
+    .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+
+    project.labels = super::label::by_project(state)
+        .await?
+        .into_iter()
+        .filter(|(p, _)| *p == id)
+        .map(|(_, l)| l)
+        .collect();
+    Ok(project)
 }
 
 /// Done/total for a project, and the same split per discipline.

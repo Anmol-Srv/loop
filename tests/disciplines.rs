@@ -187,3 +187,105 @@ async fn a_blocker_cycle_is_refused(pool: PgPool) {
         .bind(a).fetch_one(&pool).await.unwrap();
     assert!(still.is_empty(), "a refused cycle writes nothing");
 }
+
+/// The evidence gate and the two tracks, which are the rules a person meets
+/// every time they finish something.
+#[sqlx::test]
+async fn finishing_work_needs_evidence_or_a_reason(pool: PgPool) {
+    let (token, engineer) = person(&pool, "anmol@airtribe.live", "backend").await;
+    let (design_token, designer) = person(&pool, "evana@airtribe.live", "design").await;
+    let phase_id = phase(&pool).await;
+    let state = acp_server::db::AppState { db: pool.clone() };
+
+    let eng = task(&pool, phase_id, "ship the migration", Some(engineer)).await;
+    let des = task(&pool, phase_id, "redraw the icons", Some(designer)).await;
+
+    let move_to = |token: String, id: Uuid, body: serde_json::Value| {
+        let state = state.clone();
+        async move {
+            acp_server::app::app(state)
+                .oneshot(req("PATCH", &format!("/api/user/tasks/{id}"), &token, Some(body)))
+                .await
+                .unwrap()
+        }
+    };
+
+    // A status from the other track is not a status this task has.
+    let response = move_to(token.clone(), eng, serde_json::json!({ "status": "handoff" })).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "handoff is a design state");
+    let response =
+        move_to(design_token.clone(), des, serde_json::json!({ "status": "shipped" })).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "shipped is an engineering state");
+
+    // Completing engineering work needs something to point at.
+    let response = move_to(token.clone(), eng, serde_json::json!({ "status": "completed" })).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "no PR, no reason, no completion");
+
+    let response = move_to(
+        token.clone(),
+        eng,
+        serde_json::json!({ "status": "completed", "manualReason": "done in the console" }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "the manual reason is the escape hatch");
+
+    // `done_at` is stamped at the track's terminal state and nowhere before.
+    let done_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT done_at FROM task WHERE id = $1")
+            .bind(eng).fetch_one(&pool).await.unwrap();
+    assert!(done_at.is_none(), "completed is mid-flow for engineering, so nothing is stamped");
+
+    let response = move_to(token.clone(), eng, serde_json::json!({ "status": "shipped" })).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let done_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT done_at FROM task WHERE id = $1")
+            .bind(eng).fetch_one(&pool).await.unwrap();
+    assert!(done_at.is_some(), "shipped is where engineering ends");
+
+    // Design's handoff needs a Figma link, and its terminal is `completed`.
+    let response = move_to(design_token.clone(), des, serde_json::json!({ "status": "handoff" })).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "no Figma, no handoff");
+
+    sqlx::query(
+        "INSERT INTO artifact (parent_type, parent_id, kind, url) VALUES ('task', $1, 'figma', 'https://figma.com/f/x')",
+    )
+    .bind(des).execute(&pool).await.unwrap();
+    let response = move_to(design_token.clone(), des, serde_json::json!({ "status": "handoff" })).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = move_to(design_token, des, serde_json::json!({ "status": "completed" })).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let done_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT done_at FROM task WHERE id = $1")
+            .bind(des).fetch_one(&pool).await.unwrap();
+    assert!(done_at.is_some(), "completed is where design ends");
+}
+
+/// Shipping records a fact about production, so it is the one move anyone may
+/// make. Everything else stays with whoever holds the task.
+#[sqlx::test]
+async fn anyone_ships_but_only_the_assignee_moves(pool: PgPool) {
+    let (mine, my_id) = person(&pool, "anmol@airtribe.live", "backend").await;
+    let (theirs, _) = person(&pool, "dhaval@airtribe.live", "backend").await;
+    let phase_id = phase(&pool).await;
+    let state = acp_server::db::AppState { db: pool.clone() };
+
+    let id = task(&pool, phase_id, "wire auth", Some(my_id)).await;
+    sqlx::query("UPDATE task SET status = 'completed' WHERE id = $1")
+        .bind(id).execute(&pool).await.unwrap();
+
+    let response = acp_server::app::app(state.clone())
+        .oneshot(req("PATCH", &format!("/api/user/tasks/{id}"), &theirs,
+            Some(serde_json::json!({ "status": "shipped" })))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "anyone who knows it went out may say so");
+
+    let response = acp_server::app::app(state.clone())
+        .oneshot(req("PATCH", &format!("/api/user/tasks/{id}"), &theirs,
+            Some(serde_json::json!({ "status": "in_progress" })))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "reopening is the assignee's call");
+
+    let response = acp_server::app::app(state)
+        .oneshot(req("PATCH", &format!("/api/user/tasks/{id}"), &mine,
+            Some(serde_json::json!({ "status": "in_progress" })))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
