@@ -33,6 +33,10 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         design::theme::install(&cc.egui_ctx);
+        // The type scale is tuned for a comfortable reading size on a Mac's
+        // scaled display, where egui's default points come out small. This is
+        // one knob instead of nudging every token.
+        cc.egui_ctx.set_zoom_factor(1.15);
 
         let mut app = Self {
             net: None,

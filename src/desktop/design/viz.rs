@@ -237,10 +237,16 @@ pub fn card(
             );
             if !right.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(right)
-                            .size(text::CAPTION)
-                            .color(colour::TEXT_MUTED),
+                    // The subtitle is the expendable half of this row: when
+                    // the card is narrow it clips rather than running into
+                    // the title, which is the half you actually need.
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(right)
+                                .size(text::CAPTION)
+                                .color(colour::TEXT_MUTED),
+                        )
+                        .truncate(),
                     );
                 });
             }
@@ -266,17 +272,37 @@ pub fn row(ui: &mut Ui, id: egui::Id, cards: &mut [&mut dyn FnMut(&mut Ui, f32) 
     let floor: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
     let mut tallest = 0.0_f32;
 
-    ui.columns(cards.len(), |cols| {
-        for (col, card) in cols.iter_mut().zip(cards.iter_mut()) {
-            tallest = tallest.max(card(col, floor));
+    // Wrap rather than squeeze. Below the threshold a quarter of the page is
+    // narrower than the donut and its legend, and the figures start clipping
+    // — a card that cannot show its own legend is worse than a shorter row.
+    let per_row = if ui.available_width() >= CARDS_FOUR_AT { cards.len() } else { 2 };
+
+    let rows = cards.len().div_ceil(per_row);
+    for (r, chunk) in cards.chunks_mut(per_row).enumerate() {
+        // The last row of an odd split must not stretch its cards to fill the
+        // page: `columns` divides by the count it is given, so it is given the
+        // full count and the empty slots are simply not drawn.
+        ui.columns(per_row, |cols| {
+            for (col, card) in cols.iter_mut().zip(chunk.iter_mut()) {
+                tallest = tallest.max(card(col, floor));
+            }
+        });
+        // Between the rows only. What follows the block is the caller's gap.
+        if r + 1 < rows {
+            ui.add_space(space::MD);
         }
-    });
+    }
 
     if (tallest - floor).abs() > 0.5 {
         ui.ctx().data_mut(|d| d.insert_temp(id, tallest));
         ui.ctx().request_repaint();
     }
 }
+
+/// Content width at which the figures sit four across. Below it they go two
+/// up: the donut plus its five-row legend is the widest of them and needs
+/// about this much of a quarter-page to render without clipping.
+const CARDS_FOUR_AT: f32 = 880.0;
 
 /// A big numeral with a quiet qualifier beside it.
 pub fn headline(ui: &mut Ui, value: &str, note: &str) {
