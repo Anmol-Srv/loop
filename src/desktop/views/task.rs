@@ -1,7 +1,13 @@
-//! Task detail: the page a human sits on while an agent works.
+//! Task detail: the page a human sits on while the work moves.
 //!
-//! The run log is the centre of it, so the fetch discipline matters more than
-//! the layout. Two rules shape this file:
+//! A task belongs to one person, and that person moves it through its life.
+//! The server enforces it — `PATCH /api/user/tasks/{id}` answers 403 to anyone
+//! who is neither the assignee nor an admin — so this screen shows the moves
+//! only to whoever can actually make them, and tells everyone else whose call
+//! it is. Offering a button that is going to 403 is worse than offering none.
+//!
+//! The run log is the other half of the page, so the fetch discipline matters
+//! as much as the layout. Two rules shape it:
 //!
 //! * A finished task must not poll. Polling is gated on `status ==
 //!   "in_progress"`, and the tick comes from `request_repaint_after`, so egui
@@ -13,18 +19,21 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+use egui::RichText;
 use egui_phosphor::thin as icon;
 use serde_json::{json, Value};
 
+use super::projects::PROSE_W;
 use crate::desktop::design::{
-    avatar, colour, pad, radius, shell, size, space, status_colour, status_label, text,
+    avatar, cards as c, colour, pad, radius, shell, size, space, status_label, text, theme,
     widgets as w,
 };
-use crate::desktop::App;
+use crate::desktop::{App, Tab};
 
+const TASK_KEY: &str = "task:one";
 const LOG_KEY: &str = "task:logs";
 const PATCH_KEY: &str = "task:patch";
-const LIST_KEY: &str = "task:all";
 const ARTIFACTS_KEY: &str = "task:artifacts";
 
 /// How far out we ask egui to wake us.
@@ -39,7 +48,7 @@ const LOG_ROWS: f32 = 11.0;
 
 /// The assignee disc. Sized off the spacing scale so it lines up with the pills
 /// beside it instead of inventing a diameter.
-const AVATAR: f32 = size::AVATAR_MD;
+const AVATAR: f32 = size::AVATAR_SM;
 
 /// Everything the detail view remembers between frames. Scoped to one task id;
 /// opening a different task resets it.
@@ -53,7 +62,9 @@ struct Local {
     pending: bool,
     log_error: Option<String>,
     patching: bool,
-    notice: Option<(String, egui::Color32)>,
+    /// The last move's outcome: the message, and whether it failed. A failure
+    /// is the server's own sentence — it is the only thing that explains a 403.
+    notice: Option<(String, bool)>,
 }
 
 impl Local {
@@ -77,7 +88,6 @@ thread_local! {
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let Some(task_id) = app.task.clone() else { return };
-    let can_write = app.can_write();
 
     LOCAL.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -85,159 +95,226 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         if slot.as_ref().map(|s| s.task_id != task_id).unwrap_or(true) {
             *slot = Some(Local::new(task_id.clone()));
             if let Some(net) = app.net.as_mut() {
-                net.invalidate(LOG_KEY);
-                net.invalidate(ARTIFACTS_KEY);
-                net.invalidate(PATCH_KEY);
+                net.invalidate_prefix("task:");
             }
         }
         let local = slot.as_mut().expect("just populated");
-        render(app, ui, &task_id, can_write, local);
+        render(app, ui, &task_id, local);
     });
 }
 
-fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, can_write: bool, local: &mut Local) {
-    let net = app.net.as_mut().expect("net is live whenever a view runs");
+fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
+    // Who is looking. The assignee moves the task; an admin overrides, which is
+    // what an admin is for. Read before `net` is borrowed mutably below.
+    let me = me_str(app, "personId");
+    let admin = me_str(app, "role") == "admin";
 
-    // There is no get-task-by-id endpoint, so we read the full list and pick
-    // ours out of it. The list is shared with the board, hence a stable key.
-    net.get_once(LIST_KEY, "/api/user/tasks");
+    let net = app.net.as_mut().expect("net is live whenever a view runs");
+    net.get_once(TASK_KEY, &format!("/api/user/tasks/{task_id}"));
     net.get_once(
         ARTIFACTS_KEY,
         &format!("/api/user/artifacts?parentType=task&parentId={task_id}"),
     );
 
-    let task = net
-        .data(LIST_KEY)
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.iter().find(|t| str_of(t, "id") == Some(task_id)))
-        .cloned();
+    let task = net.data(TASK_KEY).cloned();
 
-    back_row(app, ui, task_id);
+    let mut leave = false;
+    ui.horizontal(|ui| {
+        if shell::back(ui, "Back").clicked() {
+            leave = true;
+        }
+        ui.add_space(space::XS);
+        w::id(ui, task_id);
+    });
+    if leave {
+        app.task = None;
+        return;
+    }
+    ui.add_space(space::SM);
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     let Some(task) = task else {
-        if let Some(err) = net.error(LIST_KEY) {
+        if let Some(err) = net.error(TASK_KEY) {
             failed(ui, "Could not load the task", err);
-        } else if net.is_loading(LIST_KEY) {
+        } else if net.is_loading(TASK_KEY) {
             w::loading(ui, "Loading task");
         } else {
-            w::empty(ui, "That task is no longer in the list", "It may have been dropped or moved.");
+            w::empty(ui, "That task is no longer here", "It may have been dropped or moved.");
         }
         return;
     };
 
     let status = str_of(&task, "status").unwrap_or("open").to_string();
+    let mine = !me.is_empty() && str_of(&task, "assigneePersonId") == Some(me.as_str());
 
-    header(ui, &task, &status);
-    body(ui, &task);
-
-    if can_write {
-        status_controls(ui, net, task_id, &status, local);
-    }
-    if let Some((message, colour)) = &local.notice {
-        ui.add_space(space::SM);
-        ui.label(
-            egui::RichText::new(message)
-                .size(text::SMALL)
-                .color(*colour),
-        );
-    }
-
+    heading(ui, &task, &status);
+    let open_project = meta_line(ui, &task);
+    description(ui, &task);
+    actions(ui, net, task_id, &task, &status, admin || mine, local);
     artifacts(ui, net);
     run_log(ui, net, task_id, &status, local);
+
+    // `net`'s borrow of `app` ends above, so navigation happens last.
+    if let Some(project_id) = open_project {
+        app.task = None;
+        app.project = Some(project_id);
+        app.tab = Tab::Projects;
+    }
 }
 
-// ---------------------------------------------------------------- chrome bits
+// ---------------------------------------------------------------- the top
 
-fn back_row(app: &mut App, ui: &mut egui::Ui, task_id: &str) {
+/// The title, with the state it is in beside it. No card: this is the page's
+/// own heading, and a box around a heading is a box around nothing.
+fn heading(ui: &mut egui::Ui, task: &Value, status: &str) {
     ui.horizontal(|ui| {
-        if w::link(ui, &format!("{} Board", icon::ARROW_LEFT)).clicked() {
-            app.task = None;
-        }
-        ui.add_space(space::XS);
-        w::id(ui, task_id);
+        ui.label(
+            RichText::new(str_of(task, "title").unwrap_or("Untitled"))
+                .size(text::TITLE)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT),
+        );
+        ui.add_space(space::SM);
+        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
     });
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
 }
 
-fn header(ui: &mut egui::Ui, task: &Value, status: &str) {
-    w::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        w::title(ui, str_of(task, "title").unwrap_or("Untitled"));
-        ui.add_space(space::MD);
+/// Everything a task *is*, on one line: where it lives, who holds it, how
+/// urgent, what kind of work, how old.
+///
+/// A line, not a card and not a label grid. Six facts in a two-column table
+/// would be the tallest thing on the page and the least read; run together
+/// with separators they are one glance. Returns the project id when the
+/// project name is clicked.
+fn meta_line(ui: &mut egui::Ui, task: &Value) -> Option<String> {
+    let mut open_project = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
 
-        ui.horizontal_wrapped(|ui| {
-            w::pill(ui, status_label(status), status_colour(status));
+        let project = str_of(task, "projectName").unwrap_or_default();
+        if !project.is_empty() && w::link(ui, project).clicked() {
+            open_project = str_of(task, "projectId").map(str::to_owned);
+        }
 
-            let kind = str_of(task, "assigneeKind");
-            let is_agent = kind == Some("agent");
-            let claimed_by = str_of(task, "claimedBy");
-            let who = claimed_by.or(kind).unwrap_or("unassigned").to_string();
-
-            // An agent-held task gets a face: the run log below is that
-            // agent's output, and the two should read as one thing.
-            if is_agent {
-                if let Some(seed) = claimed_by {
-                    ui.add_space(space::XS);
-                    avatar::small(ui, seed, AVATAR);
-                    ui.add_space(space::XS);
-                }
+        sep(ui);
+        match str_of(task, "assigneeName") {
+            Some(name) if !name.is_empty() => {
+                let seed = str_of(task, "assigneeEmail").unwrap_or(name);
+                avatar::small(ui, seed, AVATAR);
+                value(ui, name);
             }
+            _ => label(ui, "Unassigned"),
+        }
 
-            let colour = if is_agent {
-                colour::AGENT
-            } else if kind.is_some() {
-                colour::ACCENT
-            } else {
-                colour::TEXT_MUTED
-            };
-            w::pill(ui, &who, colour);
+        if let Some(p) = task.get("priority").and_then(Value::as_i64) {
+            sep(ui);
+            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        }
 
-            if let Some(p) = task.get("priority").and_then(Value::as_i64) {
-                let tint = if p <= 1 { colour::WARN } else { colour::TEXT_MUTED };
-                w::pill(ui, &format!("priority {p}"), tint);
-            }
-        });
+        let discipline = str_of(task, "discipline").unwrap_or_default();
+        if !discipline.is_empty() {
+            sep(ui);
+            w::discipline(ui, discipline);
+        }
 
-        if let Some(updated) = str_of(task, "updatedAt") {
-            ui.add_space(space::SM);
-            ui.label(
-                egui::RichText::new(format!("{} updated {}", icon::CLOCK, stamp(updated)))
-                    .size(text::CAPTION)
-                    .color(colour::TEXT_FAINT),
-            );
+        if let Some(created) = str_of(task, "createdAt") {
+            sep(ui);
+            label(ui, "Created");
+            value(ui, &ago(created));
+        }
+        if let Some(done) = str_of(task, "doneAt") {
+            sep(ui);
+            label(ui, "Done");
+            value(ui, &ago(done));
         }
     });
+    open_project
 }
 
-fn body(ui: &mut egui::Ui, task: &Value) {
-    let description = str_of(task, "body").unwrap_or("").trim();
-    if description.is_empty() {
+/// P0 shouts and P4 whispers, in the same chip vocabulary as status — the meta
+/// line should read as one row of tokens, not two competing systems.
+fn priority_tone(p: i64) -> c::Tone {
+    match p {
+        0 => c::Tone::Blocked,
+        1 => c::Tone::Running,
+        2 => c::Tone::Neutral,
+        _ => c::Tone::Quiet,
+    }
+}
+
+fn label(ui: &mut egui::Ui, s: &str) {
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
+}
+
+fn value(ui: &mut egui::Ui, s: &str) {
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT));
+}
+
+fn sep(ui: &mut egui::Ui) {
+    ui.label(RichText::new("\u{00b7}").size(text::SMALL).color(colour::TEXT_FAINT));
+}
+
+/// The task's own words, at a prose measure. Paragraphs split on a blank line,
+/// because that is how whoever filed it typed them.
+fn description(ui: &mut egui::Ui, task: &Value) {
+    shell::section(ui, "Description");
+    let body = str_of(task, "body").unwrap_or("").trim();
+    if body.is_empty() {
+        w::caption(ui, "No description");
         return;
     }
-    shell::section(ui, "Description");
-    w::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        w::body(ui, description);
+    ui.scope(|ui| {
+        ui.set_max_width(PROSE_W.min(ui.available_width()));
+        for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
+            if i > 0 {
+                ui.add_space(space::SM);
+            }
+            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2));
+        }
     });
 }
 
-/// The move a human is most likely to make from here. It gets the one filled
-/// button on the screen; everything else stays outlined.
-fn likely_next(status: &str) -> &'static str {
+// ---------------------------------------------------------------- the moves
+
+/// Where a task can go from here, and how loudly each move is offered.
+///
+/// One filled button per state — the move that is almost always the right one —
+/// then the alternatives outlined, then the way out in ghost. The set is
+/// deliberately small: a task in review has two honest futures, and a row of
+/// six buttons makes you read all six to find them.
+fn moves(status: &str) -> &'static [(&'static str, w::Emphasis, &'static str)] {
     match status {
-        "in_progress" => "in_review",
-        "in_review" => "done",
-        "done" => "open",
-        _ => "in_progress",
+        "open" => &[
+            ("Start", w::Emphasis::Primary, "in_progress"),
+            ("Close", w::Emphasis::Ghost, "dropped"),
+        ],
+        "in_progress" => &[
+            ("Complete", w::Emphasis::Primary, "done"),
+            ("Send to review", w::Emphasis::Secondary, "in_review"),
+            ("Close", w::Emphasis::Ghost, "dropped"),
+        ],
+        "in_review" => &[
+            ("Complete", w::Emphasis::Primary, "done"),
+            ("Back to work", w::Emphasis::Secondary, "in_progress"),
+        ],
+        "blocked" => &[
+            ("Resume", w::Emphasis::Primary, "in_progress"),
+            ("Close", w::Emphasis::Ghost, "dropped"),
+        ],
+        "done" => &[("Reopen", w::Emphasis::Secondary, "in_progress")],
+        "dropped" => &[("Reopen", w::Emphasis::Secondary, "open")],
+        _ => &[],
     }
 }
 
-fn status_controls(
+fn actions(
     ui: &mut egui::Ui,
     net: &mut crate::desktop::net::Net,
     task_id: &str,
+    task: &Value,
     status: &str,
+    can_act: bool,
     local: &mut Local,
 ) {
     // Fold in the reply to a move we started earlier.
@@ -248,31 +325,34 @@ fn status_controls(
                     "Awaiting approval: you do not hold write on this project, so the \
                      move was recorded as a proposed change."
                         .to_string(),
-                    colour::WARN,
+                    false,
                 ),
-                Ok(_) => ("Status updated.".to_string(), colour::OK),
-                Err(e) => (format!("Could not move the task: {e}"), colour::DANGER),
+                Ok(_) => ("Moved.".to_string(), false),
+                Err(e) => (e.to_string(), true),
             });
             local.patching = false;
-            // The task list, the log and the board all show the old status.
+            // This task, the board, the dashboard and the personal list all
+            // show the status we have just changed.
             net.invalidate_prefix("task:");
             net.invalidate_prefix("board:");
+            net.invalidate_prefix("mytasks");
+            net.invalidate("home");
         }
     }
 
-    shell::section(ui, "Move to");
-    let suggested = likely_next(status);
+    shell::section(ui, "Actions");
+
+    if !can_act {
+        match str_of(task, "assigneeName").filter(|n| !n.is_empty()) {
+            Some(name) => w::caption(ui, &format!("Only {name} can move this task.")),
+            None => w::caption(ui, "Unassigned \u{2014} nobody can move it yet."),
+        }
+        return;
+    }
+
     ui.horizontal_wrapped(|ui| {
-        for next in ["open", "in_progress", "in_review", "done"] {
-            let here = next == status;
-            let enabled = !here && !local.patching;
-            let label = status_label(next);
-            let clicked = if next == suggested && enabled {
-                w::primary(ui, label, true).clicked()
-            } else {
-                w::secondary(ui, label, enabled).clicked()
-            };
-            if clicked {
+        for (copy, emphasis, next) in moves(status) {
+            if w::button(ui, copy, *emphasis, !local.patching).clicked() {
                 net.patch(
                     PATCH_KEY,
                     &format!("/api/user/tasks/{task_id}"),
@@ -287,6 +367,15 @@ fn status_controls(
             ui.add(egui::Spinner::new().size(text::BODY));
         }
     });
+
+    if let Some((message, is_error)) = &local.notice {
+        ui.add_space(space::SM);
+        if *is_error {
+            w::error(ui, message);
+        } else {
+            w::caption(ui, message);
+        }
+    }
 }
 
 fn artifacts(ui: &mut egui::Ui, net: &crate::desktop::net::Net) {
@@ -394,9 +483,7 @@ fn run_log(
         ui.label(
             egui::RichText::new("Run log")
                 .size(text::SMALL)
-                .family(egui::FontFamily::Name(
-                    crate::desktop::design::theme::MEDIUM.into(),
-                ))
+                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
                 .color(colour::TEXT_MUTED),
         );
         if live {
@@ -475,9 +562,44 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// `2026-09-20T11:04:09.123Z` reads better as `2026-09-20 11:04`. ponytail: a
-/// string trim, not a chrono parse; nobody needs the local-time conversion to
-/// see how stale a task is.
-fn stamp(raw: &str) -> String {
-    raw.get(..16).unwrap_or(raw).replace('T', " ")
+fn me_str(app: &App, key: &str) -> String {
+    app.net
+        .as_ref()
+        .and_then(|n| n.data("__me"))
+        .and_then(|m| m.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// "3 days ago". The meta line has room for words where a table column has
+/// room for "3d", and this is the one place on the screen that reads as prose.
+fn ago(raw: &str) -> String {
+    let Ok(then) = DateTime::parse_from_rfc3339(raw) else {
+        return String::new();
+    };
+    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
+        s if s < 60 => "just now".to_owned(),
+        s if s < 3600 => plural(s / 60, "minute"),
+        s if s < 86_400 => plural(s / 3600, "hour"),
+        s => plural(s / 86_400, "day"),
+    }
+}
+
+fn plural(n: i64, unit: &str) -> String {
+    if n == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{n} {unit}s ago")
+    }
+}
+
+/// "In review" from "in review". The vocabulary still comes from
+/// `status_label`; this only decides where the sentence starts.
+fn sentence(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }

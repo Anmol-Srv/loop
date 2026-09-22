@@ -1,475 +1,346 @@
-//! My tasks: everything assigned to the signed-in person, grouped by the state
-//! that decides what they do next, and under it the work they could claim.
+//! My Tasks: everything assigned to the signed-in person, one table per
+//! project.
 //!
-//! Two fetches, both cached under the `mine:` prefix so a claim can drop the
-//! pair with one `invalidate_prefix`. Grouping is by *effective* state, not by
-//! the `status` column: a task whose blockers are unfinished is filed under
-//! Blocked whatever its status says, because that is what actually stops you.
+//! This was a column of cards, and cards are the wrong unit for "what am I
+//! holding": you cannot compare a column of cards, and eleven of them is a
+//! scroll. It is the same table vocabulary as Home and Projects — column
+//! consts, a header band, hover from a temp store, keyboard-reachable rows —
+//! broken into one table per project, because the project is the thing you
+//! context-switch between and a single flat list buries it in a column.
 //!
-//! Every assigned task is a card, not a row: chips on top, the title as the
-//! loudest thing in it, the phase and the people underneath. The claimable
-//! work at the foot is the one exception — a slim card, because a title and a
-//! Claim button is the whole content.
+//! Finished work sinks to the bottom of its group and is hidden until asked
+//! for. This screen answers "what now"; yesterday's done pile is noise in that
+//! answer, but it is the first thing you want when someone asks what you did.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use egui::{Align, Layout, RichText};
+use egui_extras::{Column, TableBuilder};
 use serde_json::Value;
 
 use crate::desktop::design::{
-    cards as c, colour, shell, space, status_label, text, theme, widgets as w,
+    cards as c, colour, motion, radius, shell, size, space, status_label, text, theme, viz,
+    widgets as w,
 };
 use crate::desktop::App;
 
-const MINE: &str = "mine:assigned";
-const AVAILABLE: &str = "mine:available";
-const CLAIM: &str = "mine:claim";
+/// The personal list. Prefixed `mytasks` so any view that moves a task can drop
+/// it with one `invalidate_prefix`.
+const MINE: &str = "mytasks:mine";
+/// Whether finished rows are shown. Which project the pointer is over gets its
+/// own id per group, derived from this one.
+const FINISHED: &str = "mytasks:finished";
+const HOVER: &str = "mytasks:hover";
 
-const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
-
-/// The vocabulary of the status filter, and — read top to bottom — the order
-/// the sections appear in. In progress first because it is what you are
-/// holding; Blocked last because it is what you cannot move.
-///
-/// `done` and `dropped` are in the list so the filter can ask for them, but a
-/// finished task is not shown unless it is asked for: this screen answers
-/// "what now", and yesterday's work is noise in that answer.
-const SECTIONS: [&str; 6] = ["in_progress", "in_review", "open", "blocked", "done", "dropped"];
-
-/// Filter selections. `None` means "any" on each. The two fixed vocabularies
-/// are `&'static str` so a frame that changes nothing allocates nothing; the
-/// project list is discovered from the data, so it has to own its id.
-#[derive(Default, Clone)]
-pub struct State {
-    pub discipline: Option<&'static str>,
-    pub status: Option<&'static str>,
-    pub project: Option<String>,
-}
+// ---- table geometry. Fixed so every group's columns line up with every
+// ---- other's; the description takes whatever is left.
+const ROW_H: f32 = 38.0;
+/// The title is what is being scanned for, so it gets the widest fixed column;
+/// past this it truncates rather than pushing the row around.
+const COL_TASK: f32 = 300.0;
+/// The description's floor. Below this a one-liner is cut to nothing useful.
+const COL_DESCRIPTION: f32 = 180.0;
+/// "P0" in a chip.
+const COL_PRIORITY: f32 = 52.0;
+const COL_STATUS: f32 = 104.0;
+const COL_UPDATED: f32 = 78.0;
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
-    // ponytail: the filters live in egui's temp store rather than a field on
-    // `App`, which keeps this screen to one file. Move them onto `App` the day
-    // another view needs to read them.
-    let slot = egui::Id::new("mine:filters");
-    let mut state: State = ui.data(|d| d.get_temp(slot)).unwrap_or_default();
+    // ponytail: one flag, so it lives in egui's temp store rather than growing
+    // `App`. Move it onto `App` the day another view needs to read it.
+    let finished_id = egui::Id::new(FINISHED);
+    let mut show_finished: bool = ui.ctx().data(|d| d.get_temp(finished_id)).unwrap_or(false);
 
-    let can_write = app.can_write();
-    // Every task on this screen is assigned to the signed-in person, so the
-    // avatar on a card is always theirs — the row itself carries no seed.
-    let me = app
-        .net
-        .as_ref()
-        .and_then(|n| n.data("__me"))
-        .and_then(|m| m.get("email"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     let net = app.net.as_mut().unwrap();
-
-    // A finished claim has changed both lists and the home aggregate.
-    if net.data(CLAIM).is_some() {
-        net.invalidate_prefix("mine:");
-        net.invalidate("home");
-    }
-
     net.get_once(MINE, "/api/user/tasks/mine");
-    net.get_once(AVAILABLE, "/api/user/tasks/available");
 
-    let mine = array(net.data(MINE));
-    let available = array(net.data(AVAILABLE));
-    let loading = net.is_loading(MINE) || net.is_loading(AVAILABLE);
-    let list_error = net.error(MINE).or(net.error(AVAILABLE)).map(str::to_owned);
-    let claim_error = net.error(CLAIM).map(str::to_owned);
-    let busy = net.is_loading(CLAIM);
+    let loading = net.is_loading(MINE);
+    let error = net.error(MINE).map(str::to_owned);
+    let tasks = net.data(MINE).cloned().unwrap_or(Value::Null);
+    let rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
 
-    // Blockers arrive as ids. Any blocker that is itself on one of these lists
-    // can be named; the rest fall back to their short id, which is still
-    // something you can paste into `acp task show`.
-    let mut titles: HashMap<String, String> = HashMap::new();
-    for t in mine.iter().chain(available.iter()) {
-        titles.insert(text_at(t, "id"), text_at(t, "title"));
-    }
-
-    // Everything assigned, minus the finished work nobody asked to see.
-    let shown: Vec<&Value> = mine
-        .iter()
-        .filter(|t| keep(t, &state))
-        .filter(|t| matches!(state.status, Some(s) if s == bucket(t)) || !finished(bucket(t)))
-        .collect();
-    let claimable: Vec<&Value> = available.iter().filter(|t| keep(t, &state)).collect();
+    // The subtitle counts the work that is still live, and the projects that
+    // work is in — not every project that has ever held a row of mine.
+    let open: Vec<&&Value> = rows.iter().filter(|t| !finished(t)).collect();
+    let mut open_projects: Vec<&str> = open.iter().map(|t| project_of(t)).collect();
+    open_projects.sort_unstable();
+    open_projects.dedup();
 
     shell::page_title(
         ui,
-        "My tasks",
+        "My Tasks",
         &format!(
-            "{} assigned · {} available to claim",
-            shown.len(),
-            claimable.len()
+            "{} open across {}",
+            open.len(),
+            plural(open_projects.len(), "project")
         ),
         |_| {},
     );
 
-    filters(ui, &mut state, &mine, &available);
-
-    if let Some(err) = &claim_error {
-        ui.add_space(space::MD);
-        w::error(ui, &format!("That claim did not go through. {err}"));
-    }
-
-    if let Some(err) = &list_error {
-        ui.add_space(space::MD);
+    if let Some(err) = &error {
         w::error(ui, &format!("Could not load your work. {err}"));
-        ui.data_mut(|d| d.insert_temp(slot, state));
         return;
     }
-
-    if mine.is_empty() && available.is_empty() {
-        ui.add_space(space::MD);
+    if rows.is_empty() {
         if loading {
             w::loading(ui, "your work");
         } else {
             w::empty(
                 ui,
-                "Nothing is assigned to you, and nothing matches your disciplines yet.",
-                "Ask for a discipline on your profile, or open Projects to see what the team is building.",
+                "Nothing assigned to you.",
+                "When someone hands you a task it shows up here, grouped by project.",
             );
         }
-        ui.data_mut(|d| d.insert_temp(slot, state));
         return;
     }
 
-    let mut open: Option<String> = None;
-    let mut claim: Option<String> = None;
+    if viz::filter(ui, "Show finished", show_finished, false).clicked() {
+        show_finished = !show_finished;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(finished_id, show_finished));
 
-    for name in SECTIONS {
-        let rows: Vec<&&Value> = shown.iter().filter(|t| bucket(t) == name).collect();
-        if rows.is_empty() {
+    // Grouped by project name, alphabetically — `BTreeMap` is the sort. Inside
+    // a group the finished work sinks: a stable sort on one bit keeps the
+    // server's order within each half.
+    let mut groups: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
+    for t in &rows {
+        if !show_finished && finished(t) {
             continue;
         }
-        shell::section_count(ui, &capitalise(status_label(name)), rows.len());
-        for t in rows {
-            if let Some(id) = assigned_card(ui, t, &titles, &me) {
-                open = Some(id);
-            }
-        }
+        groups.entry(project_of(t)).or_default().push(t);
+    }
+    for rows in groups.values_mut() {
+        rows.sort_by_key(|t| finished(t));
     }
 
-    if !claimable.is_empty() {
-        let mut kinds: Vec<&str> = Vec::new();
-        for t in &claimable {
-            let d = t.get("discipline").and_then(Value::as_str).unwrap_or("");
-            if !d.is_empty() && !kinds.contains(&d) {
-                kinds.push(d);
-            }
-        }
-        let note = format!("matching {}", kinds.join(", "));
-        // Other people's unclaimed work is a different kind of thing from the
-        // status sections above it. At the same pitch the screen reads as a
-        // run of interchangeable slabs; a page-margin gap says "and separately".
-        ui.add_space(space::XXL);
-        shell::section_count_with(ui, "Available to claim", claimable.len(), |ui| {
-            if !kinds.is_empty() {
-                w::muted(ui, &note);
-            }
-        });
-
-        for t in &claimable {
-            match claimable_card(ui, t, can_write && !busy) {
-                Row::Open(id) => open = Some(id),
-                Row::Claim(id) => claim = Some(id),
-                Row::Idle => {}
-            }
-        }
+    if groups.is_empty() {
+        w::empty(
+            ui,
+            "Nothing open.",
+            "Everything assigned to you is finished \u{2014} show finished work to see it.",
+        );
+        return;
     }
 
-    if shown.is_empty() && claimable.is_empty() {
-        w::empty(ui, "Nothing matches these filters.", "Clear one to see the rest of your work.");
+    let mut open_task: Option<String> = None;
+    for (project, rows) in &groups {
+        shell::section_count(ui, project, rows.len());
+        table(ui, project, rows, &mut open_task);
     }
+    ui.add_space(space::XXL);
 
-    if let Some(id) = claim {
-        app.net
-            .as_mut()
-            .unwrap()
-            .post(CLAIM, &format!("/api/user/tasks/{id}/claim"), Value::Null);
-    } else if let Some(id) = open {
+    if let Some(id) = open_task {
         app.task = Some(id);
     }
-
-    ui.data_mut(|d| d.insert_temp(slot, state));
 }
 
-// --------------------------------------------------------------------- cards
+// --------------------------------------------------------------------- table
 
-/// One assigned task. Returns its id when clicked.
-fn assigned_card(
-    ui: &mut egui::Ui,
-    t: &Value,
-    titles: &HashMap<String, String>,
-    me: &str,
-) -> Option<String> {
-    let id = text_at(t, "id");
-    let title = text_at(t, "title");
-    let discipline = text_at(t, "discipline");
-    let project = text_at(t, "projectName");
-    let is_agent = text_at(t, "assigneeKind") == "agent";
-    let claimed_by = text_at(t, "claimedBy");
-    let state = bucket(t);
+fn table(ui: &mut egui::Ui, salt: &str, rows: &[&Value], open_task: &mut Option<String>) {
+    let hover_id = egui::Id::new(HOVER).with(salt);
+    let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
+    let mut now: Option<usize> = None;
+    let mut responses: Vec<egui::Response> = Vec::with_capacity(rows.len());
 
-    // Age first and quiet: on a screen about what to do next, the task that
-    // has not moved in four days is the news. Then discipline, then the state
-    // with its dot, then which project it belongs to.
-    let mut chips: Vec<(String, c::Tone, bool)> = vec![(age(t), c::Tone::Quiet, false)];
-    if !discipline.is_empty() {
-        chips.push((discipline.clone(), c::discipline_tone(&discipline), false));
-    }
-    chips.push((capitalise(status_label(state)), c::status_tone(state), true));
-    if !project.is_empty() {
-        chips.push((project.clone(), c::Tone::Neutral, false));
-    }
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
+        .show(ui, |ui| {
+            // Reserved now, painted once the header's extent is known: the
+            // band has to sit under the header text, not over it.
+            let band = ui.painter().add(egui::Shape::Noop);
+            let top = ui.cursor().top();
+            ui.spacing_mut().item_spacing = egui::Vec2::new(space::MD, 0.0);
 
-    // A blocked card spends its context line naming the blocker: the project
-    // and phase are not what you need from it.
-    let context = if state == "blocked" {
-        waiting_on(&blocker_name(t, titles))
-    } else {
-        format!("{project} · {}", text_at(t, "phaseName"))
-    };
+            TableBuilder::new(ui)
+                .id_salt(salt)
+                .vscroll(false)
+                .sense(egui::Sense::click())
+                .cell_layout(Layout::left_to_right(Align::Center))
+                .column(Column::exact(COL_TASK).clip(true))
+                .column(Column::remainder().at_least(COL_DESCRIPTION).clip(true))
+                .column(Column::exact(COL_PRIORITY))
+                .column(Column::exact(COL_STATUS))
+                .column(Column::exact(COL_UPDATED))
+                .header(size::CONTROL, |mut row| {
+                    for name in ["Task", "Description", "Priority", "Status", "Updated"] {
+                        row.col(|ui| {
+                            ui.label(
+                                RichText::new(name)
+                                    .size(text::CAPTION)
+                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                    .color(colour::TEXT_MUTED),
+                            );
+                        });
+                    }
+                })
+                .body(|mut body| {
+                    for (i, t) in rows.iter().enumerate() {
+                        body.row(ROW_H, |mut row| {
+                            row.set_hovered(was == Some(i));
+                            row.set_overline(i > 0);
+                            task_row(&mut row, t);
+                            responses.push(row.response());
+                        });
+                    }
+                });
 
-    let trailing: Vec<(String, c::Tone)> = if is_agent {
-        let label = if claimed_by.is_empty() { "agent".to_owned() } else { claimed_by };
-        vec![(label, c::Tone::Agent)]
-    } else {
-        Vec::new()
-    };
-    // The agent chip already says who holds it; a second face beside it is noise.
-    let people: Vec<String> =
-        if is_agent || me.is_empty() { Vec::new() } else { vec![me.to_owned()] };
+            // A row is hand-painted, so Tab does not reach it on its own.
+            // Handled after the table rather than inside the body closure,
+            // which holds the only `Ui` the focus ring can be drawn on.
+            for (i, response) in responses.into_iter().enumerate() {
+                let response = motion::operable_sm(ui, response);
+                if response.hovered() {
+                    now = Some(i);
+                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    *open_task = str_at(rows[i], "id").map(str::to_owned);
+                }
+            }
 
-    c::task_card(
-        ui,
-        &c::TaskCard {
-            title: &title,
-            chips: &chips,
-            context: &context,
-            trailing_chips: &trailing,
-            people: &people,
-        },
-    )
-    .clicked()
-    .then_some(id)
+            let band_rect = egui::Rect::from_min_max(
+                egui::pos2(ui.max_rect().left() - space::MD, top),
+                egui::pos2(ui.max_rect().right() + space::MD, top + size::CONTROL),
+            );
+            ui.painter().set(
+                band,
+                egui::Shape::rect_filled(
+                    band_rect,
+                    egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
+                    colour::CHROME,
+                ),
+            );
+            ui.painter().hline(
+                band_rect.x_range(),
+                band_rect.bottom(),
+                egui::Stroke::new(1.0, colour::LINE),
+            );
+        });
+
+    ui.ctx().data_mut(|d| d.insert_temp(hover_id, now));
 }
 
-enum Row {
-    Idle,
-    Open(String),
-    Claim(String),
-}
+fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
+    let status = str_at(t, "status").unwrap_or("open");
+    let done = finished(t);
 
-/// One claimable task: no status, because every row here is open, and a Claim
-/// button where the assigned cards carry their people.
-fn claimable_card(ui: &mut egui::Ui, t: &Value, can_claim: bool) -> Row {
-    let id = text_at(t, "id");
-    let title = text_at(t, "title");
-    let discipline = text_at(t, "discipline");
-    let project = text_at(t, "projectName");
-
-    let mut claimed = false;
-    let hit = c::slim_card(ui, |ui| {
-        if !discipline.is_empty() {
-            c::chip(ui, &discipline, c::discipline_tone(&discipline), false);
-            ui.add_space(space::XS);
-        }
+    row.col(|ui| {
         ui.label(
-            egui::RichText::new(&title)
+            RichText::new(str_at(t, "title").unwrap_or_default())
                 .size(text::BODY)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
+                // Finished work stays legible and stops competing: the rows
+                // above it are the ones with something to decide.
+                .color(if done { colour::TEXT_MUTED } else { colour::TEXT }),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            claimed = w::button(ui, "Claim", w::Emphasis::Ghost, can_claim).clicked();
-            ui.add_space(space::SM);
-            w::muted(ui, &project);
-        });
-    })
-    .interact(egui::Sense::click());
-
-    if claimed {
-        Row::Claim(id)
-    } else if hit.clicked() {
-        Row::Open(id)
-    } else {
-        Row::Idle
-    }
-}
-
-// ------------------------------------------------------------------- filters
-
-fn filters(ui: &mut egui::Ui, state: &mut State, mine: &[Value], available: &[Value]) {
-    // Only projects that actually have a row here: a dropdown listing projects
-    // this person has no work in filters to nothing.
-    let mut projects: Vec<(String, String)> = Vec::new();
-    for t in mine.iter().chain(available.iter()) {
-        let id = text_at(t, "projectId");
-        if !id.is_empty() && !projects.iter().any(|(p, _)| *p == id) {
-            projects.push((id, text_at(t, "projectName")));
-        }
-    }
-
-    ui.horizontal(|ui| {
-        fixed(ui, "mine:f:discipline", "All disciplines", &DISCIPLINES, &mut state.discipline);
-        ui.add_space(space::SM);
-        fixed(ui, "mine:f:status", "Any status", &SECTIONS, &mut state.status);
-        ui.add_space(space::SM);
-        project_filter(ui, &projects, &mut state.project);
-
-        if state.discipline.is_some() || state.status.is_some() || state.project.is_some() {
-            ui.add_space(space::SM);
-            if w::secondary(ui, "Clear", true).clicked() {
-                *state = State::default();
-            }
+        // Blocked rides behind the title rather than replacing the status: the
+        // status is still true, the blocker is the reason it is not moving.
+        if blocked(t) {
+            ui.add_space(space::XS);
+            c::chip(ui, "blocked", c::Tone::Blocked, false);
         }
     });
-}
 
-/// A dropdown over a fixed vocabulary; `None` is the leading "any" entry.
-fn fixed(
-    ui: &mut egui::Ui,
-    id: &str,
-    any: &str,
-    options: &[&'static str],
-    slot: &mut Option<&'static str>,
-) {
-    let selected = slot.map(status_label).unwrap_or(any).to_owned();
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(egui::RichText::new(selected).size(text::BODY))
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(slot.is_none(), egui::RichText::new(any).size(text::BODY)).clicked() {
-                *slot = None;
-            }
-            for opt in options {
-                let label = egui::RichText::new(status_label(opt)).size(text::BODY);
-                if ui.selectable_label(*slot == Some(*opt), label).clicked() {
-                    *slot = Some(*opt);
-                }
-            }
+    row.col(|ui| {
+        let body = str_at(t, "body").unwrap_or_default().trim();
+        let (copy, ink) = match body.lines().next() {
+            Some(first) if !first.is_empty() => (first, colour::TEXT_MUTED),
+            // One line. The column clips, and a wrapped cell would make one
+            // row taller than the rest of the table.
+            _ => ("\u{2014}", colour::TEXT_FAINT),
+        };
+        ui.label(RichText::new(copy).size(text::SMALL).color(ink));
+    });
+
+    row.col(|ui| {
+        if let Some(p) = t.get("priority").and_then(Value::as_i64) {
+            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        }
+    });
+
+    row.col(|ui| {
+        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
+    });
+
+    row.col(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(age(str_at(t, "updatedAt").unwrap_or_default()))
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
         });
-}
-
-fn project_filter(ui: &mut egui::Ui, projects: &[(String, String)], slot: &mut Option<String>) {
-    let selected = slot
-        .as_ref()
-        .and_then(|id| projects.iter().find(|(p, _)| p == id))
-        .map(|(_, name)| name.clone())
-        .unwrap_or_else(|| "All projects".to_owned());
-
-    egui::ComboBox::from_id_salt("mine:f:project")
-        .selected_text(egui::RichText::new(selected).size(text::BODY))
-        .show_ui(ui, |ui| {
-            let any = egui::RichText::new("All projects").size(text::BODY);
-            if ui.selectable_label(slot.is_none(), any).clicked() {
-                *slot = None;
-            }
-            for (id, name) in projects {
-                let label = egui::RichText::new(name).size(text::BODY);
-                if ui.selectable_label(slot.as_deref() == Some(id), label).clicked() {
-                    *slot = Some(id.clone());
-                }
-            }
-        });
-}
-
-// --------------------------------------------------------------------- rules
-
-/// The state a row is filed under. Unfinished blockers beat the status column:
-/// a task marked `in_progress` that is waiting on someone else is not in
-/// progress, and filing it as though it were hides the thing to go and unblock.
-fn bucket(t: &Value) -> &'static str {
-    let total = num(t, "blockersTotal");
-    if num(t, "blockersDone") < total {
-        return "blocked";
-    }
-    let status = t.get("status").and_then(Value::as_str).unwrap_or("open");
-    SECTIONS.iter().copied().find(|s| *s == status).unwrap_or("open")
-}
-
-fn finished(bucket: &str) -> bool {
-    bucket == "done" || bucket == "dropped"
-}
-
-fn keep(t: &Value, state: &State) -> bool {
-    if let Some(d) = state.discipline {
-        if text_at(t, "discipline") != d {
-            return false;
-        }
-    }
-    if let Some(s) = state.status {
-        if bucket(t) != s {
-            return false;
-        }
-    }
-    if let Some(p) = &state.project {
-        if &text_at(t, "projectId") != p {
-            return false;
-        }
-    }
-    true
-}
-
-/// What the blocked card names. The first unfinished blocker is the one to go
-/// and chase; its title when we have it, its short id when we do not.
-fn blocker_name(t: &Value, titles: &HashMap<String, String>) -> String {
-    let first = t
-        .get("blockedBy")
-        .and_then(Value::as_array)
-        .and_then(|a| a.first())
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-
-    match titles.get(first) {
-        Some(title) => title.clone(),
-        None => first.get(..8).unwrap_or(first).to_owned(),
-    }
+    });
 }
 
 // -------------------------------------------------------------------- pieces
 
-/// `w::blocked_by`'s wording, as a string — a card's context line is text, not
-/// a widget.
-/// ponytail: two spellings of one sentence. Fold them together the day a third
-/// screen needs it.
-fn waiting_on(what: &str) -> String {
-    format!("\u{2933} waiting on \u{201c}{what}\u{201d}")
-}
-
-/// How long since the task last moved, for the quiet leading chip.
-fn age(t: &Value) -> String {
-    let Ok(then) = DateTime::parse_from_rfc3339(&text_at(t, "updatedAt")) else {
-        return "no activity".to_owned();
-    };
-    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
-        s if s < 60 => "just now".to_owned(),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86_400),
+/// P0 shouts and P4 whispers, in the same chip vocabulary as status.
+fn priority_tone(p: i64) -> c::Tone {
+    match p {
+        0 => c::Tone::Blocked,
+        1 => c::Tone::Running,
+        2 => c::Tone::Neutral,
+        _ => c::Tone::Quiet,
     }
 }
 
-fn capitalise(s: &str) -> String {
+fn blocked(t: &Value) -> bool {
+    num(t, "blockersDone") < num(t, "blockersTotal")
+}
+
+fn finished(t: &Value) -> bool {
+    matches!(str_at(t, "status"), Some("done") | Some("dropped"))
+}
+
+/// The group a task is filed under. A task always has a project; the fallback
+/// only exists so a malformed row still lands somewhere visible.
+fn project_of<'a>(t: &'a Value) -> &'a str {
+    match str_at(t, "projectName") {
+        Some(name) if !name.is_empty() => name,
+        _ => "No project",
+    }
+}
+
+/// "2d", "4h". A table column has room for two characters, and the exact
+/// minute is never the thing being decided.
+fn age(raw: &str) -> String {
+    let Ok(then) = DateTime::parse_from_rfc3339(raw) else {
+        return String::new();
+    };
+    match (Utc::now() - then.with_timezone(&Utc)).num_seconds().max(0) {
+        s if s < 3600 => format!("{}m", (s / 60).max(1)),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+
+/// "In review" from "in review". The vocabulary still comes from
+/// `status_label`; this only decides where the sentence starts.
+fn sentence(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
     }
 }
 
-fn array(v: Option<&Value>) -> Vec<Value> {
-    v.and_then(Value::as_array).cloned().unwrap_or_default()
+fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
 }
 
-fn text_at(v: &Value, key: &str) -> String {
-    v.get(key).and_then(Value::as_str).unwrap_or_default().to_owned()
-}
-
-fn num(v: &Value, key: &str) -> i64 {
-    v.get(key).and_then(Value::as_i64).unwrap_or(0)
+fn num(value: &Value, key: &str) -> i64 {
+    value.get(key).and_then(Value::as_i64).unwrap_or(0)
 }
