@@ -132,7 +132,7 @@ pub async fn create(
 
     let mut tx = state.db.begin().await?;
 
-    let project: Project = sqlx::query_as(
+    let mut project: Project = sqlx::query_as(
         "INSERT INTO project (id, key, name, description, priority, start_date, target_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, key, name, description, status, priority, start_date, target_date, created_at, updated_at",
@@ -168,6 +168,18 @@ pub async fn create(
         }
         _ => AppError::Database(e),
     })?;
+
+    // Read back inside the transaction so the reply carries what was actually
+    // attached. The insert above returns the row before its labels exist, and
+    // a create that echoes an empty list is a create that lied.
+    project.labels = sqlx::query_as(
+        "SELECT l.id, l.name, l.colour FROM project_label pl
+           JOIN label l ON l.id = pl.label_id
+          WHERE pl.project_id = $1 ORDER BY l.name",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
 
     // The default phase and the form's tasks, in the same transaction: a
     // project that exists with half its tasks is not what anyone submitted.
