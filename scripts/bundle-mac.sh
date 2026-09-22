@@ -22,6 +22,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>$NAME</string>
   <key>CFBundleIdentifier</key><string>live.airtribe.controlplane</string>
   <key>CFBundleVersion</key><string>0.1.0</string>
+  <!-- No window restoration. The app has one window and rebuilds its state
+       from the server on launch, so there is nothing to restore — and with it
+       on, any hard kill (a rebuild, a crash) makes macOS greet the next
+       launch with a "reopen its windows?" dialog that blocks the app. -->
+  <key>NSQuitAlwaysKeepsWindows</key><false/>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>acp-app</string>
@@ -52,3 +57,8 @@ codesign --force --deep --sign - "$APP" 2>/dev/null || \
 echo
 echo "built  $APP"
 echo "run    open '$APP'"
+
+# Quit any running copy politely before the next launch. A `kill -9` leaves
+# macOS believing the app crashed, which is what put a "reopen its windows?"
+# dialog in front of every rebuild.
+osascript -e 'quit app "Airtribe Control Plane"' 2>/dev/null || true
