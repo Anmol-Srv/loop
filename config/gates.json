@@ -1,0 +1,22 @@
+{
+  "_comment": "Default gates for scripts/airtribe_bridge.py verify. Run inside a fresh detached worktree of mycohort-api at the exact candidate SHA. Full `pnpm test` is NOT a gate: it carries baseline failures (Node 26 vs jsonwebtoken); reactor/verify.sh compares that count against reactor/baseline.json instead.",
+  "default_gates": [
+    {
+      "name": "install (frozen lockfile)",
+      "argv": ["pnpm", "install", "--frozen-lockfile", "--reporter=silent"]
+    },
+    {
+      "name": "jest: tests related to files changed since master",
+      "argv": ["node", "-r", "./api/initializers", "./node_modules/jest/bin/jest.js", "--config", "./jest.config.js", "--changedSince=master", "--passWithNoTests", "--ci"],
+      "env": {"NODE_ENV": "test"}
+    },
+    {
+      "name": "eslint: changed js files",
+      "argv": ["sh", "-c", "git diff --name-only --diff-filter=ACMR master...HEAD -- '*.js' | xargs -r npx eslint --max-warnings=0"]
+    },
+    {
+      "name": "prettier: changed js files",
+      "argv": ["sh", "-c", "git diff --name-only --diff-filter=ACMR master...HEAD -- '*.js' | xargs -r npx prettier --check"]
+    }
+  ]
+}

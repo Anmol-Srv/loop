@@ -181,7 +181,7 @@ def cmd_candidates(args: argparse.Namespace) -> None:
     git(repo, "rev-parse", "--verify", base)
     now = dt.datetime.now(dt.timezone.utc)
     rows: list[dict[str, Any]] = []
-    fmt = "%(refname:short)%x1f%(committerdate:unix)%x1f%(subject)"
+    fmt = "%(refname:short)\x1f%(committerdate:unix)\x1f%(subject)"  # git for-each-ref has no %xNN
     raw = git(repo, "for-each-ref", "--sort=-committerdate", f"--format={fmt}", "refs/heads")
     task_terms = {term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", args.task)}
     checked_out = worktree_branches(repo)
