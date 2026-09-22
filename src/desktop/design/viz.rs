@@ -10,15 +10,9 @@ use egui::{Color32, Pos2, Response, RichText, Sense, Ui, Vec2};
 use super::tokens::{colour, radius, space, text};
 use super::{motion, theme};
 
-/// Every figure on the dashboard draws into a box this tall. Four cards of
-/// four different heights read as four unrelated things; one height makes the
-/// row a row. Sized to the tallest figure (the headline plus its columns),
-/// and the card clips rather than grows, so no future figure can break the
-/// alignment by being one row longer.
-pub const BODY_H: f32 = 102.0;
-
 /// How many bars a figure shows before it collapses the rest into a count.
-/// Four rows is what fits in `BODY_H` with a line left for the overflow.
+/// A density choice, not a fitting one — the row sizes itself to whatever it
+/// is given, so this is only about how much of a long list is worth showing.
 pub const MAX_BARS: usize = 4;
 
 /// One slice of a donut, or one row of a legend.
@@ -217,13 +211,22 @@ pub fn columns(ui: &mut Ui, values: &[f32], labels: &[&str], tint: Color32) {
 }
 
 /// A visualisation card: a quiet label, something on the right, then the
-/// figure in a fixed-height box.
+/// figure.
 ///
-/// The box is exactly `BODY_H` tall and clipped, which is the whole point —
-/// four cards in a row must be one height, and the only way to guarantee that
-/// is to stop the figure deciding. A figure that needs more room shows fewer
-/// rows (see `MAX_BARS`) rather than stretching its card.
-pub fn card<R>(ui: &mut Ui, label: &str, right: &str, body: impl FnOnce(&mut Ui) -> R) -> Response {
+/// Four cards of four different heights read as four unrelated things, so
+/// they all take the height of the tallest. `min_body` is that height, and
+/// the return value is what this figure actually needed — `row` below feeds
+/// one into the other. A fixed height was the first attempt and it was wrong:
+/// it cropped the legend and half the column chart. A figure is allowed to be
+/// as tall as it is; the row is what adapts.
+pub fn card(
+    ui: &mut Ui,
+    label: &str,
+    right: &str,
+    min_body: f32,
+    body: impl FnOnce(&mut Ui),
+) -> f32 {
+    let mut used = 0.0;
     super::cards::surface(ui, false, |ui| {
         ui.horizontal(|ui| {
             ui.label(
@@ -244,17 +247,35 @@ pub fn card<R>(ui: &mut Ui, label: &str, right: &str, body: impl FnOnce(&mut Ui)
         });
         ui.add_space(space::MD);
 
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), BODY_H), Sense::hover());
-        let mut box_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        box_ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-        body(&mut box_ui)
-    })
-    .response
+        used = ui.scope(body).response.rect.height();
+        if used < min_body {
+            ui.add_space(min_body - used);
+        }
+    });
+    used
+}
+
+/// A row of figures, all the same height.
+///
+/// egui lays out in one pass, so the tallest figure is not known until every
+/// figure has been drawn. This keeps last frame's tallest in the temp store,
+/// hands it to each card as a floor, and asks for a repaint on the frame the
+/// answer changes. Content has to change for that to happen, and when it does
+/// the correction lands in the same frame the user sees.
+pub fn row(ui: &mut Ui, id: egui::Id, cards: &mut [&mut dyn FnMut(&mut Ui, f32) -> f32]) {
+    let floor: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+    let mut tallest = 0.0_f32;
+
+    ui.columns(cards.len(), |cols| {
+        for (col, card) in cols.iter_mut().zip(cards.iter_mut()) {
+            tallest = tallest.max(card(col, floor));
+        }
+    });
+
+    if (tallest - floor).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(id, tallest));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// A big numeral with a quiet qualifier beside it.

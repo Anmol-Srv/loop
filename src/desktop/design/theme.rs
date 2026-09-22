@@ -124,7 +124,24 @@ pub fn install(ctx: &egui::Context) {
         s.spacing.menu_margin = egui::Margin::same(space::XS as i8);
         s.spacing.button_padding = egui::vec2(super::tokens::pad::BUTTON.0, super::tokens::pad::BUTTON.1);
         s.spacing.interact_size.y = super::tokens::size::CONTROL;
-        s.spacing.scroll.bar_width = space::SM;
+        // Scrollbars overlay rather than reserve a gutter, and they are the
+        // same greys as every other line in the app. The default is an opaque
+        // near-white bar that laid itself across whatever it scrolled past.
+        s.spacing.scroll = egui::style::ScrollStyle::floating();
+        s.spacing.scroll.floating_width = space::XS;
+        s.spacing.scroll.floating_allocated_width = 0.0;
+        s.spacing.scroll.bar_inner_margin = space::XXS;
+        s.spacing.scroll.bar_outer_margin = 0.0;
+        // No track at all, and a handle that is invisible until the pointer
+        // is in the area it scrolls. Opacity is the only knob egui exposes
+        // here; the colour comes from the widget visuals.
+        s.spacing.scroll.foreground_color = true;
+        s.spacing.scroll.dormant_background_opacity = 0.0;
+        s.spacing.scroll.active_background_opacity = 0.0;
+        s.spacing.scroll.interact_background_opacity = 0.0;
+        s.spacing.scroll.dormant_handle_opacity = 0.0;
+        s.spacing.scroll.active_handle_opacity = 0.30;
+        s.spacing.scroll.interact_handle_opacity = 0.60;
 
         use egui::{FontId, TextStyle};
         s.text_styles = [

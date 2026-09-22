@@ -49,6 +49,9 @@ const FILTERS: &str = "home:filters";
 /// exists after its first cell, which is too late to tint that cell.
 const HOVER: &str = "home:hover";
 
+/// Last frame's tallest figure, so all four cards agree on a height.
+const VIZ_H: &str = "home:viz-h";
+
 /// Days in the completed chart. Seven, because the label says week.
 const WEEK: usize = 7;
 
@@ -152,13 +155,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    // ---- the four figures
-    ui.columns(4, |cols| {
-        status_card(&mut cols[0], &rows);
-        discipline_card(&mut cols[1], &projects);
-        completed_card(&mut cols[2], &rows);
-        team_card(&mut cols[3], &team);
-    });
+    // ---- the four figures, all the same height
+    viz::row(
+        ui,
+        egui::Id::new(VIZ_H),
+        &mut [
+            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &rows),
+            &mut |ui: &mut egui::Ui, h| discipline_card(ui, h, &projects),
+            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &rows),
+            &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
+        ],
+    );
     ui.add_space(space::XL);
 
     // The count is drawn from last frame's filter state; a click repaints, so
@@ -197,13 +204,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
 /// Status as a ring. The centre carries the only number worth reading from
 /// across the room: how much of this is finished.
-fn status_card(ui: &mut egui::Ui, rows: &[&Value]) {
+fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
     let count = |s: &str| rows.iter().filter(|t| bucket(t) == s).count();
     let total = rows.len();
     let done = count("done");
     let pct = if total == 0 { 0 } else { done * 100 / total };
 
-    viz::card(ui, "Status", &plural(total, "task"), |ui| {
+    viz::card(ui, "Status", &plural(total, "task"), min_body, |ui| {
         let slices: Vec<viz::Slice<'_>> = STATUSES
             .iter()
             .zip(LABELS)
@@ -214,7 +221,7 @@ fn status_card(ui: &mut egui::Ui, rows: &[&Value]) {
             })
             .collect();
         viz::donut(ui, &slices, &format!("{pct}%"), "DONE");
-    });
+    })
 }
 
 /// Sentence-cased status names, positionally matched to `STATUSES`. Built once
@@ -223,7 +230,7 @@ const LABELS: [&str; 5] = ["Done", "In progress", "In review", "Blocked", "Open"
 
 /// Progress per discipline, from the server's per-project rollup — the one
 /// number on this page that covers every task, not just the ones on screen.
-fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
+fn discipline_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32 {
     // Sum the rollups across projects, keeping first-seen order so the list
     // does not reshuffle between refreshes.
     let mut order: Vec<String> = Vec::new();
@@ -253,7 +260,7 @@ fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
         tally.insert("none".to_owned(), (all_done - labelled_done, all_total - labelled));
     }
 
-    viz::card(ui, "By discipline", "done / total", |ui| {
+    viz::card(ui, "By discipline", "done / total", min_body, |ui| {
         for name in order.iter().take(viz::MAX_BARS) {
             let (done, total) = tally.get(name).copied().unwrap_or((0, 0));
             let fill = if total == 0 { 0.0 } else { done as f32 / total as f32 };
@@ -267,7 +274,7 @@ fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
             );
         }
         overflow(ui, order.len());
-    });
+    })
 }
 
 /// Completions per day for the last week.
@@ -276,7 +283,7 @@ fn discipline_card(ui: &mut egui::Ui, projects: &[&Value]) {
 /// the buckets are "last touched while done". The delta compares the same
 /// measure over the previous week — same assumption, so the comparison holds
 /// even where the absolute number is soft.
-fn completed_card(ui: &mut egui::Ui, rows: &[&Value]) {
+fn completed_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
     let today = Local::now().date_naive();
     let mut buckets = vec![0.0_f32; WEEK];
     let mut previous = 0usize;
@@ -310,11 +317,11 @@ fn completed_card(ui: &mut egui::Ui, rows: &[&Value]) {
         .collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
 
-    viz::card(ui, "Completed", "last 7 days", |ui| {
+    viz::card(ui, "Completed", "last 7 days", min_body, |ui| {
         viz::headline(ui, &total.to_string(), &delta);
         ui.add_space(space::MD);
         viz::columns(ui, &buckets, &names, colour::ACCENT);
-    });
+    })
 }
 
 fn initial(day: chrono::Weekday) -> &'static str {
@@ -323,10 +330,10 @@ fn initial(day: chrono::Weekday) -> &'static str {
 
 /// Who is carrying what. These are real counts from the server's grouped
 /// query, including `blocking` — the number that says who to go and unblock.
-fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
+fn team_card(ui: &mut egui::Ui, min_body: f32, team: &[&Value]) -> f32 {
     let peak = team.iter().map(|p| num(p, "open")).max().unwrap_or(0);
 
-    viz::card(ui, "Team load", "open", |ui| {
+    viz::card(ui, "Team load", "open", min_body, |ui| {
         for p in team.iter().take(viz::MAX_BARS) {
             let open = num(p, "open");
             let blocking = num(p, "blocking");
@@ -341,10 +348,7 @@ fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
             );
         }
 
-        if team.len() > viz::MAX_BARS {
-            overflow(ui, team.len());
-            return;
-        }
+        overflow(ui, team.len());
 
         let note: Vec<String> = team
             .iter()
@@ -360,7 +364,7 @@ fn team_card(ui: &mut egui::Ui, team: &[&Value]) {
         if !note.is_empty() {
             w::caption(ui, &note.join(", "));
         }
-    });
+    })
 }
 
 /// "+N more" under a capped bar list. Silent when nothing was cut, so the

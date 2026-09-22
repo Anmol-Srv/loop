@@ -32,6 +32,9 @@ pub mod colour {
     /// Selected rows and pressed controls.
     pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x21, 0x24, 0x28);
     /// Inputs, which sit *below* the surface they are on.
+    /// Nothing at all. Named so a component can say "no fill" in the same
+    /// vocabulary as every other colour rather than reaching for egui.
+    pub const TRANSPARENT: Color32 = Color32::TRANSPARENT;
     pub const INSET: Color32 = Color32::from_rgb(0x0E, 0x0F, 0x11);
 
     // ---- lines
