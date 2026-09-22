@@ -229,7 +229,17 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         .as_ref()
         .map(|f| (num_at(f, "done"), num_at(f, "total")))
         .unwrap_or((0, 0));
-    meta_line(ui, head, &names, done, total);
+    // The people on a project are whoever holds its tasks — distinct, in
+    // first-seen order so the stack does not reshuffle as tasks are added.
+    let mut members: Vec<&str> = Vec::new();
+    for t in &tasks {
+        if let Some(who) = t.get("assigneeName").and_then(Value::as_str) {
+            if !members.contains(&who) {
+                members.push(who);
+            }
+        }
+    }
+    meta_line(ui, head, &members, done, total);
 
     ui.add_space(space::LG);
     description(ui, str_at(head, "description"));
@@ -271,18 +281,10 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         ui.add_space(space::MD);
     }
 
-    // Tasks can only be handed to people who are on the project, so the picker
-    // is this project's roster, not the whole company.
-    let members: Vec<(String, String)> = head
-        .get("memberIds")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .filter_map(|id| names.get(id).map(|n| (id.to_owned(), n.clone())))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Anyone here can be handed a task; the project has no roster of its own.
+    let mut members: Vec<(String, String)> =
+        names.iter().map(|(id, n)| (id.clone(), n.clone())).collect();
+    members.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut submit: Option<Value> = None;
     let mut close_form = false;
@@ -351,13 +353,7 @@ fn sort_tasks(tasks: &mut [Value]) {
 /// already groups them, and a box here would be the first of the nested cards
 /// this page exists to avoid. Labels are muted, values full-strength: the
 /// label is scaffolding you read once, the value is what you came for.
-fn meta_line(
-    ui: &mut egui::Ui,
-    p: &Value,
-    names: &HashMap<String, String>,
-    done: i64,
-    total: i64,
-) {
+fn meta_line(ui: &mut egui::Ui, p: &Value, members: &[&str], done: i64, total: i64) {
     ui.horizontal(|ui| {
         // Tight inside a fact, generous between them: proximity does the
         // grouping that separators would otherwise have to.
@@ -369,16 +365,6 @@ fn meta_line(
             ui.add_space(space::XL);
         }
 
-        let members: Vec<&str> = p
-            .get("memberIds")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .filter_map(|id| names.get(id).map(String::as_str))
-                    .collect()
-            })
-            .unwrap_or_default();
         if members.is_empty() {
             label(ui, "Nobody assigned");
         } else {

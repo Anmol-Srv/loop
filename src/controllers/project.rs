@@ -80,7 +80,6 @@ pub async fn create(
     key: Option<String>,
     name: String,
     description: String,
-    member_ids: Vec<Uuid>,
     tasks: Vec<NewTask>,
 ) -> AppResult<Outcome<Project>> {
     if name.trim().is_empty() {
@@ -109,7 +108,6 @@ pub async fn create(
         "key": key,
         "name": name,
         "description": description,
-        "member_ids": member_ids,
         "tasks": tasks,
     });
 
@@ -120,7 +118,7 @@ pub async fn create(
 
     let mut tx = state.db.begin().await?;
 
-    let mut project: Project = sqlx::query_as(
+    let project: Project = sqlx::query_as(
         "INSERT INTO project (id, key, name, description) VALUES ($1, $2, $3, $4)
          RETURNING id, key, name, description, status, created_at, updated_at",
     )
@@ -133,25 +131,6 @@ pub async fn create(
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
             AppError::Conflict(format!("a project with key '{key}' already exists"))
-        }
-        _ => AppError::Database(e),
-    })?;
-
-    // One statement for the whole roster. A person id that does not exist
-    // fails the foreign key and rolls the project back with it — a project
-    // with half its members is not a project anyone asked for.
-    project.member_ids = sqlx::query_scalar(
-        "INSERT INTO project_member (project_id, person_id)
-         SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING
-         RETURNING person_id",
-    )
-    .bind(id)
-    .bind(&member_ids)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|e| match &e {
-        sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
-            AppError::BadRequest("one of the members is not a person here".into())
         }
         _ => AppError::Database(e),
     })?;
@@ -274,50 +253,26 @@ async fn insert_task(
 }
 
 pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
-    let mut projects: Vec<Project> = sqlx::query_as(
+    let projects: Vec<Project> = sqlx::query_as(
         "SELECT id, key, name, description, status, created_at, updated_at
          FROM project ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await?;
 
-    // Rosters in one query, then folded in — a join would repeat the project
-    // row per member and make the caller de-duplicate.
-    let members: Vec<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT project_id, person_id FROM project_member ORDER BY added_at",
-    )
-    .fetch_all(&state.db)
-    .await?;
-    for p in &mut projects {
-        p.member_ids = members
-            .iter()
-            .filter(|(pid, _)| *pid == p.id)
-            .map(|(_, person)| *person)
-            .collect();
-    }
-
     Ok(projects)
 }
 
 /// One project with its roster, for the detail screen.
 pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
-    let mut project: Project = sqlx::query_as(
+    sqlx::query_as(
         "SELECT id, key, name, description, status, created_at, updated_at
          FROM project WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| AppError::NotFound("project not found".into()))?;
-
-    project.member_ids = sqlx::query_scalar(
-        "SELECT person_id FROM project_member WHERE project_id = $1 ORDER BY added_at",
-    )
-    .bind(id)
-    .fetch_all(&state.db)
-    .await?;
-
-    Ok(project)
+    .ok_or_else(|| AppError::NotFound("project not found".into()))
 }
 
 /// Done/total for a project, and the same split per discipline.

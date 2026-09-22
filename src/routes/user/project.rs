@@ -24,9 +24,6 @@ pub struct CreateProjectBody {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// The roster. Empty is a real answer.
-    #[serde(default)]
-    pub member_ids: Vec<Uuid>,
     /// Work handed out in the same breath as the project is made.
     #[serde(default)]
     pub tasks: Vec<NewTask>,
@@ -52,7 +49,6 @@ async fn create(
         body.key,
         body.name,
         body.description,
-        body.member_ids,
         body.tasks,
     )
     .await?;

@@ -23,7 +23,7 @@ use serde_json::Value;
 use super::board::{array, fraction, num_at, str_at};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, shell, size, space, status_label, text, viz, widgets as w,
+    cards as c, colour, shell, space, status_label, text, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -50,11 +50,10 @@ const COL_NAME: f32 = 220.0;
 /// The description's floor. Below this a one-liner is cut to nothing useful,
 /// so the table would rather squeeze the window than this column.
 const COL_DESCRIPTION: f32 = 200.0;
-/// Five faces at `AVATAR_SM` overlapping by `AVATAR_OVERLAP`, plus room for
-/// the "+N" that replaces the sixth.
-const COL_PEOPLE: f32 = 116.0;
-/// The bar plus its "3/8".
-const COL_PROGRESS: f32 = 140.0;
+/// A count, right-aligned under its header. Two digits and air.
+const COL_TASKS: f32 = 64.0;
+/// The bar plus its percentage.
+const COL_PROGRESS: f32 = 150.0;
 const PROGRESS_BAR_W: f32 = 90.0;
 const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
@@ -64,8 +63,8 @@ const COL_CREATED: f32 = 78.0;
 const COLS: [Col; 6] = [
     Col::left("Project", COL_NAME),
     Col::fill("Description", COL_DESCRIPTION),
-    Col::left("Assignees", COL_PEOPLE),
-    Col::right("Progress", COL_PROGRESS),
+    Col::right("Tasks", COL_TASKS),
+    Col::left("Progress", COL_PROGRESS),
     Col::left("Status", COL_STATUS),
     Col::right("Created", COL_CREATED),
 ];
@@ -100,8 +99,6 @@ const DEFAULT_PRIORITY: &str = "2";
 pub struct Draft {
     pub title: String,
     pub description: String,
-    /// Person ids, in the order they were picked. Empty is a real answer.
-    pub members: Vec<String>,
     /// The project's first tasks. Rows with no title are dropped on submit,
     /// so an accidental Add task costs nothing.
     pub tasks: Vec<DraftTask>,
@@ -172,11 +169,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    let names: HashMap<String, String> = people
-        .iter()
-        .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
-        .collect();
-
     let mut start_create = false;
     shell::page_title(ui, "Projects", &subtitle(list.len(), loading), |ui| {
         // The form is the button's own state: while it is open the button
@@ -214,7 +206,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             );
         }
     } else {
-        table(ui, &list, &flows, &names, &mut open);
+        table(ui, &list, &flows, &mut open);
         ui.add_space(space::XXL);
     }
 
@@ -237,15 +229,17 @@ fn subtitle(n: usize, loading: bool) -> String {
 
 // --------------------------------------------------------------------- table
 
-fn table(
+/// Public so `tests/ui_render.rs` can draw it offscreen with fake rows: the
+/// running app cannot be screenshotted from here, and alignment is not
+/// something to verify by reading code.
+pub fn table(
     ui: &mut egui::Ui,
     rows: &[Value],
     flows: &HashMap<String, Value>,
-    names: &HashMap<String, String>,
     open: &mut Option<String>,
 ) {
     let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        project_row(row, &rows[i], flows.get(str_at(&rows[i], "id")), names);
+        project_row(row, &rows[i], flows.get(str_at(&rows[i], "id")));
     });
     if let Some(i) = clicked {
         *open = Some(str_at(&rows[i], "id").to_owned());
@@ -256,7 +250,6 @@ fn project_row(
     row: &mut egui_extras::TableRow<'_, '_>,
     p: &Value,
     flow: Option<&Value>,
-    names: &HashMap<String, String>,
 ) {
     let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
     let status = str_at(p, "status");
@@ -267,21 +260,32 @@ fn project_row(
     // than the rest of the table.
     row.col(|ui| table::muted_cell(ui, &COLS[1], str_at(p, "description")));
 
-    row.col(|ui| table::cell(ui, &COLS[2], |ui| roster(ui, p, names)));
+    // Who is on a project is whoever holds its tasks, so the number of tasks
+    // is the honest figure here; the faces live on the task rows themselves.
+    row.col(|ui| {
+        if total > 0 {
+            table::text_cell(ui, &COLS[2], &total.to_string(), colour::TEXT);
+        } else {
+            table::muted_cell(ui, &COLS[2], "");
+        }
+    });
 
     row.col(|ui| {
-        // Right-aligned, so the cell builds from its right edge inward: the
-        // figure first, then the bar to its left.
+        // The bar first, at a fixed width, then a percentage. A "3/8" here
+        // varied in width and dragged the bar's left edge around with it, and
+        // said the same thing as the Tasks column beside it.
         table::cell(ui, &COLS[3], |ui| {
             if total > 0 {
-                ui.label(
-                    RichText::new(format!("{done}/{total}")).size(text::BODY).color(colour::TEXT),
-                );
-                ui.add_space(space::SM);
                 w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
-            } else {
-                w::caption(ui, "\u{2014}");
+                ui.add_space(space::SM);
+                ui.label(
+                    RichText::new(format!("{}%", done * 100 / total))
+                        .size(text::SMALL)
+                        .color(colour::TEXT),
+                );
             }
+            // No tasks: nothing, not a dash. The Tasks column beside it has
+            // already said "—", and two dashes in a row read as one wide one.
         });
     });
 
@@ -292,43 +296,6 @@ fn project_row(
     });
 
     row.col(|ui| table::muted_cell(ui, &COLS[5], &age(p)));
-}
-
-/// The overlapping stack of faces on a project. Five fit where three would
-/// side by side, and names come back on hover.
-fn roster(ui: &mut egui::Ui, p: &Value, names: &HashMap<String, String>) {
-    let members: Vec<&str> = p
-        .get("memberIds")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .filter_map(|id| names.get(id).map(String::as_str))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if members.is_empty() {
-        w::caption(ui, "\u{2014}");
-        return;
-    }
-
-    ui.spacing_mut().item_spacing.x = -AVATAR_OVERLAP;
-    for name in members.iter().take(MAX_AVATARS) {
-        let r = avatar::small(ui, name, size::AVATAR_SM).on_hover_text(*name);
-        // A ring in the row's own colour, so each face cuts out of the one
-        // beneath rather than bleeding into it.
-        ui.painter().circle_stroke(
-            r.rect.center(),
-            size::AVATAR_SM / 2.0,
-            egui::Stroke::new(1.5, colour::SURFACE),
-        );
-    }
-    ui.spacing_mut().item_spacing.x = space::SM;
-    if members.len() > MAX_AVATARS {
-        ui.add_space(AVATAR_OVERLAP + space::XS);
-        w::caption(ui, &format!("+{}", members.len() - MAX_AVATARS));
-    }
 }
 
 /// How old the project is, in the two characters a table column has room for.
@@ -378,23 +345,11 @@ fn create_form(
         );
         ui.add_space(space::MD);
 
-        w::caption(ui, "Assignees");
-        ui.add_space(space::XXS);
-        let options: Vec<(String, String)> = people
+        // A task goes to anyone here. The project has no roster of its own:
+        // the people on it are the people holding its tasks.
+        let assignable: Vec<(String, String)> = people
             .iter()
             .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
-            .collect();
-        ui.horizontal(|ui| {
-            viz::multi_select(ui, "Nobody yet", &options, &mut draft.members);
-        });
-        ui.add_space(space::LG);
-
-        // Tasks can only be handed to people who are on the project, so this
-        // menu is the Assignees set above, not the whole company.
-        let assignable: Vec<(String, String)> = options
-            .iter()
-            .filter(|(id, _)| draft.members.contains(id))
-            .cloned()
             .collect();
         tasks_section(ui, draft, &assignable);
         ui.add_space(space::LG);
@@ -407,7 +362,6 @@ fn create_form(
                 submit = Some(serde_json::json!({
                     "name": draft.title.trim(),
                     "description": draft.description.trim(),
-                    "memberIds": draft.members,
                     "tasks": task_bodies(draft),
                 }));
             }

@@ -39,6 +39,8 @@ egui-notify = { version = "0.23.0", optional = true }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+image = "0.25.10"
 
 [features]
 # The desktop app's GUI stack is opt-in so the server binary's build stays lean.

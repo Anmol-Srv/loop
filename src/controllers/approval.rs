@@ -159,10 +159,6 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             Some(str_at("key")?),
             str_at("name")?,
             p.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            p.get("member_ids")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
             Vec::new(),
         )
         .await?
