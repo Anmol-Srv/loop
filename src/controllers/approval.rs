@@ -190,7 +190,6 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             str_at("title")?,
             str_at("body")?,
             i32_at("priority")?,
-            p.get("discipline").and_then(Value::as_str).map(str::to_string),
         )
         .await?
         {
@@ -201,9 +200,6 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             // Which key the patch carries says which controller made it.
             if p.get("status").is_some() {
                 task::set_status(state, actor, change.target_id, str_at("status")?).await?;
-            } else if p.get("discipline").is_some() {
-                let d = p.get("discipline").and_then(Value::as_str).map(str::to_string);
-                task::set_discipline(state, actor, change.target_id, d).await?;
             } else if let Some(blockers) = p.get("blocked_by").and_then(Value::as_array) {
                 let blockers = blockers
                     .iter()

@@ -1,9 +1,10 @@
-//! Disciplines, human claims, and blocker cycles.
+//! Departments, human claims, and blocker cycles.
 //!
-//! Three tests, each for a rule that would be expensive to get wrong: the
-//! availability rule (which decides what the whole team sees), the claim race
-//! (which decides who owns a piece of work), and the cycle guard (which, if it
-//! failed, would deadlock the board permanently).
+//! A task has no discipline of its own: it takes one from whoever holds it,
+//! so the first test is that the derived value follows the assignee and that
+//! filtering on it works. The other two are the claim race (who owns a piece
+//! of work) and the cycle guard (which, if it failed, would deadlock the
+//! board permanently).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -12,12 +13,12 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn person(pool: &PgPool, email: &str, disciplines: &[&str]) -> (String, Uuid) {
+async fn person(pool: &PgPool, email: &str, department: &str) -> (String, Uuid) {
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO person (email, name, disciplines) VALUES ($1, $1, $2) RETURNING id",
+        "INSERT INTO person (email, name, department) VALUES ($1, $1, $2) RETURNING id",
     )
     .bind(email)
-    .bind(disciplines.iter().map(|d| d.to_string()).collect::<Vec<_>>())
+    .bind(department)
     .fetch_one(pool)
     .await
     .unwrap();
@@ -44,14 +45,18 @@ async fn phase(pool: &PgPool) -> Uuid {
         .unwrap()
 }
 
-async fn task(pool: &PgPool, phase_id: Uuid, title: &str, discipline: Option<&str>) -> Uuid {
-    sqlx::query_scalar("INSERT INTO task (phase_id, title, discipline) VALUES ($1,$2,$3) RETURNING id")
-        .bind(phase_id)
-        .bind(title)
-        .bind(discipline)
-        .fetch_one(pool)
-        .await
-        .unwrap()
+async fn task(pool: &PgPool, phase_id: Uuid, title: &str, assignee: Option<Uuid>) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO task (phase_id, title, assignee_kind, assignee_person_id)
+         VALUES ($1, $2, CASE WHEN $3::uuid IS NULL THEN NULL ELSE 'human' END, $3)
+         RETURNING id",
+    )
+    .bind(phase_id)
+    .bind(title)
+    .bind(assignee)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 fn req(method: &str, uri: &str, token: &str, body: Option<serde_json::Value>) -> Request<Body> {
@@ -72,60 +77,67 @@ async fn json_of(response: axum::response::Response) -> serde_json::Value {
 }
 
 #[sqlx::test]
-async fn available_needs_my_discipline_no_assignee_and_finished_blockers(pool: PgPool) {
-    let (token, person_id) = person(&pool, "anmol@airtribe.live", &["backend"]).await;
+async fn a_tasks_discipline_is_its_assignees_department(pool: PgPool) {
+    let (token, backend) = person(&pool, "anmol@airtribe.live", "backend").await;
+    let (_, designer) = person(&pool, "evana@airtribe.live", "design").await;
     let phase_id = phase(&pool).await;
     let state = acp_server::db::AppState { db: pool.clone() };
 
-    let blocker = task(&pool, phase_id, "ship the migration", Some("backend")).await;
-    let blocked = task(&pool, phase_id, "use the new column", Some("backend")).await;
-    sqlx::query("UPDATE task SET blocked_by = ARRAY[$2::uuid] WHERE id = $1")
-        .bind(blocked).bind(blocker).execute(&pool).await.unwrap();
+    task(&pool, phase_id, "ship the migration", Some(backend)).await;
+    task(&pool, phase_id, "redraw the icons", Some(designer)).await;
+    task(&pool, phase_id, "nobody has this", None).await;
 
-    // Wrong discipline, and already assigned: neither should ever appear.
-    task(&pool, phase_id, "redraw the icons", Some("design")).await;
-    let taken = task(&pool, phase_id, "someone has this", Some("backend")).await;
-    sqlx::query("UPDATE task SET assignee_kind='human', assignee_person_id=$2 WHERE id = $1")
-        .bind(taken).bind(person_id).execute(&pool).await.unwrap();
-
-    let titles = |json: serde_json::Value| -> Vec<String> {
+    let rows = |json: serde_json::Value| -> Vec<(String, Option<String>)> {
         json["data"].as_array().unwrap().iter()
-            .map(|t| t["title"].as_str().unwrap().to_string())
+            .map(|t| {
+                (
+                    t["title"].as_str().unwrap().to_string(),
+                    t["discipline"].as_str().map(str::to_string),
+                )
+            })
             .collect()
     };
 
     let response = acp_server::app::app(state.clone())
-        .oneshot(req("GET", "/api/user/tasks/available", &token, None)).await.unwrap();
-    let before = titles(json_of(response).await);
-    assert_eq!(before, vec!["ship the migration"], "a task with an unfinished blocker is not available");
+        .oneshot(req("GET", "/api/user/tasks", &token, None)).await.unwrap();
+    let mut all = rows(json_of(response).await);
+    all.sort();
+    assert_eq!(
+        all,
+        vec![
+            ("nobody has this".to_string(), None),
+            ("redraw the icons".to_string(), Some("design".to_string())),
+            ("ship the migration".to_string(), Some("backend".to_string())),
+        ],
+        "the discipline is read off the assignee, and an unassigned task has none"
+    );
 
-    // Only the assignee moves a task, so the blocker has to be theirs before
-    // they can finish it. An unassigned task cannot be completed by anyone.
     let response = acp_server::app::app(state.clone())
-        .oneshot(req("PATCH", &format!("/api/user/tasks/{blocker}"), &token,
-            Some(serde_json::json!({ "status": "done" })))).await.unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN, "nobody owns it, so nobody can finish it");
+        .oneshot(req("GET", "/api/user/tasks?discipline=design", &token, None)).await.unwrap();
+    assert_eq!(
+        rows(json_of(response).await),
+        vec![("redraw the icons".to_string(), Some("design".to_string()))],
+        "filtering on discipline filters on the assignee's department"
+    );
 
-    sqlx::query("UPDATE task SET assignee_kind='human', assignee_person_id=$2 WHERE id = $1")
-        .bind(blocker).bind(person_id).execute(&pool).await.unwrap();
-    let response = acp_server::app::app(state.clone())
-        .oneshot(req("PATCH", &format!("/api/user/tasks/{blocker}"), &token,
-            Some(serde_json::json!({ "status": "done" })))).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
+    // Move the designer to backend and the task moves with them: that is the
+    // point of storing the department once, on the person.
+    sqlx::query("UPDATE person SET department = 'backend' WHERE id = $1")
+        .bind(designer).execute(&pool).await.unwrap();
     let response = acp_server::app::app(state)
-        .oneshot(req("GET", "/api/user/tasks/available", &token, None)).await.unwrap();
-    let after = titles(json_of(response).await);
-    assert_eq!(after, vec!["use the new column"],
-        "finishing the blocker releases the blocked task, and the finished one leaves the list");
+        .oneshot(req("GET", "/api/user/tasks?discipline=design", &token, None)).await.unwrap();
+    assert!(
+        rows(json_of(response).await).is_empty(),
+        "nothing is in design once its only designer moves to backend"
+    );
 }
 
 #[sqlx::test]
 async fn claiming_a_claimed_task_conflicts_and_leaves_the_owner_alone(pool: PgPool) {
-    let (mine, my_id) = person(&pool, "anmol@airtribe.live", &["backend"]).await;
-    let (theirs, _) = person(&pool, "raj@airtribe.live", &["backend"]).await;
+    let (mine, my_id) = person(&pool, "anmol@airtribe.live", "backend").await;
+    let (theirs, _) = person(&pool, "raj@airtribe.live", "backend").await;
     let phase_id = phase(&pool).await;
-    let task_id = task(&pool, phase_id, "wire auth", Some("backend")).await;
+    let task_id = task(&pool, phase_id, "wire auth", None).await;
     let state = acp_server::db::AppState { db: pool.clone() };
 
     let response = acp_server::app::app(state.clone())
@@ -147,10 +159,10 @@ async fn claiming_a_claimed_task_conflicts_and_leaves_the_owner_alone(pool: PgPo
 
 #[sqlx::test]
 async fn a_blocker_cycle_is_refused(pool: PgPool) {
-    let (token, _) = person(&pool, "anmol@airtribe.live", &["backend"]).await;
+    let (token, _) = person(&pool, "anmol@airtribe.live", "backend").await;
     let phase_id = phase(&pool).await;
-    let a = task(&pool, phase_id, "A", Some("backend")).await;
-    let b = task(&pool, phase_id, "B", Some("backend")).await;
+    let a = task(&pool, phase_id, "A", None).await;
+    let b = task(&pool, phase_id, "B", None).await;
     let state = acp_server::db::AppState { db: pool.clone() };
 
     // B waits on A.

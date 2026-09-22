@@ -82,7 +82,6 @@ pub fn all() -> Vec<ToolDef> {
                     "title": { "type": "string" },
                     "body": { "type": "string" },
                     "priority": { "type": "integer", "minimum": 0, "maximum": 4, "default": 2 },
-                    "discipline": { "type": "string", "enum": crate::models::task::DISCIPLINES },
                 }),
                 &["phaseId", "title"],
             ),

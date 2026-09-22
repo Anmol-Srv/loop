@@ -5,7 +5,7 @@ use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::task::{
-    task_row_select, Task, TaskFilter, TaskRow, DISCIPLINES, TASK_COLUMNS, TASK_STATUSES,
+    task_row_select, Task, TaskFilter, TaskRow, TASK_COLUMNS, TASK_STATUSES,
 };
 
 pub enum Assignee {
@@ -21,7 +21,6 @@ pub async fn create(
     title: String,
     body: String,
     priority: i32,
-    discipline: Option<String>,
 ) -> AppResult<Outcome<Task>> {
     if title.trim().is_empty() {
         return Err(AppError::BadRequest("title is required".into()));
@@ -29,12 +28,11 @@ pub async fn create(
     if !(0..=4).contains(&priority) {
         return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
     }
-    check_discipline(discipline.as_deref())?;
 
     let id = Uuid::new_v4();
     let patch = json!({
         "phase_id": phase_id, "title": title, "body": body,
-        "priority": priority, "discipline": discipline
+        "priority": priority
     });
 
     if !actor.can_apply {
@@ -45,8 +43,8 @@ pub async fn create(
     let mut tx = state.db.begin().await?;
 
     let task: Task = sqlx::query_as(&format!(
-        "INSERT INTO task (id, phase_id, title, body, priority, discipline)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO task (id, phase_id, title, body, priority)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING {TASK_COLUMNS}"
     ))
     .bind(id)
@@ -54,7 +52,6 @@ pub async fn create(
     .bind(&title)
     .bind(&body)
     .bind(priority)
-    .bind(&discipline)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -249,7 +246,7 @@ pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>
                AND ($3::text IS NULL OR t.status = $3)
                AND ($4::text IS NULL OR own.email = $4)
                AND ($5::text IS NULL OR t.assignee_kind = $5)
-               AND ($6::text IS NULL OR t.discipline = $6)
+               AND ($6::text IS NULL OR own.department = $6)
            ORDER BY t.priority, t.updated_at DESC",
         task_row_select()
     ))
@@ -258,7 +255,7 @@ pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>
     .bind(filter.status)
     .bind(filter.assignee_email)
     .bind(filter.assignee_kind)
-    .bind(filter.discipline)
+    .bind(filter.department)
     .fetch_all(&state.db)
     .await?)
 }
@@ -273,28 +270,6 @@ pub async fn mine(state: &AppState, person_id: Uuid) -> AppResult<Vec<TaskRow>> 
     .await?)
 }
 
-/// Work this person could pick up right now: a discipline they hold, nobody
-/// assigned, and every blocker done. Derived, never stored — a cached flag
-/// would go stale the moment a blocker closed.
-///
-/// Finished and dropped work is excluded on top of those three rules. A `done`
-/// task with no assignee satisfies all three and is still not work anyone can
-/// pick up; leaving it in made the list read as a lie.
-pub async fn available(state: &AppState, person_id: Uuid) -> AppResult<Vec<TaskRow>> {
-    Ok(sqlx::query_as(&format!(
-        "{} WHERE t.status NOT IN ('done', 'dropped')
-             AND t.assignee_kind IS NULL
-             AND t.discipline IN (SELECT unnest(p.disciplines) FROM person p WHERE p.id = $1)
-             AND NOT EXISTS (
-                   SELECT 1 FROM task b
-                    WHERE b.id = ANY(t.blocked_by) AND b.status <> 'done')
-           ORDER BY t.priority, t.created_at",
-        task_row_select()
-    ))
-    .bind(person_id)
-    .fetch_all(&state.db)
-    .await?)
-}
 
 /// A person taking ownership of unclaimed work.
 ///
@@ -445,52 +420,6 @@ pub async fn set_blockers(
     Ok(Outcome::Applied { entity: task })
 }
 
-fn check_discipline(discipline: Option<&str>) -> AppResult<()> {
-    match discipline {
-        Some(d) if !DISCIPLINES.contains(&d) => Err(AppError::BadRequest(format!(
-            "unknown discipline '{d}'; expected one of {}",
-            DISCIPLINES.join(", ")
-        ))),
-        _ => Ok(()),
-    }
-}
-
-/// Label a task with a discipline, or `None` to unlabel it. Unlabelled is a
-/// real answer — a chore that belongs to nobody's craft should not show up in
-/// anybody's available list.
-pub async fn set_discipline(
-    state: &AppState,
-    actor: &Actor,
-    id: Uuid,
-    discipline: Option<String>,
-) -> AppResult<Outcome<Task>> {
-    check_discipline(discipline.as_deref())?;
-
-    let patch = json!({ "discipline": discipline });
-
-    if !actor.can_apply {
-        exists(state, id).await?;
-        let change_id = propose(&state.db, actor, TargetType::Task, id, Op::Update, patch).await?;
-        return Ok(Outcome::Proposed { change_id });
-    }
-
-    let mut tx = state.db.begin().await?;
-
-    let task: Task = sqlx::query_as(&format!(
-        "UPDATE task SET discipline = $2, updated_at = now()
-          WHERE id = $1 RETURNING {TASK_COLUMNS}"
-    ))
-    .bind(id)
-    .bind(&discipline)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
-
-    record(&mut tx, actor, TargetType::Task, task.id, Op::Update, patch).await?;
-
-    tx.commit().await?;
-    Ok(Outcome::Applied { entity: task })
-}
 
 async fn exists(state: &AppState, id: Uuid) -> AppResult<()> {
     sqlx::query_scalar::<_, i32>("SELECT 1 FROM task WHERE id = $1")

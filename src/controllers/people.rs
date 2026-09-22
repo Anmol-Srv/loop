@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
-use crate::models::task::DISCIPLINES;
+use crate::models::task::DEPARTMENTS;
 use crate::models::{password, setup_code};
 
 const DOMAIN: &str = "@airtribe.live";
@@ -49,10 +49,12 @@ pub struct PersonRow {
     pub email: String,
     pub name: String,
     pub role: String,
-    pub disciplines: Vec<String>,
+    /// The one department this person belongs to. A task they hold takes its
+    /// discipline from here.
+    pub department: String,
 }
 
-const PERSON_ROW_COLUMNS: &str = "id, email, name, role, disciplines";
+const PERSON_ROW_COLUMNS: &str = "id, email, name, role, department";
 
 /// The team, for assignment pickers and avatars.
 pub async fn list(state: &AppState) -> AppResult<Vec<PersonRow>> {
@@ -63,29 +65,30 @@ pub async fn list(state: &AppState) -> AppResult<Vec<PersonRow>> {
     .await?)
 }
 
-/// Set your own disciplines. No `change` row: `change.target_type` covers the
-/// board (project, phase, task, artifact) and a person is not on the board —
-/// this is a profile setting, like a display name.
-pub async fn set_disciplines(
+/// Move a person to another department. No `change` row: `change.target_type`
+/// covers the board (project, phase, task, artifact) and a person is not on
+/// the board — this is a profile setting, like a display name.
+///
+/// It does move every task they hold into that department, because a task's
+/// discipline is read off its assignee. That is the point of storing it once.
+pub async fn set_department(
     state: &AppState,
     person_id: Uuid,
-    disciplines: Vec<String>,
+    department: String,
 ) -> AppResult<PersonRow> {
-    for d in &disciplines {
-        if !DISCIPLINES.contains(&d.as_str()) {
-            return Err(AppError::BadRequest(format!(
-                "unknown discipline '{d}'; expected one of {}",
-                DISCIPLINES.join(", ")
-            )));
-        }
+    if !DEPARTMENTS.contains(&department.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "unknown department '{department}'; expected one of {}",
+            DEPARTMENTS.join(", ")
+        )));
     }
 
     sqlx::query_as(&format!(
-        "UPDATE person SET disciplines = $2, updated_at = now()
+        "UPDATE person SET department = $2, updated_at = now()
           WHERE id = $1 AND deleted_at IS NULL RETURNING {PERSON_ROW_COLUMNS}"
     ))
     .bind(person_id)
-    .bind(&disciplines)
+    .bind(&department)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("person not found".into()))

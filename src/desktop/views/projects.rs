@@ -78,19 +78,15 @@ const TASK_TITLE_MIN_W: f32 = 160.0;
 /// Priority, as the server stores it and as a person reads it. The value is a
 /// string because that is what `viz::select` slots hold; it becomes an int on
 /// submit.
-const PRIORITIES: [(&str, &str); 5] = [
+pub(super) const PRIORITIES: [(&str, &str); 5] = [
     ("0", "P0 Urgent"),
     ("1", "P1 High"),
     ("2", "P2 Normal"),
     ("3", "P3 Low"),
     ("4", "P4 Someday"),
 ];
-/// The disciplines a first task can be filed under. Same three the flow strip
-/// orders by; anything else is a discipline the board invented later.
-const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
-/// What a new draft task defaults to: normal, not urgent. A form that defaults
-/// to P0 produces a board where everything is P0.
-const DEFAULT_PRIORITY: &str = "2";
+/// The middle of the scale, where a new row starts.
+pub(super) const DEFAULT_PRIORITY: &str = "2";
 
 /// What the create form holds. `None` on `State::creating` means the form is
 /// closed, which is also how the Create project button knows not to redraw
@@ -109,7 +105,6 @@ pub struct Draft {
 pub struct DraftTask {
     pub title: String,
     pub assignee: Option<String>,
-    pub discipline: Option<String>,
     pub priority: Option<String>,
 }
 
@@ -118,7 +113,6 @@ impl Default for DraftTask {
         Self {
             title: String::new(),
             assignee: None,
-            discipline: None,
             priority: Some(DEFAULT_PRIORITY.to_owned()),
         }
     }
@@ -298,6 +292,18 @@ fn project_row(
     row.col(|ui| table::muted_cell(ui, &COLS[5], &age(p)));
 }
 
+/// A person as the assignee menu shows them: name and department, because
+/// picking the person is what sets the task's discipline.
+pub(super) fn person_option(p: &Value) -> (String, String) {
+    let department = str_at(p, "department");
+    let label = if department.is_empty() {
+        str_at(p, "name").to_string()
+    } else {
+        format!("{} \u{00B7} {department}", str_at(p, "name"))
+    };
+    (str_at(p, "id").to_string(), label)
+}
+
 /// How old the project is, in the two characters a table column has room for.
 /// `board::age` reads `updatedAt`; a project's interesting date is when it was
 /// started, so the field differs and the wording is shorter.
@@ -347,10 +353,7 @@ fn create_form(
 
         // A task goes to anyone here. The project has no roster of its own:
         // the people on it are the people holding its tasks.
-        let assignable: Vec<(String, String)> = people
-            .iter()
-            .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
-            .collect();
+        let assignable: Vec<(String, String)> = people.iter().map(person_option).collect();
         tasks_section(ui, draft, &assignable);
         ui.add_space(space::LG);
 
@@ -385,11 +388,13 @@ fn create_form(
 fn tasks_section(ui: &mut egui::Ui, draft: &mut Draft, assignable: &[(String, String)]) {
     w::heading(ui, "Tasks");
     ui.add_space(space::XS);
-    w::caption(ui, "Handed out with the project. Rows left blank are dropped.");
+    w::caption(
+        ui,
+        "Handed out with the project. A task takes its discipline from whoever \
+         holds it, so picking the person is picking the department.",
+    );
     ui.add_space(space::MD);
 
-    let disciplines: Vec<(String, String)> =
-        DISCIPLINES.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
     let priorities: Vec<(String, String)> =
         PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
 
@@ -400,7 +405,6 @@ fn tasks_section(ui: &mut egui::Ui, draft: &mut Draft, assignable: &[(String, St
             let width = (ui.available_width() - TASK_CONTROLS_W).max(TASK_TITLE_MIN_W);
             task_title(ui, width, &mut task.title);
             viz::select(ui, "Unassigned", assignable, &mut task.assignee);
-            viz::select(ui, "Any discipline", &disciplines, &mut task.discipline);
             viz::select(ui, "P2 Normal", &priorities, &mut task.priority);
             if w::ghost(ui, "Remove").clicked() {
                 remove = Some(i);
@@ -449,7 +453,6 @@ fn task_bodies(draft: &Draft) -> Vec<Value> {
                 "title": t.title.trim(),
                 "body": "",
                 "assigneeId": t.assignee,
-                "discipline": t.discipline,
                 "priority": t
                     .priority
                     .as_deref()

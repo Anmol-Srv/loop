@@ -126,7 +126,7 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
         }
         "task_search" => {
             let filter = TaskFilter {
-                discipline: args.get("discipline").and_then(|v| v.as_str()).map(str::to_string),
+                department: args.get("discipline").and_then(|v| v.as_str()).map(str::to_string),
                 project_id: opt_uuid_arg(&args, "projectId")?,
                 phase_id: opt_uuid_arg(&args, "phaseId")?,
                 status: opt_str_arg(&args, "status"),
@@ -158,7 +158,6 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
                 str_arg(&args, "title")?,
                 opt_str_arg(&args, "body").unwrap_or_default(),
                 args.get("priority").and_then(Value::as_i64).unwrap_or(2) as i32,
-                opt_str_arg(&args, "discipline"),
             )
             .await?,
         ),

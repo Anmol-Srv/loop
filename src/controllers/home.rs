@@ -14,17 +14,6 @@ use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::models::task::TaskRow;
 
-/// How many of the available tasks the home screen previews. The count is the
-/// whole list, so "3 of 27" renders without a second request.
-const PREVIEW: usize = 5;
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvailableSummary {
-    pub count: usize,
-    pub first: Vec<TaskRow>,
-}
-
 /// One person's live load.
 ///
 /// `blocking` is the interesting number: how many of their unfinished tasks
@@ -37,7 +26,7 @@ pub struct Capacity {
     pub person_id: Uuid,
     pub email: String,
     pub name: String,
-    pub disciplines: Vec<String>,
+    pub department: String,
     pub open: i64,
     pub review: i64,
     pub blocking: i64,
@@ -48,7 +37,6 @@ pub struct Capacity {
 pub struct Home {
     pub my_tasks: Vec<TaskRow>,
     pub waiting_on_me: Vec<ChangeRow>,
-    pub available: AvailableSummary,
     pub projects: Vec<ProjectProgress>,
     pub team: Vec<Capacity>,
 }
@@ -65,7 +53,7 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
         "SELECT p.id  AS person_id,
                 p.email,
                 p.name,
-                p.disciplines,
+                p.department,
                 count(t.id) FILTER (
                   WHERE t.status IN ('open', 'in_progress')
                 ) AS open,
@@ -82,7 +70,7 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
            LEFT JOIN task t
              ON t.assignee_person_id = p.id
           WHERE p.deleted_at IS NULL
-          GROUP BY p.id, p.email, p.name, p.disciplines
+          GROUP BY p.id, p.email, p.name, p.department
           ORDER BY open DESC, p.name",
     )
     .fetch_all(&state.db)
@@ -94,17 +82,12 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
 pub async fn home(state: &AppState, person_id: Uuid) -> AppResult<Home> {
     let my_tasks = task::mine(state, person_id).await?;
     let waiting_on_me = approval::pending_for(state, person_id).await?;
-    let mut available = task::available(state, person_id).await?;
     let projects = project::progress(state, None).await?;
     let team = team_capacity(state).await?;
-
-    let count = available.len();
-    available.truncate(PREVIEW);
 
     Ok(Home {
         my_tasks,
         waiting_on_me,
-        available: AvailableSummary { count, first: available },
         projects,
         team,
     })

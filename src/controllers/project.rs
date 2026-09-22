@@ -5,7 +5,7 @@ use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::project::Project;
-use crate::models::task::{Task, DISCIPLINES, TASK_COLUMNS};
+use crate::models::task::{Task, TASK_COLUMNS};
 
 /// A task as the create form describes it: enough to hand someone work.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -16,8 +16,6 @@ pub struct NewTask {
     pub body: String,
     #[serde(default)]
     pub assignee_id: Option<Uuid>,
-    #[serde(default)]
-    pub discipline: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: i32,
 }
@@ -206,14 +204,6 @@ fn check_task(t: &NewTask) -> AppResult<()> {
     if !(0..=4).contains(&t.priority) {
         return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
     }
-    if let Some(d) = t.discipline.as_deref() {
-        if !DISCIPLINES.contains(&d) {
-            return Err(AppError::BadRequest(format!(
-                "unknown discipline '{d}'; expected one of {}",
-                DISCIPLINES.join(", ")
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -228,17 +218,16 @@ async fn insert_task(
     t: &NewTask,
 ) -> AppResult<Task> {
     let task: Task = sqlx::query_as(&format!(
-        "INSERT INTO task (phase_id, title, body, priority, discipline,
+        "INSERT INTO task (phase_id, title, body, priority,
                            assignee_kind, assignee_person_id)
-         VALUES ($1, $2, $3, $4, $5,
-                 CASE WHEN $6::uuid IS NULL THEN NULL ELSE 'human' END, $6)
+         VALUES ($1, $2, $3, $4,
+                 CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END, $5)
          RETURNING {TASK_COLUMNS}"
     ))
     .bind(phase_id)
     .bind(t.title.trim())
     .bind(t.body.trim())
     .bind(t.priority)
-    .bind(&t.discipline)
     .bind(t.assignee_id)
     .fetch_one(&mut **tx)
     .await
@@ -296,8 +285,8 @@ pub struct ProjectProgress {
     pub status: String,
     pub done: i64,
     pub total: i64,
-    /// Only disciplines that actually have tasks. Unlabelled tasks count
-    /// towards the project total but belong to no discipline.
+    /// Only departments that actually hold tasks here. An unassigned task
+    /// counts towards the project total but belongs to no discipline yet.
     pub disciplines: Vec<DisciplineProgress>,
     /// The phase currently being worked, for a one-line "where is this".
     /// None when no phase is active.
@@ -327,14 +316,15 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     .await?;
 
     let rows: Vec<(Uuid, String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
-        "SELECT pr.id, pr.key, pr.name, pr.status, t.discipline,
+        "SELECT pr.id, pr.key, pr.name, pr.status, own.department AS discipline,
                 count(t.id) AS total,
                 count(*) FILTER (WHERE t.status = 'done') AS done
            FROM project pr
            LEFT JOIN phase ph ON ph.project_id = pr.id
            LEFT JOIN task t ON t.phase_id = ph.id
+           LEFT JOIN person own ON own.id = t.assignee_person_id
           WHERE ($1::uuid IS NULL OR pr.id = $1)
-          GROUP BY pr.id, pr.key, pr.name, pr.status, t.discipline
+          GROUP BY pr.id, pr.key, pr.name, pr.status, own.department
           ORDER BY pr.name, pr.id",
     )
     .bind(only)

@@ -17,13 +17,14 @@
 //! every project has one default phase and nobody here chooses it, so the
 //! headings were dividing the list by a fact with one value.
 
-use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::Value;
 
-use super::projects::{AVATAR_OVERLAP, MAX_AVATARS, PEOPLE_KEY, PROSE_W};
+use super::projects::{
+    AVATAR_OVERLAP, DEFAULT_PRIORITY, MAX_AVATARS, PEOPLE_KEY, PRIORITIES, PROSE_W,
+};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::tokens::discipline_colour;
 use crate::desktop::design::{
@@ -66,30 +67,12 @@ const COLS: [Col; 6] = [
     Col::right("Created", COL_CREATED),
 ];
 
-/// The disciplines a task can be filed under. Same three the flow strip
-/// orders by.
-const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
-/// Priority, as the server stores it and as a person reads it. The value is a
-/// string because that is what `viz::select` slots hold; it becomes an int on
-/// submit.
-const PRIORITIES: [(&str, &str); 5] = [
-    ("0", "P0 Urgent"),
-    ("1", "P1 High"),
-    ("2", "P2 Normal"),
-    ("3", "P3 Low"),
-    ("4", "P4 Someday"),
-];
-/// What a new task defaults to: normal, not urgent. A form that defaults to P0
-/// produces a board where everything is P0.
-const DEFAULT_PRIORITY: &str = "2";
-
 /// The open Add task form. Every optional field is an `Option<String>` because
 /// that is the shape `viz::select` writes into.
 pub struct TaskDraft {
     pub title: String,
     pub body: String,
     pub assignee: Option<String>,
-    pub discipline: Option<String>,
     pub priority: Option<String>,
 }
 
@@ -99,7 +82,6 @@ impl Default for TaskDraft {
             title: String::new(),
             body: String::new(),
             assignee: None,
-            discipline: None,
             priority: Some(DEFAULT_PRIORITY.to_owned()),
         }
     }
@@ -146,15 +128,11 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     net.get_once(&detail_key, &format!("/api/user/projects/{project_id}"));
     net.get_once(&flow_key, &format!("/api/user/projects/{project_id}/flow"));
     net.get_once(&tasks_key, &tasks_path);
-    // The roster is ids; the meta line and the assignee picker want faces and
-    // names. Same key the list screen fills, so arriving from it costs nothing.
+    // The assignee picker wants names and departments. Same key the list
+    // screen fills, so arriving from it costs nothing.
     net.get_once(PEOPLE_KEY, "/api/user/people");
 
     let detail = net.data(&detail_key).cloned();
-    let names: HashMap<String, String> = array(net.data(PEOPLE_KEY))
-        .iter()
-        .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
-        .collect();
 
     let flow = net.data(&flow_key).cloned();
     let flow_error = net.error(&flow_key).map(str::to_string);
@@ -252,8 +230,10 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 
     // Anyone here can be handed a task; the project has no roster of its own.
+    // The menu shows each person's department, since that is what the task's
+    // discipline will become.
     let mut members: Vec<(String, String)> =
-        names.iter().map(|(id, n)| (id.clone(), n.clone())).collect();
+        array(net.data(PEOPLE_KEY)).iter().map(super::projects::person_option).collect();
     members.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut submit: Option<Value> = None;
@@ -576,14 +556,11 @@ fn add_form(
         w::field_multiline(ui, "Description", &mut draft.body, 2, "Any detail worth having.");
         ui.add_space(space::MD);
 
-        let disciplines: Vec<(String, String)> =
-            DISCIPLINES.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
         let priorities: Vec<(String, String)> =
             PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             viz::select(ui, "Unassigned", members, &mut draft.assignee);
-            viz::select(ui, "Any discipline", &disciplines, &mut draft.discipline);
             viz::select(ui, "P2 Normal", &priorities, &mut draft.priority);
         });
         ui.add_space(space::LG);
@@ -596,7 +573,6 @@ fn add_form(
                     "title": draft.title.trim(),
                     "body": draft.body.trim(),
                     "assigneeId": draft.assignee,
-                    "discipline": draft.discipline,
                     "priority": draft
                         .priority
                         .as_deref()

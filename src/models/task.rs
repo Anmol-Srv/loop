@@ -5,7 +5,9 @@ use uuid::Uuid;
 pub const TASK_STATUSES: [&str; 6] =
     ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
 
-pub const DISCIPLINES: [&str; 3] = ["design", "frontend", "backend"];
+/// The departments a person can belong to. A task's discipline is whoever
+/// holds it, so this is the only place the vocabulary is written down.
+pub const DEPARTMENTS: [&str; 3] = ["design", "frontend", "backend"];
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +23,6 @@ pub struct Task {
     pub assignee_token_id: Option<Uuid>,
     pub claimed_by: Option<String>,
     pub claim_expires_at: Option<DateTime<Utc>>,
-    pub discipline: Option<String>,
     pub blocked_by: Vec<Uuid>,
     pub done_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -44,13 +45,16 @@ pub struct TaskRow {
     /// look an id up to say who.
     pub assignee_name: Option<String>,
     pub assignee_email: Option<String>,
+    /// The assignee's department. `None` when nobody holds the task — an
+    /// unassigned task belongs to no discipline yet, which is the truth.
+    pub discipline: Option<String>,
     pub blockers_total: i64,
     pub blockers_done: i64,
 }
 
 #[derive(Debug, Default)]
 pub struct TaskFilter {
-    pub discipline: Option<String>,
+    pub department: Option<String>,
     pub project_id: Option<Uuid>,
     pub phase_id: Option<Uuid>,
     pub status: Option<String>,
@@ -60,7 +64,7 @@ pub struct TaskFilter {
 
 pub const TASK_COLUMNS: &str = "id, phase_id, title, body, status, priority, \
     assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
-    claim_expires_at, discipline, blocked_by, done_at, created_at, updated_at";
+    claim_expires_at, blocked_by, done_at, created_at, updated_at";
 
 /// The `SELECT ... FROM` for a `TaskRow`, ending before any `WHERE`.
 ///
@@ -73,6 +77,7 @@ pub fn task_row_select() -> String {
         "SELECT t.{cols},
                 ph.project_id, pr.name AS project_name, ph.name AS phase_name,
                 own.name AS assignee_name, own.email AS assignee_email,
+                own.department AS discipline,
                 (SELECT count(*) FROM task b WHERE b.id = ANY(t.blocked_by)) AS blockers_total,
                 (SELECT count(*) FROM task b
                   WHERE b.id = ANY(t.blocked_by) AND b.status = 'done') AS blockers_done

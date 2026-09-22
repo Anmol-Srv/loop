@@ -25,8 +25,6 @@ pub struct CreateTaskBody {
     pub body: String,
     #[serde(default = "default_priority")]
     pub priority: i32,
-    #[serde(default)]
-    pub discipline: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -44,13 +42,6 @@ pub struct AssignBody {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DisciplineBody {
-    /// `null` clears the label.
-    pub discipline: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct BlockersBody {
     pub blocked_by: Vec<Uuid>,
 }
@@ -58,7 +49,11 @@ pub struct BlockersBody {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskQuery {
-    pub discipline: Option<String>,
+    /// Filters on the assignee's department, since that is what a task's
+    /// discipline now is. The param keeps its old name: callers ask for a
+    /// discipline and that is still what they get back.
+    #[serde(alias = "discipline")]
+    pub department: Option<String>,
     pub project_id: Option<Uuid>,
     pub phase_id: Option<Uuid>,
     pub status: Option<String>,
@@ -73,13 +68,11 @@ pub fn routes() -> Router<AppState> {
         // The two literal paths are declared before `{id}` for a human reader;
         // the router prefers a static segment over a parameter regardless.
         .route("/api/user/tasks/mine", get(mine))
-        .route("/api/user/tasks/available", get(available))
         .route("/api/user/tasks/{id}", get(one).patch(update))
         .route("/api/user/tasks/{id}/assign", post(assign))
         .route("/api/user/tasks/{id}/claim", post(claim))
         .route("/api/user/tasks/{id}/release", post(release))
         .route("/api/user/tasks/{id}/blockers", patch(blockers))
-        .route("/api/user/tasks/{id}/discipline", patch(discipline))
 }
 
 async fn create(
@@ -90,7 +83,7 @@ async fn create(
 ) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
     let task = controllers::task::create(
-        &state, &caller.actor, phase_id, body.title, body.body, body.priority, body.discipline,
+        &state, &caller.actor, phase_id, body.title, body.body, body.priority,
     )
     .await?;
     Ok(ApiResponse::ok(task))
@@ -103,7 +96,7 @@ async fn search(
 ) -> AppResult<ApiResponse<Vec<TaskRow>>> {
     caller.require("read")?;
     let filter = TaskFilter {
-        discipline: q.discipline,
+        department: q.department,
         project_id: q.project_id,
         phase_id: q.phase_id,
         status: q.status,
@@ -160,13 +153,6 @@ async fn mine(
     Ok(ApiResponse::ok(controllers::task::mine(&state, caller.person_id()?).await?))
 }
 
-async fn available(
-    State(state): State<AppState>,
-    caller: Caller,
-) -> AppResult<ApiResponse<Vec<TaskRow>>> {
-    caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::task::available(&state, caller.person_id()?).await?))
-}
 
 async fn claim(
     State(state): State<AppState>,
@@ -200,14 +186,3 @@ async fn blockers(
     ))
 }
 
-async fn discipline(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    caller: Caller,
-    Json(body): Json<DisciplineBody>,
-) -> AppResult<ApiResponse<Outcome<Task>>> {
-    caller.can_mutate()?;
-    Ok(ApiResponse::ok(
-        controllers::task::set_discipline(&state, &caller.actor, id, body.discipline).await?,
-    ))
-}

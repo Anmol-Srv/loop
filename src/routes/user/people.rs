@@ -12,14 +12,14 @@ use crate::response::ApiResponse;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DisciplinesBody {
-    pub disciplines: Vec<String>,
+pub struct DepartmentBody {
+    pub department: String,
 }
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/people", get(list))
-        .route("/api/user/people/me", patch(set_disciplines))
+        .route("/api/user/people/me", patch(set_department))
 }
 
 async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<PersonRow>>> {
@@ -29,14 +29,14 @@ async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRes
 
 /// `read` is the right scope here: the only row you can touch is your own, and
 /// choosing what you work on is not an edit to the board.
-async fn set_disciplines(
+async fn set_department(
     State(state): State<AppState>,
     caller: Caller,
-    Json(body): Json<DisciplinesBody>,
+    Json(body): Json<DepartmentBody>,
 ) -> AppResult<ApiResponse<PersonRow>> {
     caller.require("read")?;
     let person_id = caller.person_id()?;
     Ok(ApiResponse::ok(
-        controllers::people::set_disciplines(&state, person_id, body.disciplines).await?,
+        controllers::people::set_department(&state, person_id, body.department).await?,
     ))
 }
