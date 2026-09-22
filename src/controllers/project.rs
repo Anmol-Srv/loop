@@ -5,6 +5,32 @@ use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::project::Project;
+use crate::models::task::{Task, DISCIPLINES, TASK_COLUMNS};
+
+/// A task as the create form describes it: enough to hand someone work.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewTask {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub assignee_id: Option<Uuid>,
+    #[serde(default)]
+    pub discipline: Option<String>,
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+}
+
+fn default_priority() -> i32 {
+    2
+}
+
+/// The phase every project is born with. Phases are how the schema groups
+/// tasks and how the MCP surface reasons about a project's shape, but the
+/// owner's flow is project → tasks with no phase in between, so one is made
+/// on the project's behalf and the app never has to mention it.
+pub const DEFAULT_PHASE: &str = "Work";
 
 /// Turn a project name into a key: lowercase, words joined by hyphens.
 ///
@@ -55,9 +81,13 @@ pub async fn create(
     name: String,
     description: String,
     member_ids: Vec<Uuid>,
+    tasks: Vec<NewTask>,
 ) -> AppResult<Outcome<Project>> {
     if name.trim().is_empty() {
         return Err(AppError::BadRequest("a name is required".into()));
+    }
+    for t in &tasks {
+        check_task(t)?;
     }
 
     // A caller that names its own key means it (the CLI, a replayed proposal);
@@ -80,6 +110,7 @@ pub async fn create(
         "name": name,
         "description": description,
         "member_ids": member_ids,
+        "tasks": tasks,
     });
 
     if !actor.can_apply {
@@ -127,9 +158,119 @@ pub async fn create(
 
     record(&mut tx, actor, TargetType::Project, project.id, Op::Create, patch).await?;
 
+    // The default phase and the form's tasks, in the same transaction: a
+    // project that exists with half its tasks is not what anyone submitted.
+    let phase_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO phase (project_id, position, name, status) VALUES ($1, 0, $2, 'active')
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(DEFAULT_PHASE)
+    .fetch_one(&mut *tx)
+    .await?;
+    for t in &tasks {
+        insert_task(&mut tx, actor, phase_id, t).await?;
+    }
+
     tx.commit().await?;
 
     Ok(Outcome::Applied { entity: project })
+}
+
+/// Add one task to a project after the fact, into its default phase.
+///
+/// Projects made before phases were hidden may have several; the first by
+/// position is the one that means "the work", and a project with none gets
+/// one here rather than failing.
+pub async fn add_task(
+    state: &AppState,
+    actor: &Actor,
+    project_id: Uuid,
+    task: NewTask,
+) -> AppResult<Task> {
+    check_task(&task)?;
+    let mut tx = state.db.begin().await?;
+
+    let phase_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM phase WHERE project_id = $1 ORDER BY position LIMIT 1",
+    )
+    .bind(project_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let phase_id = match phase_id {
+        Some(id) => id,
+        None => sqlx::query_scalar(
+            "INSERT INTO phase (project_id, position, name, status)
+             VALUES ($1, 0, $2, 'active') RETURNING id",
+        )
+        .bind(project_id)
+        .bind(DEFAULT_PHASE)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+                AppError::NotFound("project not found".into())
+            }
+            _ => AppError::Database(e),
+        })?,
+    };
+
+    let created = insert_task(&mut tx, actor, phase_id, &task).await?;
+    tx.commit().await?;
+    Ok(created)
+}
+
+fn check_task(t: &NewTask) -> AppResult<()> {
+    if t.title.trim().is_empty() {
+        return Err(AppError::BadRequest("every task needs a title".into()));
+    }
+    if !(0..=4).contains(&t.priority) {
+        return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+    }
+    if let Some(d) = t.discipline.as_deref() {
+        if !DISCIPLINES.contains(&d) {
+            return Err(AppError::BadRequest(format!(
+                "unknown discipline '{d}'; expected one of {}",
+                DISCIPLINES.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// One task row plus its change record, inside the caller's transaction.
+/// Assignment happens here too — the form assigns as it creates, and going
+/// through `task::assign` afterwards would mean a second transaction and a
+/// second audit row for what the user did once.
+async fn insert_task(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor: &Actor,
+    phase_id: Uuid,
+    t: &NewTask,
+) -> AppResult<Task> {
+    let task: Task = sqlx::query_as(&format!(
+        "INSERT INTO task (phase_id, title, body, priority, discipline,
+                           assignee_kind, assignee_person_id)
+         VALUES ($1, $2, $3, $4, $5,
+                 CASE WHEN $6::uuid IS NULL THEN NULL ELSE 'human' END, $6)
+         RETURNING {TASK_COLUMNS}"
+    ))
+    .bind(phase_id)
+    .bind(t.title.trim())
+    .bind(t.body.trim())
+    .bind(t.priority)
+    .bind(&t.discipline)
+    .bind(t.assignee_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+            AppError::BadRequest("the assignee is not a person here".into())
+        }
+        _ => AppError::Database(e),
+    })?;
+    record(tx, actor, TargetType::Task, task.id, Op::Create, json!(t)).await?;
+    Ok(task)
 }
 
 pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {

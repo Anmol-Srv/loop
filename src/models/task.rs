@@ -23,6 +23,7 @@ pub struct Task {
     pub claim_expires_at: Option<DateTime<Utc>>,
     pub discipline: Option<String>,
     pub blocked_by: Vec<Uuid>,
+    pub done_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -39,6 +40,10 @@ pub struct TaskRow {
     pub project_id: Uuid,
     pub project_name: String,
     pub phase_name: String,
+    /// The person holding it, by name and address, so a row never has to
+    /// look an id up to say who.
+    pub assignee_name: Option<String>,
+    pub assignee_email: Option<String>,
     pub blockers_total: i64,
     pub blockers_done: i64,
 }
@@ -55,7 +60,7 @@ pub struct TaskFilter {
 
 pub const TASK_COLUMNS: &str = "id, phase_id, title, body, status, priority, \
     assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
-    claim_expires_at, discipline, blocked_by, created_at, updated_at";
+    claim_expires_at, discipline, blocked_by, done_at, created_at, updated_at";
 
 /// The `SELECT ... FROM` for a `TaskRow`, ending before any `WHERE`.
 ///
@@ -67,6 +72,7 @@ pub fn task_row_select() -> String {
     format!(
         "SELECT t.{cols},
                 ph.project_id, pr.name AS project_name, ph.name AS phase_name,
+                own.name AS assignee_name, own.email AS assignee_email,
                 (SELECT count(*) FROM task b WHERE b.id = ANY(t.blocked_by)) AS blockers_total,
                 (SELECT count(*) FROM task b
                   WHERE b.id = ANY(t.blocked_by) AND b.status = 'done') AS blockers_done

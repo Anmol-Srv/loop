@@ -117,10 +117,33 @@ pub async fn set_status(
         return Ok(Outcome::Proposed { change_id });
     }
 
+    // A task is moved by the person it is assigned to. Everyone else can see
+    // it; an admin can override, which is what an admin is for. Checked here,
+    // not in the route, so the CLI and a replayed proposal obey the same rule.
+    let (assignee, admin): (Option<Uuid>, bool) = sqlx::query_as(
+        "SELECT t.assignee_person_id,
+                EXISTS (SELECT 1 FROM person WHERE id = $2 AND role = 'admin')
+           FROM task t WHERE t.id = $1",
+    )
+    .bind(id)
+    .bind(actor.person_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    if !admin && (actor.person_id.is_none() || assignee != actor.person_id) {
+        return Err(AppError::Forbidden(
+            "only the person this task is assigned to can move it".into(),
+        ));
+    }
+
     let mut tx = state.db.begin().await?;
 
+    // done_at follows the status: set on the way into done, cleared on the
+    // way out, so a reopened task does not keep claiming a finish date.
     let task: Task = sqlx::query_as(&format!(
-        "UPDATE task SET status = $2, updated_at = now() WHERE id = $1 RETURNING {TASK_COLUMNS}"
+        "UPDATE task SET status = $2, updated_at = now(),
+                done_at = CASE WHEN $2 = 'done' THEN coalesce(done_at, now()) ELSE NULL END
+          WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
     .bind(id)
     .bind(&status)

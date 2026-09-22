@@ -9,7 +9,8 @@ use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::middleware::auth::Caller;
 use crate::models::change::Outcome;
-use crate::controllers::project::ProjectProgress;
+use crate::controllers::project::{NewTask, ProjectProgress};
+use crate::models::task::Task;
 use crate::models::project::Project;
 use crate::response::ApiResponse;
 
@@ -26,6 +27,9 @@ pub struct CreateProjectBody {
     /// The roster. Empty is a real answer.
     #[serde(default)]
     pub member_ids: Vec<Uuid>,
+    /// Work handed out in the same breath as the project is made.
+    #[serde(default)]
+    pub tasks: Vec<NewTask>,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -33,6 +37,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/projects", post(create).get(list))
         .route("/api/user/projects/{id}", get(show))
         .route("/api/user/projects/{id}/flow", get(flow))
+        .route("/api/user/projects/{id}/tasks", post(add_task))
 }
 
 async fn create(
@@ -48,6 +53,7 @@ async fn create(
         body.name,
         body.description,
         body.member_ids,
+        body.tasks,
     )
     .await?;
     Ok(ApiResponse::ok(project))
@@ -66,6 +72,16 @@ async fn show(
 ) -> AppResult<ApiResponse<Project>> {
     caller.require("read")?;
     Ok(ApiResponse::ok(controllers::project::get(&state, id).await?))
+}
+
+async fn add_task(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<NewTask>,
+) -> AppResult<ApiResponse<Task>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::project::add_task(&state, &caller.actor, id, body).await?))
 }
 
 /// The flow strip: done/total for the project and for each discipline in it.
