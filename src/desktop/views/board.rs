@@ -40,9 +40,15 @@ const CREATE_KEY: &str = "board:create";
 /// Content width at which the project grid goes from two across to three.
 /// Below this a three-up card cannot fit a title and a status chip on one line.
 const GRID_THREE_AT: f32 = 820.0;
-/// The card body's height. Fixed, because every card carries the same lines;
-/// a description that would need more is cut to one, not given a taller card.
-const PROJECT_CARD_H: f32 = 118.0;
+/// The card body's height, inside the padding. Fixed, because every card
+/// carries the same lines; a description that would need more is cut to
+/// `DESCRIPTION_ROWS`, not given a taller card.
+const PROJECT_CARD_H: f32 = 120.0;
+const DESCRIPTION_ROWS: usize = 2;
+/// How far each avatar in the roster sits over the one before it.
+const AVATAR_OVERLAP: f32 = 6.0;
+/// Past this the roster shows a "+N" instead of more faces.
+const MAX_AVATARS: usize = 5;
 /// Room a status chip needs at the end of the title row. The title truncates
 /// before it, never under it.
 const STATUS_CHIP_W: f32 = 96.0;
@@ -271,9 +277,11 @@ fn create_form(
 
 /// One project. Returns true when it was clicked into.
 ///
-/// Compact and fixed-shape: name and status on top, one line of description,
-/// then who is on it and how far along it is. A brand new project has nothing
-/// to measure, so its bar is an empty track and its count says so.
+/// Fixed-shape, so a row of these lines up: name and status, two lines of
+/// description, then a footer of who is on it and how far along it is. The
+/// budget is `PROJECT_CARD_H`; the footer is placed from the top of the card,
+/// never from the bottom of the page — the first version asked egui how much
+/// height was left and got the rest of the window.
 fn project_card(
     ui: &mut egui::Ui,
     p: &Value,
@@ -283,39 +291,54 @@ fn project_card(
     let hover_id = ui.next_auto_id();
     let hovered = ui.ctx().data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
     let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
+    let status = str_at(p, "status");
 
     let out = c::surface(ui, hovered, |ui| {
         ui.set_width(ui.available_width());
-        ui.set_min_height(PROJECT_CARD_H);
+        let top = ui.max_rect().top();
 
         ui.horizontal(|ui| {
             w::row_title(ui, str_at(p, "name"), STATUS_CHIP_W);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                c::chip(ui, status_label(str_at(p, "status")), c::status_tone(str_at(p, "status")), true);
+                c::chip(ui, status_label(status), c::status_tone(status), true);
             });
         });
         ui.add_space(space::XS);
-        let description = str_at(p, "description");
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(if description.is_empty() { "No description" } else { description })
-                    .size(text::SMALL)
-                    .color(if description.is_empty() { colour::TEXT_FAINT } else { colour::TEXT_MUTED }),
-            )
-            .truncate(),
-        );
 
-        // Push the footer to the bottom so every card's roster and bar sit on
-        // the same line across the row.
+        // Two lines, then an ellipsis. One line lost the sentence; the whole
+        // thing would make the card as tall as the description.
+        let description = str_at(p, "description");
+        let (copy, ink) = if description.is_empty() {
+            ("No description", colour::TEXT_FAINT)
+        } else {
+            (description, colour::TEXT_MUTED)
+        };
+        let mut job = egui::text::LayoutJob::single_section(
+            copy.to_owned(),
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(text::SMALL),
+                color: ink,
+                ..Default::default()
+            },
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: ui.available_width(),
+            max_rows: DESCRIPTION_ROWS,
+            break_anywhere: false,
+            overflow_character: Some('…'),
+        };
+        ui.label(job);
+
+        // The footer sits at a fixed offset from the top, whatever the
+        // description needed.
         let footer_h = size::AVATAR_SM + space::SM + space::XS;
-        let slack = ui.available_height() - footer_h;
+        let used = ui.cursor().top() - top;
+        let slack = PROJECT_CARD_H - footer_h - used;
         if slack > 0.0 {
             ui.add_space(slack);
         }
 
         ui.horizontal(|ui| {
-            // The roster as a run of avatars; names come back on hover. A
-            // list of names would not fit in a third of the page.
             let members: Vec<&str> = p
                 .get("memberIds")
                 .and_then(Value::as_array)
@@ -329,9 +352,25 @@ fn project_card(
             if members.is_empty() {
                 w::caption(ui, "Nobody assigned");
             }
-            for name in &members {
-                avatar::small(ui, name, size::AVATAR_SM).on_hover_text(*name);
+            // Overlapping, like a stack of people, so five fit where three
+            // would side by side. Names come back on hover.
+            ui.spacing_mut().item_spacing.x = -AVATAR_OVERLAP;
+            for name in members.iter().take(MAX_AVATARS) {
+                let r = avatar::small(ui, name, size::AVATAR_SM).on_hover_text(*name);
+                // A ring in the card's own colour, so each face cuts out of
+                // the one beneath rather than bleeding into it.
+                ui.painter().circle_stroke(
+                    r.rect.center(),
+                    size::AVATAR_SM / 2.0,
+                    egui::Stroke::new(1.5, colour::SURFACE),
+                );
             }
+            ui.spacing_mut().item_spacing.x = space::SM;
+            if members.len() > MAX_AVATARS {
+                ui.add_space(AVATAR_OVERLAP + space::XS);
+                w::caption(ui, &format!("+{}", members.len() - MAX_AVATARS));
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if total > 0 {
                     w::caption(ui, &format!("{done} of {total} done"));
