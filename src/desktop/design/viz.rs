@@ -639,6 +639,40 @@ pub fn multi_select(
 /// picker with a button was mixing 30 with 28.
 pub const HEIGHT: f32 = size::CONTROL;
 
+/// The filter bar's search box.
+///
+/// Sized and shaped like the controls beside it so the bar reads as one
+/// strip. A magnifier would be a glyph Nunito does not have, so the hint text
+/// carries the affordance instead — it says what it searches, which a
+/// magnifier never did.
+pub fn search(ui: &mut Ui, hint: &str, value: &mut String) -> Response {
+    let response = ui.add_sized(
+        [SEARCH_W, HEIGHT],
+        egui::TextEdit::singleline(value)
+            .hint_text(RichText::new(hint).size(text::SMALL).color(colour::TEXT_FAINT))
+            .font(egui::FontId::proportional(text::SMALL))
+            .margin(egui::Margin::symmetric(space::MD as i8, 0)),
+    );
+    response
+}
+
+/// Wide enough for a few words of a task title. Fixed, because a search box
+/// that grows with the window makes the controls beside it move.
+pub const SEARCH_W: f32 = 200.0;
+
+/// Whether `needle` appears in any of `haystacks`, case-insensitively.
+///
+/// Lives here so every list matches the same way: lowercase, substring, no
+/// tokenising. A person typing "rat" wants "Lead Rating" and does not want to
+/// think about it.
+pub fn matches(needle: &str, haystacks: &[&str]) -> bool {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    haystacks.iter().any(|h| h.to_lowercase().contains(&needle))
+}
+
 /// The escape hatch: only drawn when something is filtered, because a clear
 /// button next to four unset filters is a control that does nothing.
 pub fn clear(ui: &mut Ui) -> Response {

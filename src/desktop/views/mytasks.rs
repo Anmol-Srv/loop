@@ -1,34 +1,45 @@
-//! My Tasks: everything assigned to the signed-in person, one table per
-//! project.
+//! My Tasks: everything assigned to the signed-in person, newest first.
 //!
-//! This was a column of cards, and cards are the wrong unit for "what am I
-//! holding": you cannot compare a column of cards, and eleven of them is a
-//! scroll. It is the same table vocabulary as Home and Projects — column
-//! consts, a header band, hover from a temp store, keyboard-reachable rows —
-//! broken into one table per project, because the project is the thing you
-//! context-switch between and a single flat list buries it in a column.
+//! One table, not one per project: grouping answered "what is in this
+//! project", which is the project page's question, and it fought the ordering
+//! — newest-first across your whole workload is the thing you actually scan.
+//! The project is a column and a filter instead.
 //!
-//! Finished work sinks to the bottom of its group and is hidden until asked
-//! for. This screen answers "what now"; yesterday's done pile is noise in that
-//! answer, but it is the first thing you want when someone asks what you did.
-
-use std::collections::BTreeMap;
+//! Nothing is hidden. A "show finished" toggle made the done pile a mode you
+//! had to remember to leave; a status filter says the same thing out loud and
+//! composes with the others.
 
 use chrono::{DateTime, Utc};
+use egui::{Align, Layout};
 use serde_json::Value;
 
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, shell, space, status_label, viz, widgets as w,
+    cards as c, colour, shell, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::App;
 
 /// The personal list. Prefixed `mytasks` so any view that moves a task can drop
 /// it with one `invalidate_prefix`.
 const MINE: &str = "mytasks:mine";
-/// Whether finished rows are shown. Which project the pointer is over gets its
-/// own id per group, derived from this one.
-const FINISHED: &str = "mytasks:finished";
+/// This view owns its filters and nothing else reads them, so they live in
+/// egui's temp store rather than growing `App`.
+const FILTERS: &str = "mytasks:filters";
+const TABLE: &str = "mytasks:table";
+
+/// What the list is narrowed to. Every field unset is the whole list, so
+/// `Default` is "everything".
+#[derive(Clone, Default, PartialEq)]
+struct State {
+    query: String,
+    status: Option<String>,
+    project: Option<String>,
+    priority: Option<String>,
+}
+
+/// The status vocabulary, in the order it reads in the menu.
+const STATUSES: [&str; 6] =
+    ["open", "in_progress", "in_review", "blocked", "done", "dropped"];
 
 // ---- table geometry. Fixed so every group's columns line up with every
 // ---- other's; the description takes whatever is left.
@@ -40,22 +51,23 @@ const COL_DESCRIPTION: f32 = 180.0;
 /// "P0" in a chip.
 const COL_PRIORITY: f32 = 52.0;
 const COL_STATUS: f32 = 104.0;
-const COL_UPDATED: f32 = 78.0;
+/// The project a task belongs to, now that the list is not grouped by it.
+const COL_PROJECT: f32 = 150.0;
+const COL_CREATED: f32 = 78.0;
 
-/// Alignment lives with the width, so "Updated" sits over the age beneath it.
-const COLS: [Col; 5] = [
+/// Alignment lives with the width, so "Created" sits over the age beneath it.
+const COLS: [Col; 6] = [
     Col::left("Task", COL_TASK),
     Col::fill("Description", COL_DESCRIPTION),
     Col::left("Priority", COL_PRIORITY),
     Col::left("Status", COL_STATUS),
-    Col::right("Updated", COL_UPDATED),
+    Col::left("Project", COL_PROJECT),
+    Col::right("Created", COL_CREATED),
 ];
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
-    // ponytail: one flag, so it lives in egui's temp store rather than growing
-    // `App`. Move it onto `App` the day another view needs to read it.
-    let finished_id = egui::Id::new(FINISHED);
-    let mut show_finished: bool = ui.ctx().data(|d| d.get_temp(finished_id)).unwrap_or(false);
+    let filters_id = egui::Id::new(FILTERS);
+    let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
 
     let net = app.net.as_mut().unwrap();
     net.get_once(MINE, "/api/user/tasks/mine");
@@ -63,23 +75,23 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let loading = net.is_loading(MINE);
     let error = net.error(MINE).map(str::to_owned);
     let tasks = net.data(MINE).cloned().unwrap_or(Value::Null);
-    let rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
 
-    // The subtitle counts the work that is still live, and the projects that
-    // work is in — not every project that has ever held a row of mine.
-    let open: Vec<&&Value> = rows.iter().filter(|t| !finished(t)).collect();
-    let mut open_projects: Vec<&str> = open.iter().map(|t| project_of(t)).collect();
-    open_projects.sort_unstable();
-    open_projects.dedup();
+    // Newest first, whatever order the server sent. One sort, here, so the
+    // filters below never reshuffle the list as they narrow it.
+    let mut rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    rows.sort_by(|a, b| {
+        str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default())
+    });
+
+    let open = rows.iter().filter(|t| !finished(t)).count();
+    let mut projects: Vec<&str> = rows.iter().map(|t| project_of(t)).collect();
+    projects.sort_unstable();
+    projects.dedup();
 
     shell::page_title(
         ui,
         "My Tasks",
-        &format!(
-            "{} open across {}",
-            open.len(),
-            plural(open_projects.len(), "project")
-        ),
+        &format!("{open} open across {}", plural(projects.len(), "project")),
         |_| {},
     );
 
@@ -94,44 +106,26 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             w::empty(
                 ui,
                 "Nothing assigned to you.",
-                "When someone hands you a task it shows up here, grouped by project.",
+                "When someone hands you a task it shows up here, newest first.",
             );
         }
         return;
     }
 
-    if viz::filter(ui, "Show finished", show_finished, false).clicked() {
-        show_finished = !show_finished;
-    }
-    ui.ctx().data_mut(|d| d.insert_temp(finished_id, show_finished));
-
-    // Grouped by project name, alphabetically — `BTreeMap` is the sort. Inside
-    // a group the finished work sinks: a stable sort on one bit keeps the
-    // server's order within each half.
-    let mut groups: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
-    for t in &rows {
-        if !show_finished && finished(t) {
-            continue;
-        }
-        groups.entry(project_of(t)).or_default().push(t);
-    }
-    for rows in groups.values_mut() {
-        rows.sort_by_key(|t| finished(t));
-    }
-
-    if groups.is_empty() {
-        w::empty(
-            ui,
-            "Nothing open.",
-            "Everything assigned to you is finished \u{2014} show finished work to see it.",
-        );
-        return;
-    }
+    let shown: Vec<&Value> = rows.iter().copied().filter(|t| keep(t, &state)).collect();
+    filter_bar(ui, &mut state, &projects, shown.len(), rows.len());
+    ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
     let mut open_task: Option<String> = None;
-    for (project, rows) in &groups {
-        shell::section_count(ui, project, rows.len());
-        table(ui, project, rows, &mut open_task);
+    if shown.is_empty() {
+        w::empty(ui, "Nothing matches.", "Clear a filter, or search for something else.");
+    } else {
+        let clicked = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
+            task_row(row, shown[i]);
+        });
+        if let Some(i) = clicked {
+            open_task = str_at(shown[i], "id").map(str::to_owned);
+        }
     }
     ui.add_space(space::XXL);
 
@@ -140,17 +134,82 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-// --------------------------------------------------------------------- table
+/// Search, then the three menus, then how much of the list is left.
+fn filter_bar(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    projects: &[&str],
+    shown: usize,
+    total: usize,
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        viz::search(ui, "Search tasks", &mut state.query);
 
-fn table(ui: &mut egui::Ui, salt: &str, rows: &[&Value], open_task: &mut Option<String>) {
-    // One table per project group, so the id is the group's own.
-    let clicked = table::show(ui, salt, &COLS, rows.len(), |row, i| {
-        task_row(row, rows[i]);
+        let statuses: Vec<(String, String)> = STATUSES
+            .iter()
+            .map(|s| ((*s).to_owned(), sentence(status_label(s))))
+            .collect();
+        viz::select(ui, "Any status", &statuses, &mut state.status);
+
+        let names: Vec<(String, String)> =
+            projects.iter().map(|p| ((*p).to_owned(), (*p).to_owned())).collect();
+        viz::select(ui, "All projects", &names, &mut state.project);
+
+        let priorities: Vec<(String, String)> =
+            (0..=4).map(|p| (p.to_string(), format!("P{p}"))).collect();
+        viz::select(ui, "Any priority", &priorities, &mut state.priority);
+
+        if *state != State::default() && viz::clear(ui).clicked() {
+            *state = State::default();
+        }
+
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                egui::RichText::new(format!("of {total}")).size(text::SMALL).color(colour::TEXT_MUTED),
+            );
+            ui.add_space(space::XXS);
+            ui.label(
+                egui::RichText::new(shown.to_string())
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
+        });
     });
-    if let Some(i) = clicked {
-        *open_task = str_at(rows[i], "id").map(str::to_owned);
-    }
+    ui.add_space(space::MD);
 }
+
+/// Every filter is an AND, and an unset one passes everything.
+fn keep(t: &Value, state: &State) -> bool {
+    if let Some(s) = &state.status {
+        if str_at(t, "status") != Some(s.as_str()) {
+            return false;
+        }
+    }
+    if let Some(p) = &state.project {
+        if project_of(t) != p {
+            return false;
+        }
+    }
+    if let Some(p) = &state.priority {
+        if num(t, "priority").to_string() != *p {
+            return false;
+        }
+    }
+    // Title, description and project: the three things you would think to
+    // type. Not the status — that is what the menu beside the box is for.
+    viz::matches(
+        &state.query,
+        &[
+            str_at(t, "title").unwrap_or_default(),
+            str_at(t, "body").unwrap_or_default(),
+            project_of(t),
+        ],
+    )
+}
+
+// --------------------------------------------------------------------- table
 
 fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
     let status = str_at(t, "status").unwrap_or("open");
@@ -192,8 +251,10 @@ fn task_row(row: &mut egui_extras::TableRow<'_, '_>, t: &Value) {
         });
     });
 
+    row.col(|ui| table::muted_cell(ui, &COLS[4], project_of(t)));
+
     row.col(|ui| {
-        table::muted_cell(ui, &COLS[4], &age(str_at(t, "updatedAt").unwrap_or_default()));
+        table::muted_cell(ui, &COLS[5], &age(str_at(t, "createdAt").unwrap_or_default()));
     });
 }
 

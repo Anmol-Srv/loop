@@ -85,6 +85,8 @@ const COLS: [Col; 8] = [
 /// `Default` is the unfiltered view.
 #[derive(Clone, Default, PartialEq)]
 pub struct State {
+    /// Free text, matched against title, project and phase.
+    pub query: String,
     /// Only tasks assigned to me.
     pub mine: bool,
     pub discipline: Option<String>,
@@ -113,7 +115,12 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let team = list(&home, "team");
 
     // Every task in the workspace, in the order the server sorted them.
-    let rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    // Newest first. The server's order is its own business; the list should
+    // not reshuffle when a filter narrows it.
+    let mut rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    rows.sort_by(|a, b| {
+        str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default())
+    });
 
     // With the whole workspace here, a blocker's title resolves whenever the
     // blocking task still exists.
@@ -375,6 +382,7 @@ fn filter_bar(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
+        viz::search(ui, "Search tasks", &mut state.query);
 
         if viz::filter(ui, "Mine", state.mine, false).clicked() {
             state.mine = !state.mine;
@@ -452,7 +460,16 @@ fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
             return false;
         }
     }
-    true
+    // Title, project and phase: the three things you would think to type.
+    // Not the status — that is what the menu beside the box is for.
+    viz::matches(
+        &state.query,
+        &[
+            str_at(t, "title").unwrap_or_default(),
+            str_at(t, "projectName").unwrap_or_default(),
+            str_at(t, "phaseName").unwrap_or_default(),
+        ],
+    )
 }
 
 // --------------------------------------------------------------------- table
