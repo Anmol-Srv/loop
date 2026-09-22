@@ -140,25 +140,35 @@ pub fn sidebar(
 const MARK: &[u8] = include_bytes!("../../../assets/mark.png");
 const MARK_SIZE: f32 = 26.0;
 
+/// Decode once, then hand out the same handle every frame.
+///
+/// The lookup and the load are deliberately separate statements: `data_mut`
+/// holds the context's write lock for the whole closure, and `load_texture`
+/// reaches for that same lock, so doing the load inside the closure
+/// deadlocks the first frame and the window never appears. It did.
 fn mark_texture(ctx: &egui::Context) -> egui::TextureHandle {
-    ctx.data_mut(|d| {
-        d.get_temp_mut_or_insert_with(egui::Id::new("brand:mark"), || {
-            let decoded = image::load_from_memory(MARK).expect("the mark is baked in").to_luma_alpha8();
-            let (w, h) = decoded.dimensions();
-            // Every pixel is white; the alpha carries the shape, so a tint
-            // applied at draw time colours the whole mark at once.
-            let pixels: Vec<egui::Color32> = decoded
-                .pixels()
-                .map(|p| egui::Color32::from_white_alpha(p.0[1]))
-                .collect();
-            ctx.load_texture(
-                "brand:mark",
-                egui::ColorImage { size: [w as usize, h as usize], pixels, source_size: egui::vec2(w as f32, h as f32) },
-                egui::TextureOptions::LINEAR,
-            )
-        })
-        .clone()
-    })
+    let id = egui::Id::new("brand:mark");
+    if let Some(handle) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return handle;
+    }
+
+    let decoded = image::load_from_memory(MARK).expect("the mark is baked in").to_luma_alpha8();
+    let (w, h) = decoded.dimensions();
+    // Every pixel is white and the alpha carries the shape, so one tint at
+    // draw time colours the whole mark.
+    let pixels: Vec<egui::Color32> =
+        decoded.pixels().map(|p| egui::Color32::from_white_alpha(p.0[1])).collect();
+    let handle = ctx.load_texture(
+        "brand:mark",
+        egui::ColorImage {
+            size: [w as usize, h as usize],
+            pixels,
+            source_size: egui::vec2(w as f32, h as f32),
+        },
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|d| d.insert_temp(id, handle.clone()));
+    handle
 }
 
 fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
