@@ -66,14 +66,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let on_task = app.task.is_some();
     let sel = |t: Tab| app.tab == t && !on_task;
 
-    // Project dots reuse the discipline palette so a project keeps one colour.
-    let dot_for = |i: usize| match i % 3 {
-        0 => colour::ACCENT,
-        1 => colour::AGENT,
-        _ => colour::OK,
-    };
-
-    let mut groups = vec![shell::NavGroup {
+    let groups = vec![shell::NavGroup {
         label: "WORKSPACE",
         items: vec![
             shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)),
@@ -84,21 +77,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             shell::NavItem::new(icon::TRAY, "Inbox", sel(Tab::Inbox)).badge(pending),
         ],
     }];
-
-    if !projects.is_empty() {
-        groups.push(shell::NavGroup {
-            label: "PROJECTS",
-            items: projects
-                .iter()
-                .enumerate()
-                .map(|(i, (id, name))| {
-                    let open = app.project.as_deref() == Some(id.as_str());
-                    shell::NavItem::new("", name, open && app.tab == Tab::Projects && !on_task)
-                        .dot(dot_for(i))
-                })
-                .collect(),
-        });
-    }
 
     let mut sign_out = false;
     let mut refresh = false;
@@ -159,13 +137,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             app.task = None;
             if app.tab != Tab::Projects {
                 app.project = None;
-            }
-        }
-        Some((1, i)) => {
-            if let Some((id, _)) = projects.get(i) {
-                app.tab = Tab::Projects;
-                app.project = Some(id.clone());
-                app.task = None;
             }
         }
         _ => {}

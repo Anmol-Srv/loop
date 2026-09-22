@@ -37,6 +37,15 @@ const PROJECTS_KEY: &str = "board:projects";
 const PEOPLE_KEY: &str = "board:people";
 /// Where a create's reply is collected.
 const CREATE_KEY: &str = "board:create";
+/// Content width at which the project grid goes from two across to three.
+/// Below this a three-up card cannot fit a title and a status chip on one line.
+const GRID_THREE_AT: f32 = 820.0;
+/// The card body's height. Fixed, because every card carries the same lines;
+/// a description that would need more is cut to one, not given a taller card.
+const PROJECT_CARD_H: f32 = 118.0;
+/// Room a status chip needs at the end of the title row. The title truncates
+/// before it, never under it.
+const STATUS_CHIP_W: f32 = 96.0;
 
 /// What the create form holds. `None` on `State::creating` means the form is
 /// closed, which is also how the Create project button knows not to redraw
@@ -161,12 +170,20 @@ fn projects(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
+    // A grid, three across when there is room and two otherwise. Every card
+    // is the same shape (title, one line of description, lead, progress), so
+    // rows line up without measuring.
+    let per_row = if ui.available_width() >= GRID_THREE_AT { 3 } else { 2 };
     let mut open: Option<String> = None;
-    for p in &list {
-        if project_card(ui, p, flows.get(str_at(p, "id")), &names) {
-            open = Some(str_at(p, "id").to_string());
-        }
-        ui.add_space(space::SM);
+    for chunk in list.chunks(per_row) {
+        ui.columns(per_row, |cols| {
+            for (col, p) in cols.iter_mut().zip(chunk) {
+                if project_card(col, p, flows.get(str_at(p, "id")), &names) {
+                    open = Some(str_at(p, "id").to_string());
+                }
+            }
+        });
+        ui.add_space(space::MD);
     }
 
     let net = app.net.as_mut().unwrap();
@@ -255,9 +272,9 @@ fn create_form(
 
 /// One project. Returns true when it was clicked into.
 ///
-/// A brand new project has no phases and no tasks, so the progress bar would
-/// be a full-width empty track saying nothing. It only appears once there is
-/// work to measure.
+/// Compact and fixed-shape: name and status on top, one line of description,
+/// then who leads it and how far along it is. A brand new project has nothing
+/// to measure, so its bar is an empty track and its count says so.
 fn project_card(
     ui: &mut egui::Ui,
     p: &Value,
@@ -266,60 +283,56 @@ fn project_card(
 ) -> bool {
     let hover_id = ui.next_auto_id();
     let hovered = ui.ctx().data(|d| d.get_temp::<bool>(hover_id).unwrap_or(false));
-    let counts = flow.map(|f| (num_at(f, "done"), num_at(f, "total")));
-    let total = counts.map(|(_, t)| t).unwrap_or(0);
+    let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
 
     let out = c::surface(ui, hovered, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(str_at(p, "name"))
-                    .size(text::CARD)
-                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
-            );
-            ui.add_space(space::SM);
-            w::mono_caption(ui, str_at(p, "key"));
-            ui.add_space(space::SM);
-            c::chip(ui, status_label(str_at(p, "status")), c::status_tone(str_at(p, "status")), true);
+        ui.set_min_height(PROJECT_CARD_H);
 
+        ui.horizontal(|ui| {
+            w::row_title(ui, str_at(p, "name"), STATUS_CHIP_W);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                match counts {
-                    Some((done, t)) if t > 0 => w::muted(ui, &format!("{done} of {t} done")),
-                    Some(_) => w::muted(ui, "No tasks yet"),
-                    None => w::muted(ui, "progress loading"),
+                c::chip(ui, status_label(str_at(p, "status")), c::status_tone(str_at(p, "status")), true);
+            });
+        });
+        ui.add_space(space::XS);
+        let description = str_at(p, "description");
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(if description.is_empty() { "No description" } else { description })
+                    .size(text::SMALL)
+                    .color(if description.is_empty() { colour::TEXT_FAINT } else { colour::TEXT_MUTED }),
+            )
+            .truncate(),
+        );
+
+        // Push the footer to the bottom so every card's lead and bar sit on
+        // the same line across the row.
+        let footer_h = size::AVATAR_SM + space::SM + space::XS;
+        let slack = ui.available_height() - footer_h;
+        if slack > 0.0 {
+            ui.add_space(slack);
+        }
+
+        ui.horizontal(|ui| {
+            match names.get(str_at(p, "leadId")) {
+                Some(name) => {
+                    avatar::small(ui, name, size::AVATAR_SM);
+                    ui.add_space(space::XS);
+                    w::caption(ui, name);
+                }
+                None => w::caption(ui, "No lead"),
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if total > 0 {
+                    w::caption(ui, &format!("{done} of {total} done"));
+                } else {
+                    w::caption(ui, "No tasks yet");
                 }
             });
         });
-
-        let description = str_at(p, "description");
-        if !description.is_empty() {
-            ui.add_space(space::XS);
-            w::muted(ui, description);
-        }
-
-        if total > 0 {
-            ui.add_space(space::SM);
-            let (done, t) = counts.unwrap_or((0, 0));
-            w::progress(ui, fraction(done, t), ui.available_width(), colour::ACCENT);
-            if let Some(line) = flow.map(per_discipline).filter(|l| !l.is_empty()) {
-                ui.add_space(space::SM);
-                w::muted(ui, &line);
-            }
-        }
-
-        // The lead is the last line because it answers "who do I ask", which
-        // is the question after "what is this and how far along is it".
-        let lead = names.get(str_at(p, "leadId")).map(String::as_str);
         ui.add_space(space::SM);
-        ui.horizontal(|ui| match lead {
-            Some(name) => {
-                avatar::small(ui, name, size::AVATAR_SM);
-                ui.add_space(space::XS);
-                w::caption(ui, name);
-            }
-            None => w::caption(ui, "No lead"),
-        });
+        w::progress(ui, fraction(done, total), ui.available_width(), colour::ACCENT);
     });
 
     let hit = out.response.interact(egui::Sense::click());
@@ -328,15 +341,6 @@ fn project_card(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     hit.clicked()
-}
-
-/// "design 2/5 · frontend 1/3" — the flow, folded onto one line for a card.
-fn per_discipline(flow: &Value) -> String {
-    flow_columns(flow)
-        .iter()
-        .map(|d| format!("{} {}/{}", str_at(d, "discipline"), num_at(d, "done"), num_at(d, "total")))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 // -------------------------------------------------------------- project detail
