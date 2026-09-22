@@ -99,6 +99,15 @@ async fn available_needs_my_discipline_no_assignee_and_finished_blockers(pool: P
     let before = titles(json_of(response).await);
     assert_eq!(before, vec!["ship the migration"], "a task with an unfinished blocker is not available");
 
+    // Only the assignee moves a task, so the blocker has to be theirs before
+    // they can finish it. An unassigned task cannot be completed by anyone.
+    let response = acp_server::app::app(state.clone())
+        .oneshot(req("PATCH", &format!("/api/user/tasks/{blocker}"), &token,
+            Some(serde_json::json!({ "status": "done" })))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "nobody owns it, so nobody can finish it");
+
+    sqlx::query("UPDATE task SET assignee_kind='human', assignee_person_id=$2 WHERE id = $1")
+        .bind(blocker).bind(person_id).execute(&pool).await.unwrap();
     let response = acp_server::app::app(state.clone())
         .oneshot(req("PATCH", &format!("/api/user/tasks/{blocker}"), &token,
             Some(serde_json::json!({ "status": "done" })))).await.unwrap();
