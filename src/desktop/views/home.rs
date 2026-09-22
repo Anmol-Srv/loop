@@ -277,19 +277,16 @@ fn discipline_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
     })
 }
 
-/// Completions per day for the last week.
-///
-/// `updatedAt` is the closest thing the payload has to a completion date, so
-/// the buckets are "last touched while done". The delta compares the same
-/// measure over the previous week — same assumption, so the comparison holds
-/// even where the absolute number is soft.
+/// Completions per day for the last week, bucketed on `doneAt` — the moment
+/// the task was moved to done, not the last time anyone touched it. The delta
+/// compares the same measure over the previous week.
 fn completed_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
     let today = Local::now().date_naive();
     let mut buckets = vec![0.0_f32; WEEK];
     let mut previous = 0usize;
 
     for t in rows.iter().filter(|t| str_at(t, "status") == Some("done")) {
-        let Some(raw) = str_at(t, "updatedAt") else { continue };
+        let Some(raw) = str_at(t, "doneAt") else { continue };
         let Ok(when) = DateTime::parse_from_rfc3339(raw) else { continue };
         let days = (today - when.with_timezone(&Local).date_naive()).num_days();
         if (0..WEEK as i64).contains(&days) {
