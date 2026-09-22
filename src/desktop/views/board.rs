@@ -20,12 +20,12 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use egui::{Align, Layout, RichText};
+use egui::RichText;
 use serde_json::Value;
 
 use super::projects::{AVATAR_OVERLAP, MAX_AVATARS, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::table::{self, Col};
-use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
+use crate::desktop::design::tokens::discipline_colour;
 use crate::desktop::design::{
     avatar, cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
@@ -179,7 +179,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         .collect();
 
     let flow = net.data(&flow_key).cloned();
-    let flow_loading = net.is_loading(&flow_key);
     let flow_error = net.error(&flow_key).map(str::to_string);
 
     let mut tasks = array(net.data(&tasks_key));
@@ -244,17 +243,15 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     ui.add_space(space::LG);
     description(ui, str_at(head, "description"));
 
-    ui.add_space(space::XL);
     if let Some(err) = flow_error {
+        ui.add_space(space::XL);
         w::error(ui, &err);
-    } else {
-        match &flow {
-            Some(f) => flow_strip(ui, f),
-            None if flow_loading => w::loading(ui, "flow"),
-            // No flow at all is a fetch that has not landed rather than a
-            // project without work, so it says nothing rather than lying.
-            None => {}
-        }
+    } else if let Some(f) = flow.as_ref().filter(|f| !flow_columns(f).is_empty()) {
+        // Sits with the meta line rather than as a section of its own: it is
+        // the same sentence, broken down. A project whose tasks have no
+        // discipline yet draws nothing, and the spacing goes with it.
+        ui.add_space(space::SM);
+        flow_strip(ui, f);
     }
 
     if let Some(err) = claim_error {
@@ -472,77 +469,34 @@ fn flow_columns(flow: &Value) -> Vec<&Value> {
     columns
 }
 
-/// The flow strip: one column per discipline that has tasks.
+/// The per-discipline split, as one line of facts.
 ///
-/// It reports, it does not gate — there is no arrow between the columns,
-/// because frontend and backend can and do run before design has finished and
-/// a glyph saying otherwise was the one piece of this page that was wrong
-/// rather than merely plain. No card either: three labelled rules on the
-/// canvas are already a group, and the box was drawing a border around them
-/// for the sake of having drawn one.
+/// This was a labelled progress bar per discipline. The bar was a figure's
+/// worth of ink for a fraction that is 0/1 or 1/1 on a project this size, and
+/// the meta line above already carries the total — what is left worth saying
+/// is the split, in the same label/value vocabulary as the line it sits under.
+///
+/// It reports, it does not gate: no arrow between the disciplines, because
+/// frontend and backend can and do run before design has finished.
 fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
-    let columns = flow_columns(flow);
-    let full = ui.available_width();
-
-    if columns.is_empty() {
-        // A fresh project: an empty bar reads as "nothing yet, and here is
-        // where it will show" — a sentence alone reads as a page that failed.
-        w::progress(ui, 0.0, full, colour::ACCENT);
-        ui.add_space(space::SM);
-        w::caption(ui, "No tasks yet");
-        return;
-    }
-
-    let gaps = space::XL * (columns.len() as f32 - 1.0);
-    // The floor stops a column collapsing to nothing; past enough disciplines
-    // it makes the strip wider than the page, which is the only case that
-    // scrolls. Three fit outright, so today nothing does.
-    let width = ((full - gaps) / columns.len() as f32).max(DISCIPLINE_W);
-    let overflows = width * columns.len() as f32 + gaps > full + 1.0;
-
-    let body = |ui: &mut egui::Ui| {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = space::XL;
-            for d in &columns {
-                let name = str_at(d, "discipline");
-                let (done, total) = (num_at(d, "done"), num_at(d, "total"));
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    ui.label(
-                        RichText::new(name)
-                            .size(text::SMALL)
-                            .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                            .color(colour::TEXT_2),
-                    );
-                    ui.add_space(space::SM);
-                    w::progress(ui, fraction(done, total), width, discipline_colour(name));
-                    ui.add_space(space::SM);
-                    // Right-aligned under the bar's far end, so the figures
-                    // line up as a column of their own down the strip. Given
-                    // its own row of fixed height: a bare `with_layout` in a
-                    // vertical takes every pixel left on the page and centres
-                    // the figure halfway down it.
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(width, size::ROW),
-                        Layout::right_to_left(Align::Center),
-                        |ui| {
-                            ui.label(
-                                RichText::new(format!("{done}/{total}"))
-                                    .size(text::CAPTION)
-                                    .color(colour::TEXT),
-                            );
-                        },
-                    );
-                });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        for (i, d) in flow_columns(flow).iter().enumerate() {
+            if i > 0 {
+                ui.add_space(space::XL);
             }
-        });
-    };
-
-    if overflows {
-        egui::ScrollArea::horizontal().show(ui, body);
-    } else {
-        body(ui);
-    }
+            let name = str_at(d, "discipline");
+            // The discipline's own colour carries the name, so the split is
+            // scannable without a legend or a swatch beside it.
+            ui.label(
+                RichText::new(name)
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                    .color(discipline_colour(name)),
+            );
+            value(ui, &format!("{}/{}", num_at(d, "done"), num_at(d, "total")));
+        }
+    });
 }
 
 // --------------------------------------------------------------------- table
