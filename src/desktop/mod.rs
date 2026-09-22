@@ -16,7 +16,6 @@ pub enum Tab {
     Home,
     MyTasks,
     Projects,
-    Inbox,
 }
 
 pub struct App {

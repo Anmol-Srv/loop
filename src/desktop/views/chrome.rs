@@ -10,16 +10,10 @@ use crate::desktop::design::{avatar, colour, shell, size, space, text, widgets a
 use crate::desktop::{views, App, Tab};
 
 /// Destinations, in sidebar order. The index is the routing contract.
-const DESTINATIONS: [Tab; 4] = [Tab::Home, Tab::MyTasks, Tab::Projects, Tab::Inbox];
+const DESTINATIONS: [Tab; 3] = [Tab::Home, Tab::MyTasks, Tab::Projects];
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let home = app.net.as_ref().and_then(|n| n.data("home")).cloned();
-    let pending = home
-        .as_ref()
-        .and_then(|h| h.get("waitingOnMe"))
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
     let mine_open = home
         .as_ref()
         .and_then(|h| h.get("myTasks"))
@@ -74,7 +68,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 .count(mine_open.to_string()),
             shell::NavItem::new(icon::SQUARES_FOUR, "Projects", sel(Tab::Projects))
                 .count(projects.len().to_string()),
-            shell::NavItem::new(icon::TRAY, "Inbox", sel(Tab::Inbox)).badge(pending),
         ],
     }];
 
@@ -150,7 +143,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 Tab::Home => views::home::ui(app, ui),
                 Tab::MyTasks => views::mytasks::ui(app, ui),
                 Tab::Projects => views::board::ui(app, ui),
-                Tab::Inbox => views::inbox::ui(app, ui),
             }
         }
     });

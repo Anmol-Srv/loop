@@ -1,7 +1,6 @@
 pub mod board;
 pub mod projects;
 pub mod chrome;
-pub mod inbox;
 pub mod login;
 pub mod task;
 pub mod home;
