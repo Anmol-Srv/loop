@@ -121,17 +121,23 @@ pub fn blocked_by(ui: &mut Ui, what: &str) {
     );
 }
 
-/// A thin progress track. Used for phase and discipline completion.
+/// A hairline progress track. Used for phase and discipline completion.
+///
+/// Two points tall with fully rounded caps: at this weight the bar is a rule
+/// that happens to be coloured, so a page can carry four of them without any
+/// one reading as a component. The track is `LINE` rather than `INSET` — a
+/// well needs depth, a rule needs only to be visible.
 pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, space::XS), Sense::hover());
+    let h = space::XXS;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 2.0, colour::INSET);
-    if fraction > 0.0 {
-        let filled = egui::Rect::from_min_size(
-            rect.min,
-            Vec2::new(rect.width() * fraction.clamp(0.0, 1.0), rect.height()),
-        );
-        p.rect_filled(filled, space::XXS, tint);
+    p.rect_filled(rect, h / 2.0, colour::LINE);
+    let f = fraction.clamp(0.0, 1.0);
+    if f > 0.0 {
+        // Floored at the cap diameter: below it a rounded rect paints as a
+        // lens, and one task done out of two hundred should still be a mark.
+        let filled = Vec2::new((rect.width() * f).max(h), h);
+        p.rect_filled(egui::Rect::from_min_size(rect.min, filled), h / 2.0, tint);
     }
 }
 

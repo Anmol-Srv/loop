@@ -1,19 +1,23 @@
 //! Board: the project list, and inside a project its flow, phases and tasks.
 //!
-//! Two modes, chosen by `app.project`. The project detail screen leads with the
-//! flow strip — done/total per discipline — because the question a lead asks
-//! first is "where is the work", not "which phase are we in". The strip reports
-//! only: it does not gate anything, and a discipline may run ahead of the one
-//! to its left. The arrow says "usually in this order", nothing stronger.
+//! Two modes, chosen by `app.project`. The project detail screen opens with
+//! what the project *is* — name, a meta line of three facts, the description —
+//! and only then how far along it is. The list screen answers "where is the
+//! work"; someone who has clicked into one project is asking the slower
+//! question, and prose at the top is the answer to it.
 //!
-//! Everything below the strip is a card: a project is a surface with its own
-//! progress, a task is a `c::task_card`, and an unclaimed task is a slim card
-//! with a Claim button — the same shape the claim zone has on My tasks.
+//! Under that, the flow strip: done/total per discipline. It reports, it does
+//! not gate — a discipline may run ahead of the one to its left, so there is
+//! no arrow implying an order the data does not have.
+//!
+//! Below the strip everything is a card: a task is a `c::task_card`, and an
+//! unclaimed task is a slim card with a Claim button — the same shape the
+//! claim zone has on My tasks. The detail header itself is deliberately not a
+//! card; a card inside a page is a box around the page's own subject.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use egui_phosphor::thin as icon;
 use serde_json::Value;
 
 use crate::desktop::design::tokens::{discipline_colour, DISCIPLINE_W};
@@ -52,6 +56,9 @@ const MAX_AVATARS: usize = 5;
 /// Room a status chip needs at the end of the title row. The title truncates
 /// before it, never under it.
 const STATUS_CHIP_W: f32 = 96.0;
+/// The prose measure for a project description: ~70 characters at `text::BODY`,
+/// which is where a paragraph stops needing a finger to track the line.
+const PROSE_W: f32 = 640.0;
 
 /// What the create form holds. `None` on `State::creating` means the form is
 /// closed, which is also how the Create project button knows not to redraw
@@ -397,6 +404,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let status = app.board.status;
     let kind = app.board.assignee_kind;
 
+    let detail_key = format!("board:project:{project_id}");
     let flow_key = format!("board:flow:{project_id}");
     let phases_key = format!("board:phases:{project_id}");
     let tasks_key = format!(
@@ -432,9 +440,19 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         }
     }
 
+    net.get_once(&detail_key, &format!("/api/user/projects/{project_id}"));
     net.get_once(&flow_key, &format!("/api/user/projects/{project_id}/flow"));
     net.get_once(&phases_key, &format!("/api/user/projects/{project_id}/phases"));
     net.get_once(&tasks_key, &tasks_path);
+    // The roster is ids; the meta line wants faces and names. Same key the
+    // list screen fills, so arriving from it costs nothing.
+    net.get_once(PEOPLE_KEY, "/api/user/people");
+
+    let detail = net.data(&detail_key).cloned();
+    let names: HashMap<String, String> = array(net.data(PEOPLE_KEY))
+        .iter()
+        .map(|p| (str_at(p, "id").to_string(), str_at(p, "name").to_string()))
+        .collect();
 
     let flow = net.data(&flow_key).cloned();
     let flow_loading = net.is_loading(&flow_key);
@@ -468,29 +486,53 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     if shell::back(ui, "Projects").clicked() {
         back = true;
     }
-    // The project key goes in the trailing slot, not the subtitle: the subtitle
-    // is a sentence about progress, and a mono identifier reads as a label on
-    // the title rather than a second line of prose about it.
-    match &flow {
-        Some(f) => {
-            let key = str_at(f, "key").to_string();
-            shell::page_title(
-                ui,
-                str_at(f, "name"),
-                &format!("{} of {} done", num_at(f, "done"), num_at(f, "total")),
-                |ui| w::mono_caption(ui, &key),
-            );
+    // Name, state and identifier on one line. `page_title`'s trailing slot is
+    // right-aligned, and a key belongs *to* the name — it reads as an aside
+    // beside it, not as a control at the other end of the header.
+    let fallback = Value::Null;
+    let head = detail.as_ref().or(flow.as_ref()).unwrap_or(&fallback);
+    let name = match str_at(head, "name") {
+        "" => "Project",
+        n => n,
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        ui.label(
+            egui::RichText::new(name)
+                .size(text::TITLE)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT),
+        );
+        let status = str_at(head, "status");
+        if !status.is_empty() {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
         }
-        None => shell::page_title(ui, "Project", "", |_| {}),
-    }
+        let key = str_at(head, "key");
+        if !key.is_empty() {
+            w::mono_caption(ui, key);
+        }
+    });
 
+    ui.add_space(space::MD);
+    let (done, total) = flow
+        .as_ref()
+        .map(|f| (num_at(f, "done"), num_at(f, "total")))
+        .unwrap_or((0, 0));
+    meta_line(ui, head, &names, done, total);
+
+    ui.add_space(space::LG);
+    description(ui, str_at(head, "description"));
+
+    ui.add_space(space::XL);
     if let Some(err) = flow_error {
         w::error(ui, &err);
     } else {
         match &flow {
             Some(f) => flow_strip(ui, f),
             None if flow_loading => w::loading(ui, "flow"),
-            None => w::empty(ui, "No flow for this project yet.", ""),
+            // No flow at all is a fetch that has not landed rather than a
+            // project without work, so it says nothing rather than lying.
+            None => {}
         }
     }
 
@@ -524,10 +566,12 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         if phases_loading {
             w::loading(ui, "phases");
         } else {
+            // The common case on a fresh project, so it teaches the next move
+            // rather than reporting an absence.
             w::empty(
                 ui,
-                "This project has no phases yet.",
-                "A phase groups the tasks for one stage of the work.",
+                "No phases yet.",
+                "Phases hold the tasks. Add one to start planning this project.",
             );
         }
     } else {
@@ -577,6 +621,131 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 }
 
+/// The three facts about a project, in one quiet row: when it started, who is
+/// on it, how much of it is done.
+///
+/// Not a card. Three facts do not need a container — the space around them
+/// already groups them, and a box here would be the first of the nested cards
+/// this page exists to avoid. Labels are muted, values full-strength: the
+/// label is scaffolding you read once, the value is what you came for.
+fn meta_line(
+    ui: &mut egui::Ui,
+    p: &Value,
+    names: &HashMap<String, String>,
+    done: i64,
+    total: i64,
+) {
+    ui.horizontal(|ui| {
+        // Tight inside a fact, generous between them: proximity does the
+        // grouping that separators would otherwise have to.
+        ui.spacing_mut().item_spacing.x = space::XS;
+
+        if let Some((relative, absolute)) = created(str_at(p, "createdAt")) {
+            label(ui, "Created");
+            value(ui, &relative).on_hover_text(absolute);
+            ui.add_space(space::XL);
+        }
+
+        let members: Vec<&str> = p
+            .get("memberIds")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .filter_map(|id| names.get(id).map(String::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if members.is_empty() {
+            label(ui, "Nobody assigned");
+        } else {
+            // The same overlapping stack the cards use, so a roster is one
+            // shape across the app. The ring is the canvas, not a surface:
+            // there is no card behind this row to cut out of.
+            ui.spacing_mut().item_spacing.x = -AVATAR_OVERLAP;
+            for who in members.iter().take(MAX_AVATARS) {
+                let r = avatar::small(ui, who, size::AVATAR_SM).on_hover_text(*who);
+                ui.painter().circle_stroke(
+                    r.rect.center(),
+                    size::AVATAR_SM / 2.0,
+                    egui::Stroke::new(1.5, colour::CANVAS),
+                );
+            }
+            ui.spacing_mut().item_spacing.x = space::XS;
+            ui.add_space(AVATAR_OVERLAP + space::XS);
+            let shown = members.iter().take(MAX_AVATARS).copied().collect::<Vec<_>>().join(", ");
+            let rest = members.len().saturating_sub(MAX_AVATARS);
+            value(ui, &if rest > 0 { format!("{shown} +{rest}") } else { shown });
+        }
+        ui.add_space(space::XL);
+
+        if total > 0 {
+            value(ui, &format!("{done} of {total}"));
+            label(ui, "done");
+        } else {
+            label(ui, "No tasks yet");
+        }
+    });
+}
+
+/// A meta-line label: the word, not the fact.
+fn label(ui: &mut egui::Ui, s: &str) {
+    ui.label(egui::RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
+}
+
+/// A meta-line value. Full ink — the owner wants the numbers readable at a
+/// glance, and a muted figure is one the eye skips.
+fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
+    ui.label(egui::RichText::new(s).size(text::SMALL).color(colour::TEXT))
+}
+
+/// "3 days ago", with the absolute date for the hover.
+///
+/// Wordier than `age`, on purpose: a chip repeated down forty rows wants
+/// `3d`, a fact you read once wants the sentence.
+fn created(ts: &str) -> Option<(String, String)> {
+    let then = DateTime::parse_from_rfc3339(ts).ok()?.with_timezone(&Utc);
+    let secs = (Utc::now() - then).num_seconds().max(0);
+    let relative = match secs {
+        s if s < 3600 => "just now".to_owned(),
+        s if s < 86_400 => units(s / 3600, "hour"),
+        s if s < 2_592_000 => units(s / 86_400, "day"),
+        s => units(s / 2_592_000, "month"),
+    };
+    Some((relative, then.format("%-d %B %Y, %H:%M UTC").to_string()))
+}
+
+fn units(n: i64, unit: &str) -> String {
+    if n == 1 {
+        format!("1 {unit} ago")
+    } else {
+        format!("{n} {unit}s ago")
+    }
+}
+
+/// The description, as prose.
+///
+/// Held to `PROSE_W` rather than the content width: the page is 1080 wide and
+/// a paragraph that wide loses the line it is on. Paragraphs are split on the
+/// blank line the API sends them with; nothing wraps this in a card, because
+/// text on the canvas is already the most readable thing we can do with it.
+fn description(ui: &mut egui::Ui, body: &str) {
+    let body = body.trim();
+    if body.is_empty() {
+        w::caption(ui, "No description");
+        return;
+    }
+    ui.scope(|ui| {
+        ui.set_max_width(PROSE_W.min(ui.available_width()));
+        for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
+            if i > 0 {
+                ui.add_space(space::MD);
+            }
+            ui.label(egui::RichText::new(para).size(text::BODY).color(colour::TEXT_2));
+        }
+    });
+}
+
 /// The disciplines of a flow that have any work, in the usual order.
 fn flow_columns(flow: &Value) -> Vec<&Value> {
     let mut columns: Vec<&Value> = flow
@@ -596,62 +765,68 @@ fn flow_columns(flow: &Value) -> Vec<&Value> {
 
 /// The flow strip: one column per discipline that has tasks.
 ///
-/// It reports, it does not gate. A column is where that discipline stands, and
-/// the single arrow after design says only what the usual order is — frontend
-/// and backend can and do run before design has finished.
+/// It reports, it does not gate — there is no arrow between the columns,
+/// because frontend and backend can and do run before design has finished and
+/// a glyph saying otherwise was the one piece of this page that was wrong
+/// rather than merely plain. No card either: three labelled rules on the
+/// canvas are already a group, and the box was drawing a border around them
+/// for the sake of having drawn one.
 fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
     let columns = flow_columns(flow);
+    let full = ui.available_width();
 
     if columns.is_empty() {
-        w::empty(ui, "No tasks have a discipline yet.", "");
+        // A fresh project: an empty bar reads as "nothing yet, and here is
+        // where it will show" — a sentence alone reads as a page that failed.
+        w::progress(ui, 0.0, full, colour::ACCENT);
+        ui.add_space(space::SM);
+        w::caption(ui, "No tasks yet");
         return;
     }
 
-    c::surface(ui, false, |ui| {
-        let full = ui.available_width();
-        ui.set_width(full);
-        let arrow = if columns.len() > 1 { 1.0 } else { 0.0 };
-        let gaps = space::LG * (columns.len() as f32 - 1.0 + arrow);
-        let width = ((full - gaps - space::MD * arrow) / columns.len() as f32)
-            .max(DISCIPLINE_W);
+    let gaps = space::XL * (columns.len() as f32 - 1.0);
+    // The floor stops a column collapsing to nothing; past enough disciplines
+    // it makes the strip wider than the page, which is the only case that
+    // scrolls. Three fit outright, so today nothing does.
+    let width = ((full - gaps) / columns.len() as f32).max(DISCIPLINE_W);
+    let overflows = width * columns.len() as f32 + gaps > full + 1.0;
 
-        // The floor above stops a column collapsing to nothing, which means at
-        // enough disciplines the strip is wider than the card. `horizontal_top`
-        // neither wraps nor scrolls, so it would simply run off the edge; this
-        // scrolls instead. Below the floor it shrinks to fit and no bar shows,
-        // so today's three disciplines are unchanged.
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = space::LG;
-                for (i, d) in columns.iter().enumerate() {
-                    let name = str_at(d, "discipline");
-                    let (done, total) = (num_at(d, "done"), num_at(d, "total"));
-                    ui.vertical(|ui| {
-                        ui.set_width(width);
+    let body = |ui: &mut egui::Ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XL;
+            for d in &columns {
+                let name = str_at(d, "discipline");
+                let (done, total) = (num_at(d, "done"), num_at(d, "total"));
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    ui.label(
+                        egui::RichText::new(name)
+                            .size(text::SMALL)
+                            .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                            .color(colour::TEXT_2),
+                    );
+                    ui.add_space(space::SM);
+                    w::progress(ui, fraction(done, total), width, discipline_colour(name));
+                    ui.add_space(space::SM);
+                    // Right-aligned under the bar's far end, so the figures
+                    // line up as a column of their own down the strip.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            egui::RichText::new(name)
-                                .size(text::SMALL)
-                                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                                .color(colour::TEXT_2),
+                            egui::RichText::new(format!("{done}/{total}"))
+                                .size(text::CAPTION)
+                                .color(colour::TEXT),
                         );
-                        ui.add_space(space::SM);
-                        w::progress(ui, fraction(done, total), width, discipline_colour(name));
-                        ui.add_space(space::XS);
-                        w::caption(ui, &format!("{done} / {total} done"));
                     });
-                    // Hand-painted: a faint glyph between two columns. No widget
-                    // is a bare separator, and `muted` is a step too bright.
-                    if i == 0 && columns.len() > 1 {
-                        ui.label(
-                            egui::RichText::new(icon::ARROW_RIGHT)
-                                .size(text::BODY)
-                                .color(colour::TEXT_FAINT),
-                        );
-                    }
-                }
-            });
+                });
+            }
         });
-    });
+    };
+
+    if overflows {
+        egui::ScrollArea::horizontal().show(ui, body);
+    } else {
+        body(ui);
+    }
 }
 
 /// The header above a phase's tasks: its number and name, how many tasks it

@@ -31,6 +31,7 @@ pub struct CreateProjectBody {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/projects", post(create).get(list))
+        .route("/api/user/projects/{id}", get(show))
         .route("/api/user/projects/{id}/flow", get(flow))
 }
 
@@ -56,6 +57,15 @@ async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRes
     caller.require("read")?;
     let projects = controllers::project::list(&state).await?;
     Ok(ApiResponse::ok(projects))
+}
+
+async fn show(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Project>> {
+    caller.require("read")?;
+    Ok(ApiResponse::ok(controllers::project::get(&state, id).await?))
 }
 
 /// The flow strip: done/total for the project and for each discipline in it.

@@ -158,6 +158,27 @@ pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
     Ok(projects)
 }
 
+/// One project with its roster, for the detail screen.
+pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
+    let mut project: Project = sqlx::query_as(
+        "SELECT id, key, name, description, status, created_at, updated_at
+         FROM project WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+
+    project.member_ids = sqlx::query_scalar(
+        "SELECT person_id FROM project_member WHERE project_id = $1 ORDER BY added_at",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(project)
+}
+
 /// Done/total for a project, and the same split per discipline.
 ///
 /// The flow strip and the home screen both want this, so it is one function
