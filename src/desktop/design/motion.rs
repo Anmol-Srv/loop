@@ -48,7 +48,7 @@ pub fn hover_fill(ui: &Ui, id: Id, hovered: bool, from: Color32, to_c: Color32) 
 /// us: `Response::has_focus` is true only while the widget holds focus, and we
 /// suppress it when the pointer is what put it there.
 pub fn focus_ring(ui: &Ui, response: &Response, r: f32) {
-    if !response.has_focus() {
+    if !response.has_focus() || !keyboard_mode(ui) {
         return;
     }
     let rect = response.rect.expand(2.0);
@@ -83,11 +83,26 @@ pub fn operable(ui: &mut Ui, mut response: Response, r: f32) -> Response {
             response.flags |= egui::response::Flags::FAKE_PRIMARY_CLICKED;
         }
     }
-    if response.clicked() {
-        response.request_focus();
-    }
+    // A click does not take focus. It used to, and every button then wore
+    // the ring until something else was clicked — the ring is for finding
+    // where Tab has got to, and a mouse user already knows.
     focus_ring(ui, &response, r);
     response
+}
+
+/// Whether the last thing the user did was press Tab. egui does not know how
+/// focus arrived, so this remembers: a Tab turns the flag on, a click turns
+/// it off, and the ring is drawn only while it is on. The flag lives in the
+/// temp store under one id, so every widget reads the same answer per frame.
+fn keyboard_mode(ui: &Ui) -> bool {
+    let id = Id::new("motion:keyboard-mode");
+    let (tabbed, clicked) = ui.input(|i| (i.key_pressed(egui::Key::Tab), i.pointer.any_pressed()));
+    ui.ctx().data_mut(|d| {
+        let on = d.get_temp::<bool>(id).unwrap_or(false);
+        let next = if tabbed { true } else if clicked { false } else { on };
+        d.insert_temp(id, next);
+        next
+    })
 }
 
 /// Convenience for the common case: a control with the small radius.
