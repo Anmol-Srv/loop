@@ -101,12 +101,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     );
 
     if let Some(err) = &error {
-        w::error(ui, &format!("Could not load your work. {err}"));
+        w::error(
+            ui,
+            &format!("Could not load your work. {err} Use Refresh in the sidebar to try again."),
+        );
         return;
     }
     if rows.is_empty() {
         if loading {
-            w::loading(ui, "your work");
+            w::loading(ui, "Loading your work");
         } else {
             w::empty(
                 ui,
@@ -149,7 +152,7 @@ fn filter_bar(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        viz::search(ui, "Search tasks", &mut state.query);
+        viz::search(ui, "Search tasks, descriptions, projects…", &mut state.query);
 
         let statuses: Vec<(String, String)> = STATUSES
             .iter()

@@ -57,6 +57,10 @@ const COL_PRIORITY: f32 = 52.0;
 const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
 
+/// The roster's share of the meta line. Past this the names truncate rather
+/// than crowding out the two facts that follow them.
+const MEMBERS_W: f32 = 260.0;
+
 /// Alignment lives with the width, so "Created" sits over the age beneath it.
 /// Ranked by what a narrow window can do without. Title, assignee and status
 /// are the three facts this table exists for and never drop.
@@ -162,19 +166,27 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         "" => "Project",
         n => n,
     };
+    let status = str_at(head, "status");
+    let key = str_at(head, "key");
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        ui.label(
-            RichText::new(name)
-                .size(text::TITLE)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-        let status = str_at(head, "status");
+        // Bounded to what is left after the chip and the key, so a long name
+        // truncates instead of pushing them off the row.
+        let width = (ui.available_width() - trailing_w(ui, status, key)).max(size::ROW);
+        ui.allocate_ui(egui::vec2(width, size::ROW), |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(name)
+                        .size(text::TITLE)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT),
+                )
+                .truncate(),
+            );
+        });
         if !status.is_empty() {
             c::chip(ui, status_label(status), c::status_tone(status), true);
         }
-        let key = str_at(head, "key");
         if !key.is_empty() {
             w::mono_caption(ui, key);
         }
@@ -226,11 +238,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         app.board.adding = Some(TaskDraft::default());
     }
 
-    if let Some(err) = &add_error {
-        w::error(ui, err);
-        ui.add_space(space::MD);
-    }
-
     // Anyone here can be handed a task; the project has no roster of its own.
     // The menu shows each person's department, since that is what the task's
     // discipline will become.
@@ -241,7 +248,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut submit: Option<Value> = None;
     let mut close_form = false;
     if let Some(draft) = app.board.adding.as_mut() {
-        match add_form(ui, draft, &members, posting) {
+        match add_form(ui, draft, &members, posting, add_error.as_deref()) {
             Some(Form::Submit(body)) => submit = Some(body),
             Some(Form::Cancel) => close_form = true,
             None => {}
@@ -338,7 +345,18 @@ fn meta_line(ui: &mut egui::Ui, p: &Value, members: &[&str], done: i64, total: i
             ui.add_space(AVATAR_OVERLAP + space::XS);
             let shown = members.iter().take(MAX_AVATARS).copied().collect::<Vec<_>>().join(", ");
             let rest = members.len().saturating_sub(MAX_AVATARS);
-            value(ui, &if rest > 0 { format!("{shown} +{rest}") } else { shown });
+            let names = if rest > 0 { format!("{shown} +{rest}") } else { shown };
+            // Capped: three long names would otherwise push the done count off
+            // the end of the row.
+            ui.allocate_ui(egui::vec2(MEMBERS_W.min(ui.available_width()), size::ROW), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(names).size(text::SMALL).color(colour::TEXT),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(members.join(", "));
+            });
         }
         ui.add_space(space::XL);
 
@@ -349,6 +367,30 @@ fn meta_line(ui: &mut egui::Ui, p: &Value, members: &[&str], done: i64, total: i
             label(ui, "No tasks yet");
         }
     });
+}
+
+/// What the status chip and the key will take on the title row, so the name
+/// can be bounded to what is left. Mirrors `cards::chip`'s own sizing — the
+/// label, its dot, and padding either side.
+fn trailing_w(ui: &egui::Ui, status: &str, key: &str) -> f32 {
+    let mut width = 0.0;
+    if !status.is_empty() {
+        let galley = ui.painter().layout_no_wrap(
+            status_label(status).to_owned(),
+            egui::FontId::proportional(text::CAPTION),
+            colour::TEXT,
+        );
+        width += galley.size().x + space::SM * 3.0 + 10.0;
+    }
+    if !key.is_empty() {
+        let galley = ui.painter().layout_no_wrap(
+            key.to_owned(),
+            egui::FontId::monospace(text::CAPTION),
+            colour::TEXT,
+        );
+        width += galley.size().x + space::SM;
+    }
+    width
 }
 
 /// A meta-line label: the word, not the fact.
@@ -525,6 +567,13 @@ fn priority_tone(priority: i64) -> c::Tone {
 
 // ------------------------------------------------------------------ add task
 
+/// A server error that names a field belongs under that field; anything else
+/// is a banner. Matched on the word because the API reports validation in
+/// prose, not in a field/message pair.
+fn names<'a>(error: Option<&'a str>, field: &str) -> Option<&'a str> {
+    error.filter(|e| e.to_lowercase().contains(field))
+}
+
 /// What the form said this frame.
 enum Form {
     Submit(Value),
@@ -540,14 +589,25 @@ fn add_form(
     draft: &mut TaskDraft,
     members: &[(String, String)],
     busy: bool,
+    error: Option<&str>,
 ) -> Option<Form> {
     let mut out = None;
 
     c::surface(ui, false, |ui| {
         ui.set_width(ui.available_width());
-        w::field(ui, "Title", &mut draft.title, false, "What needs doing");
+        w::field(ui, "Title", &mut draft.title, false, "e.g. Design the payment step…");
+        if let Some(err) = names(error, "title") {
+            ui.add_space(space::XXS);
+            w::error(ui, err);
+        }
         ui.add_space(space::MD);
-        w::field_multiline(ui, "Description", &mut draft.body, 2, "Any detail worth having.");
+        w::field_multiline(
+            ui,
+            "Description",
+            &mut draft.body,
+            2,
+            "e.g. Cards and UPI only, no wallets…",
+        );
         ui.add_space(space::MD);
 
         let priorities: Vec<(String, String)> =
@@ -558,6 +618,13 @@ fn add_form(
             viz::select(ui, "P2 Normal", &priorities, &mut draft.priority);
         });
         ui.add_space(space::LG);
+
+        // Anything the server did not pin on a field stays a banner, but it
+        // sits with the button that caused it rather than above the form.
+        if let Some(err) = error.filter(|_| names(error, "title").is_none()) {
+            w::error(ui, err);
+            ui.add_space(space::MD);
+        }
 
         // An untitled task has nothing to be listed as, so Add stays off.
         let ready = !draft.title.trim().is_empty() && !busy;

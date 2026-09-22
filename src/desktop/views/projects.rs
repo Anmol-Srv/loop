@@ -211,6 +211,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         net.invalidate(PROJECTS_KEY);
         net.invalidate("home");
         net.invalidate_prefix("task:");
+        // The form hands out tasks too, so an assignee's personal list is stale
+        // the moment this succeeds.
+        net.invalidate_prefix("mytasks");
         app.board.creating = None;
     }
 
@@ -246,10 +249,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let labels = array(net.data(LABELS_KEY));
     let loading = net.is_loading(PROJECTS_KEY);
     let error = net.error(PROJECTS_KEY).map(str::to_string);
-    // Both of the form's requests report into the same banner: they come from
-    // the same form, and a second error slot would be a second thing to miss.
-    let create_error =
-        net.error(CREATE_KEY).or_else(|| net.error(NEW_LABEL_KEY)).map(str::to_string);
+    let create_error = net.error(CREATE_KEY).map(str::to_string);
+    // The label request is its own errand with its own row far down the form,
+    // so its failure is reported there rather than in the banner up here.
+    let label_error = net.error(NEW_LABEL_KEY).map(str::to_string);
     let creating = net.is_loading(CREATE_KEY);
 
     // One `/flow` per project — cached, so once per project per session. A
@@ -286,7 +289,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let mut post: Option<Post> = None;
     if let Some(draft) = app.board.creating.as_mut() {
-        post = create_form(ui, draft, &people, &labels, creating);
+        post = create_form(ui, draft, &people, &labels, creating, label_error.as_deref());
         ui.add_space(space::LG);
     }
 
@@ -295,7 +298,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         w::error(ui, &err);
     } else if list.is_empty() {
         if loading {
-            w::loading(ui, "projects");
+            w::loading(ui, "Loading projects");
         } else if app.board.creating.is_none() {
             w::empty(
                 ui,
@@ -529,6 +532,7 @@ fn create_form(
     people: &[Value],
     labels: &[Value],
     busy: bool,
+    label_error: Option<&str>,
 ) -> Option<Post> {
     let mut post = None;
     let mut cancel = false;
@@ -538,20 +542,20 @@ fn create_form(
         w::heading(ui, "New project");
         ui.add_space(space::MD);
 
-        w::field(ui, "Title", &mut draft.title, false, "Checkout redesign");
+        w::field(ui, "Title", &mut draft.title, false, "e.g. Checkout redesign…");
         ui.add_space(space::MD);
         w::field_multiline(
             ui,
             "Description",
             &mut draft.description,
             3,
-            "What this project is for, and what done looks like.",
+            "e.g. Rebuild checkout so paying takes one screen…",
         );
         ui.add_space(space::MD);
 
         properties_row(ui, draft, labels);
         ui.add_space(space::SM);
-        new_label_row(ui, draft, &mut post);
+        new_label_row(ui, draft, &mut post, label_error);
         ui.add_space(space::LG);
 
         // A task goes to anyone here. The project has no roster of its own:
@@ -688,7 +692,12 @@ fn date_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 /// Collapsed behind a link, because the common path is picking one that
 /// already exists: a name box and a colour menu sitting open would make "new"
 /// look like the expected move and turn one control into three.
-fn new_label_row(ui: &mut egui::Ui, draft: &mut Draft, post: &mut Option<Post>) {
+fn new_label_row(
+    ui: &mut egui::Ui,
+    draft: &mut Draft,
+    post: &mut Option<Post>,
+    error: Option<&str>,
+) {
     if !draft.new_label {
         if w::link(ui, "+ New label").clicked() {
             draft.new_label = true;
@@ -700,7 +709,7 @@ fn new_label_row(ui: &mut egui::Ui, draft: &mut Draft, post: &mut Option<Post>) 
         LABEL_COLOURS.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        row_input(ui, NEW_LABEL_W, "Label name", &mut draft.new_label_name);
+        row_input(ui, NEW_LABEL_W, "e.g. Platform…", &mut draft.new_label_name);
         viz::select(ui, "Slate", &colours, &mut draft.new_label_colour);
         // The endpoint is idempotent, so a name that already exists comes back
         // as that label rather than as a duplicate or an error — which makes
@@ -715,6 +724,9 @@ fn new_label_row(ui: &mut egui::Ui, draft: &mut Draft, post: &mut Option<Post>) 
         if w::ghost(ui, "Close").clicked() {
             draft.new_label = false;
             draft.new_label_name.clear();
+        }
+        if let Some(err) = error {
+            w::error(ui, err);
         }
     });
 }
@@ -740,7 +752,7 @@ fn tasks_section(ui: &mut egui::Ui, draft: &mut Draft, assignable: &[(String, St
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let width = (ui.available_width() - TASK_CONTROLS_W).max(TASK_TITLE_MIN_W);
-            row_input(ui, width, "What needs doing", &mut task.title);
+            row_input(ui, width, "e.g. Design the payment step…", &mut task.title);
             viz::select(ui, "Unassigned", assignable, &mut task.assignee);
             viz::select(ui, "P2 Normal", &priorities, &mut task.priority);
             if w::ghost(ui, "Remove").clicked() {

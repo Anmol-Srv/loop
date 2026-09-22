@@ -59,6 +59,29 @@ fn tidy_code(raw: &str) -> String {
         .join("-")
 }
 
+/// What the disabled submit is waiting on, so the reason is in the form and
+/// not only in a tooltip on a control that cannot be hovered in every case.
+/// `None` on a pristine form: nothing is missing until something is typed.
+fn missing(s: &State, first_time: bool) -> Option<&'static str> {
+    if s.email.is_empty() && s.password.is_empty() && s.code.is_empty() {
+        return None;
+    }
+    if s.email.trim().is_empty() {
+        return Some("Enter your email address.");
+    }
+    if first_time && s.code.trim().is_empty() {
+        return Some("Enter the setup code an admin gave you.");
+    }
+    if s.password.is_empty() {
+        return Some(if first_time { "Choose a password." } else { "Enter your password." });
+    }
+    if first_time && s.confirm != s.password {
+        // The mismatch already has its own line under the field.
+        return s.confirm.is_empty().then_some("Confirm the new password.");
+    }
+    None
+}
+
 /// Enter in a field submits the form, the way every other sign-in does.
 fn entered(response: egui::Response) -> bool {
     response.lost_focus() && response.ctx.input(|i| i.key_pressed(egui::Key::Enter))
@@ -148,13 +171,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                             submit |= entered(w::field(ui, "Setup code", &mut s.code, false, "K7QF-M2XT-9PDR"));
                             ui.add_space(space::MD);
                             submit |=
-                                entered(w::field(ui, "New password", &mut s.password, true, "at least 12 characters"));
+                                entered(w::field(ui, "New password", &mut s.password, true, "At least 12 characters\u{2026}"));
                             ui.add_space(space::MD);
                             submit |=
                                 entered(w::field(ui, "Confirm password", &mut s.confirm, true, ""));
                             if !s.confirm.is_empty() && s.confirm != s.password {
                                 ui.add_space(space::XS);
-                                w::caption(ui, "passwords do not match");
+                                w::caption(ui, "Passwords do not match \u{2014} retype the confirmation.");
                             }
                         } else {
                             ui.add_space(space::MD);
@@ -179,12 +202,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                             )
                             .inner
                             .on_disabled_hover_text(if busy {
-                                "working"
+                                "Signing you in\u{2026}"
                             } else {
-                                "fill in every field"
+                                "Fill in every field to continue."
                             })
                             .clicked();
                         submit = (submit || clicked) && ready && !busy;
+
+                        if let Some(next) = (!busy).then(|| missing(s, first_time)).flatten() {
+                            ui.add_space(space::XS);
+                            w::caption(ui, next);
+                        }
 
                         if busy {
                             ui.add_space(space::MD);

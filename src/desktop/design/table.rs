@@ -216,7 +216,7 @@ pub fn show(
     let was: Option<usize> = ui.ctx().data(|d| d.get_temp(hover_id)).flatten();
     let mut now: Option<usize> = None;
     let mut clicked: Option<usize> = None;
-    let mut responses: Vec<egui::Response> = Vec::with_capacity(n);
+    let mut responses: Vec<(usize, egui::Response)> = Vec::with_capacity(n);
 
     egui::Frame::new()
         .fill(colour::SURFACE)
@@ -277,16 +277,17 @@ pub fn show(
                         });
                     }
                 })
-                .body(|mut body| {
-                    for i in 0..n {
-                        body.row(ROW_H, |mut r| {
-                            row(&mut Cells { row: &mut r, cols, visible: &visible }, i);
-                            responses.push(r.response());
-                        });
-                    }
+                .body(|body| {
+                    // `rows` culls to what is on screen; a loop of `row` would
+                    // build all of them, and these lists are unbounded.
+                    body.rows(ROW_H, n, |mut r| {
+                        let i = r.index();
+                        row(&mut Cells { row: &mut r, cols, visible: &visible }, i);
+                        responses.push((i, r.response()));
+                    });
                 });
 
-            for (i, response) in responses.into_iter().enumerate() {
+            for (i, response) in responses {
                 let response = motion::operable_sm(ui, response);
                 if response.hovered() {
                     now = Some(i);
@@ -301,8 +302,14 @@ pub fn show(
             // rects are known without asking the table.
             let mut shapes: Vec<egui::Shape> = Vec::with_capacity(n + 1);
             let first_row = top + size::CONTROL;
+            let clip = ui.clip_rect();
             for i in 0..n {
                 let row_top = first_row + i as f32 * ROW_H;
+                // Off-screen rows are not built, so they do not need a rule
+                // or a hover fill either.
+                if row_top + ROW_H < clip.top() || row_top > clip.bottom() {
+                    continue;
+                }
                 if i > 0 {
                     shapes.push(egui::Shape::hline(
                         x_range,

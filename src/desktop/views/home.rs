@@ -159,11 +159,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
 
     if let Some(err) = &error {
-        w::error(ui, err);
+        w::error(ui, &format!("{err} Use Refresh in the sidebar to try again."));
         return;
     }
     if loading && rows.is_empty() {
-        w::loading(ui, "Loading");
+        w::loading(ui, "Loading your dashboard");
         return;
     }
 
@@ -400,7 +400,7 @@ fn filter_bar(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        viz::search(ui, "Search tasks", &mut state.query);
+        viz::search(ui, "Search tasks, projects, phases…", &mut state.query);
 
         if viz::filter(ui, "Mine", state.mine, false).clicked() {
             state.mine = !state.mine;

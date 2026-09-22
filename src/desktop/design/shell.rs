@@ -290,7 +290,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
                 fg,
             );
         }
-        return response;
+        return response.on_hover_text(item.label);
     }
 
     let x = rect.left() + space::SM;
@@ -305,35 +305,64 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
             fg,
         );
     }
-    p.text(
-        egui::pos2(x + size::ICON_COL, rect.center().y),
-        egui::Align2::LEFT_CENTER,
+    // A badge demands attention and takes the accent; a count is ambient and
+    // stays faint. Both right-aligned, never both present. Measured before the
+    // label is painted, so a long name truncates into what is left of the rail
+    // instead of running under them.
+    let trailing = if item.badge > 0 {
+        Some((
+            p.layout_no_wrap(
+                item.badge.to_string(),
+                egui::FontId::proportional(text::CAPTION),
+                colour::ON_ACCENT,
+            ),
+            true,
+        ))
+    } else {
+        item.count.as_ref().map(|count| {
+            (
+                p.layout_no_wrap(
+                    count.clone(),
+                    egui::FontId::proportional(text::CAPTION),
+                    colour::TEXT_FAINT,
+                ),
+                false,
+            )
+        })
+    };
+    let trailing_w = trailing
+        .as_ref()
+        .map(|(g, badge)| g.size().x + if *badge { space::MD } else { 0.0 } + space::SM)
+        .unwrap_or(0.0);
+
+    let label_x = x + size::ICON_COL;
+    let label = super::widgets::truncated(
+        ui,
         item.label,
         egui::FontId::proportional(text::BODY),
         fg,
+        (rect.right() - space::SM - trailing_w - label_x).max(0.0),
     );
+    p.galley(egui::pos2(label_x, rect.center().y - label.size().y / 2.0), label, fg);
 
-    // A badge demands attention and takes the accent; a count is ambient and
-    // stays faint. Both right-aligned, never both present.
-    if item.badge > 0 {
-        let label = item.badge.to_string();
-        let galley =
-            p.layout_no_wrap(label, egui::FontId::proportional(text::CAPTION), colour::ON_ACCENT);
-        let w = galley.size().x + space::MD;
-        let badge = egui::Rect::from_center_size(
-            egui::pos2(rect.right() - space::SM - w / 2.0, rect.center().y),
-            egui::vec2(w, size::BADGE_H),
-        );
-        p.rect_filled(badge, radius::PILL as f32, colour::DANGER);
-        p.galley(badge.center() - galley.size() / 2.0, galley, colour::TEXT);
-    } else if let Some(count) = &item.count {
-        p.text(
-            egui::pos2(rect.right() - space::SM, rect.center().y),
-            egui::Align2::RIGHT_CENTER,
-            count,
-            egui::FontId::proportional(text::CAPTION),
-            colour::TEXT_FAINT,
-        );
+    match trailing {
+        Some((galley, true)) => {
+            let w = galley.size().x + space::MD;
+            let badge = egui::Rect::from_center_size(
+                egui::pos2(rect.right() - space::SM - w / 2.0, rect.center().y),
+                egui::vec2(w, size::BADGE_H),
+            );
+            p.rect_filled(badge, radius::PILL as f32, colour::DANGER);
+            p.galley(badge.center() - galley.size() / 2.0, galley, colour::TEXT);
+        }
+        Some((galley, false)) => {
+            let at = egui::pos2(
+                rect.right() - space::SM - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            p.galley(at, galley, colour::TEXT_FAINT);
+        }
+        None => {}
     }
 
     response
@@ -383,13 +412,20 @@ pub fn page_title(
     trailing: impl FnOnce(&mut Ui),
 ) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(title)
-                .size(text::TITLE)
-                .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), trailing);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            trailing(ui);
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(title)
+                            .size(text::TITLE)
+                            .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
+                            .color(colour::TEXT),
+                    )
+                    .truncate(),
+                );
+            });
+        });
     });
     if !subtitle.is_empty() {
         ui.add_space(space::XXS);
