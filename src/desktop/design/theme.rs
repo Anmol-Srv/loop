@@ -120,6 +120,13 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals(v);
 
     ctx.all_styles_mut(|s| {
+        // egui surfaces no OS reduce-motion flag (see motion.rs), but its own
+        // animation_time turns every animation off — including the hand-rolled
+        // ones, which all read the knob. An env override makes that reachable
+        // until eframe exposes the system setting.
+        if std::env::var_os("AIRTRIBE_REDUCE_MOTION").is_some() {
+            s.animation_time = 0.0;
+        }
         s.spacing.item_spacing = egui::vec2(space::SM, space::SM);
         s.spacing.menu_margin = egui::Margin::same(space::XS as i8);
         s.spacing.button_padding = egui::vec2(super::tokens::pad::BUTTON.0, super::tokens::pad::BUTTON.1);

@@ -473,6 +473,101 @@ pub fn section_count_with(
 }
 
 /// A section heading inside a page body.
+/// A hairline between two stacked sections.
+///
+/// A labelled heading alone was not enough separation on the task page: four
+/// sections down one column at the same weight read as one long column with
+/// words in it. The rule is what says "this is a different thing".
+pub fn divider(ui: &mut Ui) {
+    ui.add_space(space::XL);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE));
+}
+
+/// A page split into a content column and a properties rail.
+///
+/// The rail is Linear's shape and it earns its place: status, priority and
+/// owner are facts you glance at, not prose you read, so they do not belong
+/// in the reading column. Below `RAIL_AT` the window is too narrow to carry
+/// both and the rail stacks under the content instead.
+pub fn with_rail(ui: &mut Ui, content: impl FnOnce(&mut Ui), rail: impl FnOnce(&mut Ui)) {
+    if ui.available_width() < RAIL_AT {
+        content(ui);
+        ui.add_space(space::XL);
+        rail_surface(ui, rail);
+        return;
+    }
+
+    let full = ui.available_width();
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XXL;
+        ui.allocate_ui_with_layout(
+            egui::vec2(full - size::RAIL_W - space::XXL, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_width(ui.available_width());
+                content(ui);
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(size::RAIL_W, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_width(size::RAIL_W);
+                rail_surface(ui, rail);
+            },
+        );
+    });
+}
+
+/// Content width at which the properties rail sits beside the content rather
+/// than under it. Below this the reading column would be narrower than the
+/// rail, which is the wrong way round.
+const RAIL_AT: f32 = 760.0;
+
+fn rail_surface(ui: &mut Ui, rail: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::same(space::LG as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            rail(ui);
+        });
+}
+
+/// One row of the properties rail: a muted label, then the value.
+///
+/// The label column is fixed so every value in the rail starts at the same x
+/// — a ragged left edge down a list of facts is the thing that makes a rail
+/// look like a pile.
+pub fn property(ui: &mut Ui, label: &str, value: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(size::CONTROL);
+        ui.spacing_mut().item_spacing.x = space::SM;
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(PROPERTY_LABEL_W, size::CONTROL),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(text::SMALL),
+            colour::TEXT_MUTED,
+        );
+        value(ui);
+    });
+    ui.add_space(space::XS);
+}
+
+/// Wide enough for "Department", which is the longest label the rail carries.
+const PROPERTY_LABEL_W: f32 = 82.0;
+
 pub fn section(ui: &mut Ui, label: &str) {
     ui.add_space(space::XL);
     ui.label(

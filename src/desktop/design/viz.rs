@@ -8,6 +8,7 @@
 use egui::{Color32, Pos2, Response, RichText, Sense, Ui, Vec2};
 
 use super::tokens::{colour, radius, size, space, text};
+use super::widgets::truncated;
 use super::{motion, theme};
 
 /// How many bars a figure shows before it collapses the rest into a count.
@@ -136,11 +137,11 @@ pub fn bar_row(ui: &mut Ui, name: &str, fill: f32, tint: Color32, right: &str, n
     ui.horizontal(|ui| {
         ui.set_height(14.0);
         let (n, _) = ui.allocate_exact_size(Vec2::new(name_w, 14.0), Sense::hover());
-        ui.painter().text(
-            egui::pos2(n.left(), n.center().y),
-            egui::Align2::LEFT_CENTER,
-            name,
-            egui::FontId::proportional(text::CAPTION),
+        let galley =
+            truncated(ui, name, egui::FontId::proportional(text::CAPTION), colour::TEXT_2, name_w);
+        ui.painter().galley(
+            egui::pos2(n.left(), n.center().y - galley.size().y / 2.0),
+            galley,
             colour::TEXT_2,
         );
 
@@ -412,20 +413,6 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response
-}
-
-/// One line, ellipsised rather than wrapped. A control that grows a second
-/// line breaks the height every other control on the bar agreed to.
-fn truncated(
-    ui: &Ui,
-    label: &str,
-    font: egui::FontId,
-    ink: Color32,
-    max_w: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, ink);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
-    ui.painter().layout_job(job)
 }
 
 /// The disclosure triangle, as geometry. See `CARET_W`.

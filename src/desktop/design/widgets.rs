@@ -70,6 +70,20 @@ pub fn id(ui: &mut Ui, value: &str) -> Response {
 
 // ---------------------------------------------------------------- status
 
+/// One line, ellipsised rather than wrapped. A label that grows a second line
+/// breaks the height every control on its row agreed to.
+pub fn truncated(
+    ui: &Ui,
+    label: &str,
+    font: egui::FontId,
+    ink: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
+    ui.painter().layout_job(job)
+}
+
 /// A filled dot. The densest possible way to show state — used in list rows
 /// where a pill would be too loud repeated forty times.
 pub fn dot(ui: &mut Ui, c: Color32) {
@@ -79,10 +93,14 @@ pub fn dot(ui: &mut Ui, c: Color32) {
 
 /// A tinted pill. For one-off state, not for every row.
 pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), egui::FontId::proportional(text::CAPTION), c);
     let pad = Vec2::new(space::SM, space::XXS);
+    let galley = truncated(
+        ui,
+        label,
+        egui::FontId::proportional(text::CAPTION),
+        c,
+        (ui.available_width() - pad.x * 2.0).max(size::DOT * 4.0),
+    );
     let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::hover());
     ui.painter()
         .rect_filled(rect, radius::SM as f32, c.gamma_multiply(0.10));
@@ -99,12 +117,12 @@ pub fn discipline(ui: &mut Ui, value: &str) {
     if value.is_empty() {
         return;
     }
-    ui.painter().text(
-        egui::pos2(rect.left(), rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        value,
-        egui::FontId::monospace(text::CAPTION),
-        super::tokens::discipline_colour(value),
+    let ink = super::tokens::discipline_colour(value);
+    let galley = truncated(ui, value, egui::FontId::monospace(text::CAPTION), ink, rect.width());
+    ui.painter().galley(
+        egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
     );
 }
 
@@ -114,10 +132,13 @@ pub fn discipline(ui: &mut Ui, value: &str) {
 /// the thing it waits on is what makes the row actionable. A "blocked" pill
 /// tells you to go and find out; this tells you.
 pub fn blocked_by(ui: &mut Ui, what: &str) {
-    ui.label(
-        RichText::new(format!("\u{2933} waiting on \u{201c}{what}\u{201d}"))
-            .size(text::SMALL)
-            .color(colour::TEXT_FAINT),
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!("\u{2933} waiting on \u{201c}{what}\u{201d}"))
+                .size(text::SMALL)
+                .color(colour::TEXT_FAINT),
+        )
+        .truncate(),
     );
 }
 
@@ -225,7 +246,8 @@ pub fn card_button<R>(
     let hovered = ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false));
 
     let out = glass_panel(ui, hovered, add);
-    let response = out.response.interact(egui::Sense::click());
+    let response =
+        super::motion::operable(ui, out.response.interact(egui::Sense::click()), radius::MD as f32);
 
     ui.ctx().data_mut(|d| d.insert_temp(id, response.hovered()));
     if response.hovered() {
@@ -546,7 +568,9 @@ pub fn loading(ui: &mut Ui, what: &str) {
     ui.horizontal(|ui| {
         ui.add(egui::Spinner::new().size(text::BODY));
         ui.add_space(space::XS);
-        muted(ui, what);
+        // The ellipsis belongs to the widget, not to eight call sites that
+        // each have to remember it.
+        muted(ui, &format!("{what}\u{2026}"));
     });
 }
 

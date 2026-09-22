@@ -225,6 +225,10 @@ pub mod size {
     pub const SIDEBAR_W_NARROW: f32 = 56.0;
     /// The work column stops widening here; beyond it, cards just stretch.
     pub const CONTENT_MAX: f32 = 1080.0;
+    /// The properties rail beside a detail page. Wide enough for a status
+    /// dropdown and an avatar with a name, narrow enough that the reading
+    /// column keeps the majority of the page.
+    pub const RAIL_W: f32 = 264.0;
     /// A nav row, taller than a list row — it is a target, not data.
     pub const NAV_ROW: f32 = 32.0;
     // No CONTENT_MAX: the body runs to the window edge. A centred measure suits

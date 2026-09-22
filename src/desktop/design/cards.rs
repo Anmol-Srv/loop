@@ -7,7 +7,7 @@
 
 use egui::{Align, Color32, Layout, Response, RichText, Sense, Ui, Vec2};
 
-use super::theme;
+use super::{motion, theme};
 use super::tokens::{colour, pad, radius, size, space, text};
 
 /// What a chip means. Each variant is one hue with a matching tint, so colour
@@ -273,7 +273,7 @@ pub fn task_card(ui: &mut Ui, card: &TaskCard<'_>) -> Response {
         });
     });
 
-    let response = out.response.interact(Sense::click());
+    let response = motion::operable(ui, out.response.interact(Sense::click()), radius::LG as f32);
     ui.ctx().data_mut(|d| d.insert_temp(id, response.hovered()));
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -322,11 +322,22 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                         Vec2::new(galley.size().x + space::MD * 2.0, 24.0),
                         Sense::click(),
                     );
+                    let response = motion::operable(ui, response, radius::PILL as f32);
                     if on {
                         ui.painter()
                             .rect_filled(rect, radius::PILL as f32, colour::SURFACE_ACTIVE);
-                    } else if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    } else {
+                        let tint = motion::hover_fill(
+                            ui,
+                            response.id.with("hover"),
+                            response.hovered() || response.has_focus(),
+                            Color32::TRANSPARENT,
+                            colour::SURFACE_HOVER,
+                        );
+                        ui.painter().rect_filled(rect, radius::PILL as f32, tint);
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
                     }
                     ui.painter().galley(
                         rect.center() - galley.size() / 2.0,
