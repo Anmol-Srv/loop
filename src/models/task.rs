@@ -30,6 +30,15 @@ pub fn terminal_of(department: Option<&str>) -> &'static str {
     flow_of(department).last().expect("a flow is never empty")
 }
 
+/// When a task stops holding up the tasks that wait on it, as a SQL tuple.
+///
+/// Not `done_at`: that marks the end of a task's own track, which is later
+/// than the moment the work it blocks can start. Design unblocks engineering
+/// at `handoff` — that is what a handoff is — and engineering unblocks its
+/// dependents at `completed`, not when the change finally ships. A dropped
+/// blocker is resolved too; nothing is going to arrive.
+pub const BLOCKER_RESOLVED: &str = "('handoff', 'completed', 'shipped', 'dropped')";
+
 /// Every state either track can produce. For a schema or a filter menu that
 /// has no one task in hand; `statuses_for` is what a real task is checked
 /// against.
@@ -119,11 +128,12 @@ pub fn task_row_select() -> String {
                 own.department AS discipline,
                 (SELECT count(*) FROM task b WHERE b.id = ANY(t.blocked_by)) AS blockers_total,
                 (SELECT count(*) FROM task b
-                  WHERE b.id = ANY(t.blocked_by) AND b.status = 'done') AS blockers_done
+                  WHERE b.id = ANY(t.blocked_by) AND b.status IN {RESOLVED}) AS blockers_done
            FROM task t
            JOIN phase ph ON ph.id = t.phase_id
            JOIN project pr ON pr.id = ph.project_id
            LEFT JOIN person own ON own.id = t.assignee_person_id",
-        cols = TASK_COLUMNS.replace(", ", ", t.")
+        cols = TASK_COLUMNS.replace(", ", ", t."),
+        RESOLVED = BLOCKER_RESOLVED,
     )
 }

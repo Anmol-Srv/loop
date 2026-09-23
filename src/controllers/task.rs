@@ -479,3 +479,108 @@ async fn exists(state: &AppState, id: Uuid) -> AppResult<()> {
         .ok_or_else(|| AppError::NotFound("task not found".into()))?;
     Ok(())
 }
+
+/// The fields of a task anyone with write access may change: its words, its
+/// priority, and who holds it. Status is not here — it has its own rules and
+/// its own route, and only the assignee moves it.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDetails {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// Absent leaves the assignee alone, `null` unassigns, an id reassigns.
+    #[serde(default, deserialize_with = "crate::models::present")]
+    pub assignee_id: Option<Option<Uuid>>,
+}
+
+/// Edit a task's details, reassigning it if asked.
+///
+/// Reassignment can move a task to another track, because the track is the
+/// assignee's department. A status the new track does not have — a design
+/// `handoff` given to an engineer — becomes `open` for the new holder, which
+/// is what a handoff means: it is theirs to start. `done_at` is recomputed
+/// against the new track's finish line in the same statement, so the two can
+/// never disagree.
+pub async fn update_details(
+    state: &AppState,
+    actor: &Actor,
+    id: Uuid,
+    details: TaskDetails,
+) -> AppResult<Outcome<Task>> {
+    if let Some(title) = &details.title {
+        if title.trim().is_empty() {
+            return Err(AppError::BadRequest("a task needs a title".into()));
+        }
+    }
+    if let Some(p) = details.priority {
+        if !(0..=4).contains(&p) {
+            return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+        }
+    }
+
+    let patch = json!({ "details": details });
+    if !actor.can_apply {
+        exists(state, id).await?;
+        let change_id = propose(&state.db, actor, TargetType::Task, id, Op::Update, patch).await?;
+        return Ok(Outcome::Proposed { change_id });
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    let (status, assignee): (String, Option<Uuid>) =
+        sqlx::query_as("SELECT status, assignee_person_id FROM task WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+
+    let assignee = details.assignee_id.unwrap_or(assignee);
+    let department: Option<String> = match assignee {
+        Some(person) => Some(
+            sqlx::query_scalar("SELECT department FROM person WHERE id = $1 AND deleted_at IS NULL")
+                .bind(person)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| AppError::BadRequest("the assignee is not a person here".into()))?,
+        ),
+        None => None,
+    };
+    let department = department.as_deref();
+    let status = if statuses_for(department).contains(&status.as_str()) {
+        status
+    } else {
+        "open".to_owned()
+    };
+    let finished = status == terminal_of(department);
+
+    let task: Task = sqlx::query_as(&format!(
+        "UPDATE task SET
+            title              = coalesce($2, title),
+            body               = coalesce($3, body),
+            priority           = coalesce($4, priority),
+            assignee_kind      = CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END,
+            assignee_person_id = $5,
+            assignee_token_id  = NULL,
+            status             = $6,
+            done_at            = CASE WHEN $7 THEN coalesce(done_at, now()) ELSE NULL END,
+            updated_at         = now()
+          WHERE id = $1 RETURNING {TASK_COLUMNS}"
+    ))
+    .bind(id)
+    .bind(details.title.as_deref().map(str::trim))
+    .bind(details.body.as_deref().map(str::trim))
+    .bind(details.priority)
+    .bind(assignee)
+    .bind(&status)
+    .bind(finished)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    record(&mut tx, actor, TargetType::Task, id, Op::Update, patch).await?;
+    tx.commit().await?;
+    Ok(Outcome::Applied { entity: task })
+}

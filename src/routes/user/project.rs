@@ -46,7 +46,7 @@ fn default_priority() -> i32 {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/projects", post(create).get(list))
-        .route("/api/user/projects/{id}", get(show))
+        .route("/api/user/projects/{id}", get(show).patch(update))
         .route("/api/user/projects/{id}/flow", get(flow))
         .route("/api/user/projects/{id}/tasks", post(add_task))
 }
@@ -77,6 +77,16 @@ async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRes
     caller.require("read")?;
     let projects = controllers::project::list(&state).await?;
     Ok(ApiResponse::ok(projects))
+}
+
+async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<controllers::project::ProjectPatch>,
+) -> AppResult<ApiResponse<Outcome<Project>>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::project::update(&state, &caller.actor, id, body).await?))
 }
 
 async fn show(

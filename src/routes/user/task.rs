@@ -74,6 +74,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/mine", get(mine))
         .route("/api/user/tasks/{id}", get(one).patch(update))
         .route("/api/user/tasks/{id}/assign", post(assign))
+        .route("/api/user/tasks/{id}/details", patch(details))
         .route("/api/user/tasks/{id}/claim", post(claim))
         .route("/api/user/tasks/{id}/release", post(release))
         .route("/api/user/tasks/{id}/blockers", patch(blockers))
@@ -120,6 +121,20 @@ async fn update(
     Ok(ApiResponse::ok(
         controllers::task::set_status(&state, &caller.actor, id, body.status, body.manual_reason)
             .await?,
+    ))
+}
+
+/// Title, description, priority and assignee. Any writer may change these;
+/// status stays with the assignee and has its own route.
+async fn details(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<controllers::task::TaskDetails>,
+) -> AppResult<ApiResponse<Outcome<Task>>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(
+        controllers::task::update_details(&state, &caller.actor, id, body).await?,
     ))
 }
 

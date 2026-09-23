@@ -76,3 +76,29 @@ pub async fn list(state: &AppState, parent_type: String, parent_id: Uuid) -> App
 
     Ok(artifacts)
 }
+
+/// Remove a piece of evidence that was attached by mistake.
+///
+/// Recorded as a `Delete` change so the audit trail still shows it existed —
+/// a PR link that vanishes with no trace is exactly the kind of thing this
+/// table is here to prevent. It does not move the task's status back: the
+/// evidence gate guards the transition, not the state afterwards.
+pub async fn remove(state: &AppState, actor: &Actor, id: Uuid) -> AppResult<Outcome<Artifact>> {
+    let patch = serde_json::json!({ "id": id });
+    if !actor.can_apply {
+        let change_id = propose(&state.db, actor, TargetType::Artifact, id, Op::Delete, patch).await?;
+        return Ok(Outcome::Proposed { change_id });
+    }
+
+    let mut tx = state.db.begin().await?;
+    let artifact: Artifact = sqlx::query_as(&format!(
+        "DELETE FROM artifact WHERE id = $1 RETURNING {COLUMNS}"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("that link is already gone".into()))?;
+    record(&mut tx, actor, TargetType::Artifact, id, Op::Delete, patch).await?;
+    tx.commit().await?;
+    Ok(Outcome::Applied { entity: artifact })
+}

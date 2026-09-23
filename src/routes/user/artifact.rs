@@ -1,5 +1,5 @@
-use axum::extract::{Query, State};
-use axum::routing::post;
+use axum::extract::{Path, Query, State};
+use axum::routing::{delete, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -31,7 +31,9 @@ pub struct ArtifactQuery {
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/user/artifacts", post(add).get(list))
+    Router::new()
+        .route("/api/user/artifacts", post(add).get(list))
+        .route("/api/user/artifacts/{id}", delete(remove))
 }
 
 async fn add(
@@ -53,4 +55,13 @@ async fn list(
 ) -> AppResult<ApiResponse<Vec<Artifact>>> {
     caller.require("read")?;
     Ok(ApiResponse::ok(controllers::artifact::list(&state, q.parent_type, q.parent_id).await?))
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Outcome<Artifact>>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::artifact::remove(&state, &caller.actor, id).await?))
 }

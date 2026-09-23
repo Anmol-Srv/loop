@@ -108,6 +108,15 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+}
+
+impl App {
+    /// One frame of the whole app. Public so `tests/page_render.rs` can drive
+    /// the real app — real views, real fetches against a real server —
+    /// without an `eframe::Frame`, which only a native window can make.
+    pub fn frame(&mut self, ui: &mut egui::Ui) {
         if let Some(net) = self.net.as_mut() {
             net.pump();
         }

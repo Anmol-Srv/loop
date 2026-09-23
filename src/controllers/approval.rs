@@ -186,6 +186,16 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             Outcome::Applied { entity } => Some(entity.id),
             Outcome::Proposed { .. } => None,
         },
+        ("project", "update") => {
+            let patch = serde_json::from_value(p.clone())
+                .map_err(|e| AppError::Internal(format!("project patch unreadable: {e}")))?;
+            project::update(state, actor, change.target_id, patch).await?;
+            None
+        }
+        ("artifact", "delete") => {
+            artifact::remove(state, actor, change.target_id).await?;
+            None
+        }
         ("phase", "update") => {
             phase::set_status(state, actor, change.target_id, str_at("status")?).await?;
             None
@@ -205,7 +215,11 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
         },
         ("task", "update") => {
             // Which key the patch carries says which controller made it.
-            if p.get("status").is_some() {
+            if let Some(details) = p.get("details") {
+                let details = serde_json::from_value(details.clone())
+                    .map_err(|e| AppError::Internal(format!("task details unreadable: {e}")))?;
+                task::update_details(state, actor, change.target_id, details).await?;
+            } else if p.get("status").is_some() {
                 task::set_status(
                     state,
                     actor,

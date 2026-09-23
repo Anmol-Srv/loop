@@ -325,6 +325,11 @@ pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
 
 /// Done/total for a project, and the same split per discipline.
 ///
+/// "Done" is `done_at`, the one field both tracks stamp at their own finish
+/// line; asking for a status here would mean asking which of two different
+/// words means finished. Dropped work is out of the total entirely — it was
+/// never going to be done, so it cannot make a project look behind.
+///
 /// The flow strip and the home screen both want this, so it is one function
 /// with an optional project filter rather than two queries that could drift.
 #[derive(Debug, serde::Serialize)]
@@ -342,6 +347,8 @@ pub struct ProjectProgress {
     pub key: String,
     pub name: String,
     pub status: String,
+    pub priority: i32,
+    pub target_date: Option<chrono::NaiveDate>,
     pub done: i64,
     pub total: i64,
     /// Only departments that actually hold tasks here. An unassigned task
@@ -363,7 +370,7 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
         "SELECT pr.id,
                 min(ph.name) FILTER (WHERE ph.status = 'active') AS active_phase,
                 count(DISTINCT t.assignee_person_id)
-                  FILTER (WHERE t.status NOT IN ('done', 'dropped')) AS active_people
+                  FILTER (WHERE t.done_at IS NULL AND t.status <> 'dropped') AS active_people
            FROM project pr
            LEFT JOIN phase ph ON ph.project_id = pr.id
            LEFT JOIN task t ON t.phase_id = ph.id
@@ -374,16 +381,28 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     .fetch_all(&state.db)
     .await?;
 
-    let rows: Vec<(Uuid, String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
-        "SELECT pr.id, pr.key, pr.name, pr.status, own.department AS discipline,
-                count(t.id) AS total,
-                count(*) FILTER (WHERE t.status = 'done') AS done
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        i32,
+        Option<chrono::NaiveDate>,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT pr.id, pr.key, pr.name, pr.status, pr.priority, pr.target_date,
+                own.department AS discipline,
+                count(t.id) FILTER (WHERE t.status <> 'dropped') AS total,
+                count(t.id) FILTER (WHERE t.done_at IS NOT NULL) AS done
            FROM project pr
            LEFT JOIN phase ph ON ph.project_id = pr.id
            LEFT JOIN task t ON t.phase_id = ph.id
            LEFT JOIN person own ON own.id = t.assignee_person_id
           WHERE ($1::uuid IS NULL OR pr.id = $1)
-          GROUP BY pr.id, pr.key, pr.name, pr.status, own.department
+          GROUP BY pr.id, pr.key, pr.name, pr.status, pr.priority, pr.target_date, own.department
           ORDER BY pr.name, pr.id",
     )
     .bind(only)
@@ -391,7 +410,7 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     .await?;
 
     let mut out: Vec<ProjectProgress> = Vec::new();
-    for (id, key, name, status, discipline, total, done) in rows {
+    for (id, key, name, status, priority, target_date, discipline, total, done) in rows {
         if out.last().map(|p| p.id) != Some(id) {
             let (active_phase, active_people) = extra
                 .iter()
@@ -399,7 +418,7 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
                 .map(|(_, phase, people)| (phase.clone(), *people))
                 .unwrap_or((None, 0));
             out.push(ProjectProgress {
-                id, key, name, status, done: 0, total: 0,
+                id, key, name, status, priority, target_date, done: 0, total: 0,
                 disciplines: Vec::new(), active_phase, active_people,
             });
         }
@@ -412,4 +431,133 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     }
 
     Ok(out)
+}
+
+/// Every field a project's owner can change after it exists. `None` leaves a
+/// field alone; for the two dates, `Some(None)` clears one — a target date
+/// that turned out to be wrong has to be removable, not just movable.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPatch {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default, deserialize_with = "crate::models::present")]
+    pub start_date: Option<Option<chrono::NaiveDate>>,
+    #[serde(default, deserialize_with = "crate::models::present")]
+    pub target_date: Option<Option<chrono::NaiveDate>>,
+    #[serde(default)]
+    pub label_ids: Option<Vec<Uuid>>,
+}
+
+/// The project states. `done` and `archived` are both finished; archived is
+/// finished and out of the way.
+pub const PROJECT_STATUSES: [&str; 4] = ["active", "paused", "done", "archived"];
+
+/// Change a project's properties.
+///
+/// One statement for the scalar fields, so a patch is all-or-nothing rather
+/// than half applied; labels are replaced as a set in the same transaction.
+/// The start/target ordering is checked against the values the row will have
+/// after the patch, not just the ones in it — moving only the start past an
+/// existing target is the case a naive check misses.
+pub async fn update(
+    state: &AppState,
+    actor: &Actor,
+    id: Uuid,
+    patch: ProjectPatch,
+) -> AppResult<Outcome<Project>> {
+    if let Some(name) = &patch.name {
+        if name.trim().is_empty() {
+            return Err(AppError::BadRequest("a name is required".into()));
+        }
+    }
+    if let Some(status) = &patch.status {
+        if !PROJECT_STATUSES.contains(&status.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "status must be one of {}",
+                PROJECT_STATUSES.join(", ")
+            )));
+        }
+    }
+    if let Some(p) = patch.priority {
+        if !(0..=4).contains(&p) {
+            return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+        }
+    }
+
+    let record_patch = serde_json::to_value(&patch).unwrap_or_default();
+    if !actor.can_apply {
+        let change_id =
+            propose(&state.db, actor, TargetType::Project, id, Op::Update, record_patch).await?;
+        return Ok(Outcome::Proposed { change_id });
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    let (start, target): (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>) =
+        sqlx::query_as("SELECT start_date, target_date FROM project WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+    let start = patch.start_date.unwrap_or(start);
+    let target = patch.target_date.unwrap_or(target);
+    if let (Some(s), Some(t)) = (start, target) {
+        if t < s {
+            return Err(AppError::BadRequest("the target date is before the start date".into()));
+        }
+    }
+
+    sqlx::query(
+        "UPDATE project SET
+            name        = coalesce($2, name),
+            description = coalesce($3, description),
+            status      = coalesce($4, status),
+            priority    = coalesce($5, priority),
+            start_date  = $6,
+            target_date = $7,
+            updated_at  = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(patch.name.as_deref().map(str::trim))
+    .bind(patch.description.as_deref().map(str::trim))
+    .bind(&patch.status)
+    .bind(patch.priority)
+    .bind(start)
+    .bind(target)
+    .execute(&mut *tx)
+    .await?;
+
+    if let Some(label_ids) = &patch.label_ids {
+        sqlx::query("DELETE FROM project_label WHERE project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO project_label (project_id, label_id) SELECT $1, unnest($2::uuid[])
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(label_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+                AppError::BadRequest("one of those labels does not exist".into())
+            }
+            _ => AppError::Database(e),
+        })?;
+    }
+
+    record(&mut tx, actor, TargetType::Project, id, Op::Update, record_patch).await?;
+    tx.commit().await?;
+
+    Ok(Outcome::Applied { entity: get(state, id).await? })
 }

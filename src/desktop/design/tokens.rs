@@ -271,9 +271,21 @@ pub fn status_colour(status: &str) -> Color32 {
 
 /// Human-facing label, so no underscore ever reaches the screen.
 pub fn status_label(status: &str) -> &str {
+    // Sentence case here, once, so no view has to remember to capitalise —
+    // the app shipped "active" on one page and "Active" on the next because
+    // half the call sites did and half did not.
     match status {
-        "in_progress" => "in progress",
-        "handoff" => "handoff",
+        "open" => "Open",
+        "in_progress" => "In progress",
+        "handoff" => "Handoff",
+        "completed" => "Completed",
+        "shipped" => "Shipped",
+        "blocked" => "Blocked",
+        "dropped" => "Dropped",
+        "active" => "Active",
+        "paused" => "Paused",
+        "done" => "Done",
+        "archived" => "Archived",
         other => other,
     }
 }

@@ -528,12 +528,14 @@ pub fn divider(ui: &mut Ui) {
 /// The rail is Linear's shape and it earns its place: status, priority and
 /// owner are facts you glance at, not prose you read, so they do not belong
 /// in the reading column. Below `RAIL_AT` the window is too narrow to carry
-/// both and the rail stacks under the content instead.
+/// both and the rail stacks above the content instead — status, owner and
+/// priority are what you open a page to check, so on a narrow window they
+/// come first rather than below every note.
 pub fn with_rail(ui: &mut Ui, content: impl FnOnce(&mut Ui), rail: impl FnOnce(&mut Ui)) {
     if ui.available_width() < RAIL_AT {
-        content(ui);
-        ui.add_space(space::XL);
         rail_surface(ui, rail);
+        ui.add_space(space::XL);
+        content(ui);
         return;
     }
 

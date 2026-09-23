@@ -49,21 +49,26 @@ pub struct Home {
 /// gap rather than inventing numbers, which is the right instinct and also a
 /// signal that the endpoint was wrong.
 pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
-    let rows = sqlx::query_as::<_, Capacity>(
+    // `open` is what someone is carrying: work they can act on, including
+    // work that is stuck. `review` is theirs but waiting on someone else — a
+    // handoff, or engineering work completed and not yet shipped.
+    let rows = sqlx::query_as::<_, Capacity>(&format!(
         "SELECT p.id  AS person_id,
                 p.email,
                 p.name,
                 p.department,
                 count(t.id) FILTER (
-                  WHERE t.status IN ('open', 'in_progress')
+                  WHERE t.status IN ('open', 'in_progress', 'blocked')
                 ) AS open,
-                count(t.id) FILTER (WHERE t.status = 'in_review') AS review,
+                count(t.id) FILTER (WHERE t.status IN ('handoff', 'completed')
+                                      AND t.done_at IS NULL) AS review,
                 count(t.id) FILTER (
-                  WHERE t.status NOT IN ('done', 'dropped')
+                  WHERE t.status NOT IN {resolved}
                     AND EXISTS (
                       SELECT 1 FROM task blocked
                        WHERE t.id = ANY(blocked.blocked_by)
-                         AND blocked.status NOT IN ('done', 'dropped')
+                         AND blocked.done_at IS NULL
+                         AND blocked.status <> 'dropped'
                     )
                 ) AS blocking
            FROM person p
@@ -72,7 +77,8 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
           WHERE p.deleted_at IS NULL
           GROUP BY p.id, p.email, p.name, p.department
           ORDER BY open DESC, p.name",
-    )
+        resolved = crate::models::task::BLOCKER_RESOLVED,
+    ))
     .fetch_all(&state.db)
     .await?;
 

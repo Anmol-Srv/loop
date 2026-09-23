@@ -626,6 +626,18 @@ pub fn multi_select(
 /// picker with a button was mixing 30 with 28.
 pub const HEIGHT: f32 = size::CONTROL;
 
+/// A row of filter controls that wraps onto a second line when the window is
+/// narrow, rather than running its last control into whatever sits at the
+/// right edge. The count of matching rows does not live here — it rides on
+/// the table's own heading, where it cannot collide with anything.
+pub fn toolbar(ui: &mut Ui, controls: impl FnOnce(&mut Ui)) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
+        controls(ui);
+    });
+    ui.add_space(space::MD);
+}
+
 /// The filter bar's search box.
 ///
 /// Sized and shaped like the controls beside it so the bar reads as one
