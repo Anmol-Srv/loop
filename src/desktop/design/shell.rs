@@ -609,6 +609,9 @@ fn rail_surface(ui: &mut Ui, rail: impl FnOnce(&mut Ui)) {
         .inner_margin(egui::Margin::same(space::LG as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // Every picker in the rail is one width, so Status, Priority, the
+            // dates and Labels line up as a column of equal controls.
+            ui.spacing_mut().interact_size.x = size::PICKER_W;
             rail(ui);
         });
 }

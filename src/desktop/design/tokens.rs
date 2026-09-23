@@ -229,6 +229,11 @@ pub mod size {
     /// dropdown and an avatar with a name, narrow enough that the reading
     /// column keeps the majority of the page.
     pub const RAIL_W: f32 = 264.0;
+    /// One width for every picker that sits in a set — a form's property row,
+    /// a properties rail — so the set reads as equal slots instead of boxes
+    /// sized by whatever each happens to say. Room for "30 Sep 2026" and a
+    /// caret, and it fits the rail's value column.
+    pub const PICKER_W: f32 = 140.0;
     /// A nav row, taller than a list row — it is a target, not data.
     pub const NAV_ROW: f32 = 32.0;
     // No CONTENT_MAX: the body runs to the window edge. A centred measure suits

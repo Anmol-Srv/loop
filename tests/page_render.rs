@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use acp_server::desktop::design::theme;
 use acp_server::desktop::net::Net;
 use acp_server::desktop::{views, App, Tab};
+use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 struct Shot {
@@ -41,6 +42,8 @@ const SHOTS: &[Shot] = &[
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
     Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
     Shot { name: "login-error", tab: Tab::Home, project: None, task: None, signed_in: false },
+    Shot { name: "create", tab: Tab::Projects, project: None, task: None, signed_in: true },
+    Shot { name: "create-datepicker", tab: Tab::Projects, project: None, task: None, signed_in: true },
 ];
 
 /// States a `Shot` has no field for, set on the app before its first frame.
@@ -54,7 +57,28 @@ fn stage(shot: &Shot, app: &mut App) {
         }
         // The server's own wording for a bad password.
         "login-error" => app.login.error = Some("email or password is incorrect".into()),
+        // The create form half filled in: a title, and one date set so both
+        // the picker's set and unset states are on screen at once.
+        "create" | "create-datepicker" => {
+            app.board.creating = Some(views::projects::Draft {
+                title: "Lead rating v3".into(),
+                start: chrono::NaiveDate::from_ymd_opt(2026, 9, 28),
+                ..Default::default()
+            });
+        }
         _ => {}
+    }
+}
+
+/// Clicks a `Shot` needs once the page has loaded: popups only exist after
+/// one, and a render that starts every page closed never shows them.
+fn interact(shot: &Shot, harness: &mut Harness<'_>) {
+    if shot.name == "create-datepicker" {
+        // The target is the only picker still reading "Not set".
+        harness.get_by_label("Not set").click();
+        for _ in 0..4 {
+            harness.step();
+        }
     }
 }
 
@@ -131,6 +155,8 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
             .unwrap_or(false);
         quiet = if busy { 0 } else { quiet + 1 };
     }
+
+    interact(shot, &mut harness);
 
     let path = format!("docs/design-mocks/render/pages/{}-{label}.png", shot.name);
     harness.render().expect("render").save(&path).expect("write png");

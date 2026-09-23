@@ -648,7 +648,7 @@ fn rail(
             .map(|s| ((*s).to_owned(), status_label(s).to_owned()))
             .collect();
         let mut slot: Option<String> = None;
-        viz::select(ui, status_label(status), &options, &mut slot);
+        viz::value_select(ui, status_label(status), &options, &mut slot);
         if let Some(next) = slot.as_deref() {
             ask = r.track.states().iter().copied().find(|s| *s == next).map(Ask::Move);
         }
@@ -671,7 +671,7 @@ fn rail(
             .collect();
         let mut slot: Option<String> = None;
         let current = priority.map_or_else(|| "No priority".to_owned(), |p| format!("P{p}"));
-        viz::select(ui, &current, &options, &mut slot);
+        viz::value_select(ui, &current, &options, &mut slot);
         if let Some(p) = slot.and_then(|s| s.parse::<i64>().ok()) {
             ask = Some(Ask::Details(json!({ "priority": p })));
         }
@@ -684,10 +684,14 @@ fn rail(
     let current = str_of(task, "assigneePersonId");
     shell::property(ui, "Assignee", |ui| {
         let name = str_of(task, "assigneeName").filter(|n| !n.is_empty());
-        if let Some(name) = name {
+        let editable = r.can_write && !r.busy;
+        // The face only when the name is plain text. Beside a picker it
+        // pushed the control out of the column every other rail control
+        // starts and ends on, and the picker names the person anyway.
+        if let Some(name) = name.filter(|_| !editable) {
             avatar::small(ui, str_of(task, "assigneeEmail").unwrap_or(name), AVATAR);
         }
-        if !r.can_write || r.busy {
+        if !editable {
             match name {
                 Some(name) => {
                     value(ui, name);
@@ -704,7 +708,7 @@ fn rail(
             r.people.iter().map(person_option).filter(|(id, _)| Some(id.as_str()) != current),
         );
         let mut slot: Option<String> = None;
-        viz::select(ui, name.unwrap_or("Unassigned"), &options, &mut slot);
+        viz::value_select(ui, name.unwrap_or("Unassigned"), &options, &mut slot);
         let Some(picked) = slot else { return };
 
         let person = r.people.iter().find(|p| str_of(p, "id") == Some(picked.as_str()));

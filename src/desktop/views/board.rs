@@ -23,7 +23,7 @@ use egui::RichText;
 use serde_json::{json, Value};
 
 use super::projects::{
-    date_field, health, label_tone, owned, parse_date, priority_tone, relative_day, Health,
+    health, label_tone, owned, parse_date, priority_tone, relative_day, Health,
     DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
 };
 use crate::desktop::design::table::{self, Col};
@@ -113,8 +113,6 @@ pub struct State {
 struct Page {
     /// Name and description, while Edit is open.
     editing: Option<(String, String)>,
-    /// The date being typed in the rail, and what is typed so far.
-    date: Option<(DateSlot, String)>,
     /// The label set as last picked, held until the server has echoed it back.
     /// Without it a second tick made before the first PATCH lands would be
     /// computed from the stale set and undo the first.
@@ -144,10 +142,11 @@ impl DateSlot {
         }
     }
 
+    /// Short, because the rail's label column is sized for "Department".
     fn label(self) -> &'static str {
         match self {
-            DateSlot::Start => "Start date",
-            DateSlot::Target => "Target date",
+            DateSlot::Start => "Start",
+            DateSlot::Target => "Target",
         }
     }
 }
@@ -504,7 +503,6 @@ fn settle(net: &mut Net, keys: &Keys, page: &mut Page) {
         net.invalidate(PROJECTS_KEY);
         net.invalidate("home");
         page.editing = None;
-        page.date = None;
         page.notice = (str_at(&reply, "status") == "proposed")
             .then(|| "Sent for approval \u{2014} it changes once someone signs off.".to_owned());
     }
@@ -623,7 +621,7 @@ fn rail(
         let options: Vec<(String, String)> =
             owned(&PROJECT_STATUSES).into_iter().filter(|(v, _)| v != status).collect();
         let mut slot = None;
-        viz::select(ui, status_label(status), &options, &mut slot);
+        viz::value_select(ui, status_label(status), &options, &mut slot);
         if let Some(next) = slot {
             requests.push(Request::Patch(json!({ "status": next })));
         }
@@ -639,14 +637,14 @@ fn rail(
         let options: Vec<(String, String)> =
             owned(&PRIORITIES).into_iter().filter(|(v, _)| v != current.0).collect();
         let mut slot = None;
-        viz::select(ui, current.1, &options, &mut slot);
+        viz::value_select(ui, current.1, &options, &mut slot);
         if let Some(p) = slot.and_then(|p| p.parse::<i32>().ok()) {
             requests.push(Request::Patch(json!({ "priority": p })));
         }
     });
 
     for slot in [DateSlot::Start, DateSlot::Target] {
-        date_row(ui, head, slot, page, (done, total), can_write, requests);
+        date_row(ui, head, slot, (done, total), can_write, requests);
     }
 
     let chosen: Vec<String> = page.labels.clone().unwrap_or_else(|| {
@@ -743,78 +741,41 @@ fn rail(
     }
 }
 
-/// A date in the rail: words at rest, the shared typed date field once
-/// clicked. Blank saves as "no date", which is how a date is cleared.
+/// A date in the rail: a picker, saved the moment a day is picked, with the
+/// target's standing ("5 days overdue", in red) under it.
+///
+/// This was words that turned into a typed `YYYY-MM-DD` field with its own
+/// Save and Cancel — three steps and a format to remember, for what is one
+/// click on a calendar. Clearing lives in the picker's own menu.
 fn date_row(
     ui: &mut egui::Ui,
     head: &Value,
     slot: DateSlot,
-    page: &mut Page,
     (done, total): (i64, i64),
     can_write: bool,
     requests: &mut Vec<Request>,
 ) {
-    let raw = str_at(head, slot.field());
-    let label = match slot {
-        DateSlot::Start => "Start",
-        DateSlot::Target => "Target",
-    };
-    let editing = page.date.as_ref().is_some_and(|(s, _)| *s == slot);
+    let (words, ink, hover) = date_words(head, slot, done, total);
 
-    let mut open = false;
-    shell::property(ui, label, |ui| {
-        if editing {
-            faint(ui, "Editing\u{2026}");
-            return;
-        }
-        let (words, ink, hover) = date_words(head, slot, done, total);
-        let sense = if can_write { egui::Sense::click() } else { egui::Sense::hover() };
-        let r = ui.add(
-            egui::Label::new(RichText::new(words).size(text::SMALL).color(ink))
-                .sense(sense)
-                .selectable(false)
-                .truncate(),
-        );
+    shell::property(ui, slot.label(), |ui| {
         if !can_write {
-            r.on_hover_text(hover);
+            ui.label(RichText::new(&words).size(text::SMALL).color(ink)).on_hover_text(hover);
             return;
         }
-        let r = motion::operable(ui, r, radius::SM as f32);
-        if r.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if r.on_hover_text(format!("{hover} \u{00B7} click to change")).clicked() {
-            open = true;
-        }
-    });
-    if open {
-        page.date = Some((slot, raw.to_owned()));
-    }
-
-    let mut close = false;
-    if let Some((s, typed)) = page.date.as_mut().filter(|(s, _)| *s == slot) {
-        date_field(ui, s.label(), typed);
-        ui.add_space(space::XS);
-        w::caption(ui, "Leave blank to clear it.");
-        ui.add_space(space::SM);
-        let trimmed = typed.trim();
-        let parsed = parse_date(trimmed);
-        let ok = trimmed.is_empty() || parsed.is_some();
-        ui.horizontal(|ui| {
-            if w::primary(ui, "Save", ok).clicked() {
-                let v = parsed.map_or(Value::Null, |d| Value::String(d.to_string()));
-                requests.push(Request::Patch(json!({ s.field(): v })));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = space::XXS;
+            let mut value = parse_date(str_at(head, slot.field()));
+            if viz::date_picker(ui, "Not set", &mut value).changed() {
+                let v = value.map_or(Value::Null, |d| Value::String(d.to_string()));
+                requests.push(Request::Patch(json!({ slot.field(): v })));
             }
-            ui.add_space(space::XS);
-            if w::ghost(ui, "Cancel").clicked() {
-                close = true;
+            // The start needs no gloss; the target's is the point of having one.
+            if slot == DateSlot::Target && value.is_some() {
+                ui.label(RichText::new(&words).size(text::CAPTION).color(ink))
+                    .on_hover_text(hover);
             }
         });
-        ui.add_space(space::SM);
-    }
-    if close {
-        page.date = None;
-    }
+    });
 }
 
 /// A rail date in words, the colour it should be, and its hover. The target

@@ -5,6 +5,7 @@
 //! API already returns — none of them can be fed a number we do not have,
 //! which is deliberate after a capacity chart was once drawn from nothing.
 
+use chrono::{Datelike, NaiveDate};
 use egui::{Color32, Pos2, Response, RichText, Sense, Ui, Vec2};
 
 use super::tokens::{colour, radius, size, space, text};
@@ -369,10 +370,18 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
     let ink = if active { colour::TEXT } else { colour::TEXT_2 };
     let galley = truncated(ui, label, font, ink, MAX_LABEL_W);
     let caret_w = if caret { CARET_COL } else { 0.0 };
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(galley.size().x + space::MD * 2.0 + caret_w, HEIGHT),
-        Sense::click(),
-    );
+    // `interact_size.x` is egui's own "narrowest an interactive widget may
+    // be". Honouring it is what lets a form make every control in a row one
+    // width by setting a single value in its scope, instead of each control
+    // sizing to whatever its label happens to say.
+    let width = (galley.size().x + space::MD * 2.0 + caret_w).max(ui.spacing().interact_size.x);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::click());
+    // Painted by hand, so it says what it is for the accessibility tree
+    // itself: a screen reader, and the test harness that clicks by label,
+    // both find it by its text.
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), label)
+    });
     let response = motion::operable(ui, response, radius::SM as f32);
 
     let fill = if active {
@@ -544,13 +553,39 @@ pub fn select(
     options: &[(String, String)],
     slot: &mut Option<String>,
 ) -> Response {
+    select_styled(ui, any, options, slot, false)
+}
+
+/// A `select` whose resting label is the thing's current value, not a
+/// placeholder — a properties rail's Status or Priority, where `None` in the
+/// slot means "unchanged", not "unset".
+///
+/// It draws as a set value, because it is one. Through plain `select` the
+/// rail showed Status and Priority in placeholder ink beside dates and labels
+/// in full ink, and five controls holding real values read as two kinds.
+pub fn value_select(
+    ui: &mut Ui,
+    current: &str,
+    options: &[(String, String)],
+    slot: &mut Option<String>,
+) -> Response {
+    select_styled(ui, current, options, slot, true)
+}
+
+fn select_styled(
+    ui: &mut Ui,
+    any: &str,
+    options: &[(String, String)],
+    slot: &mut Option<String>,
+    resting_is_value: bool,
+) -> Response {
     let shown = slot
         .as_deref()
         .and_then(|v| options.iter().find(|(value, _)| value == v))
         .map(|(_, label)| label.clone())
         .unwrap_or_else(|| any.to_owned());
 
-    let response = filter(ui, &shown, slot.is_some(), true);
+    let response = filter(ui, &shown, slot.is_some() || resting_is_value, true);
     egui::Popup::menu(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .frame(menu_frame())
@@ -721,4 +756,213 @@ pub fn clear(ui: &mut Ui) -> Response {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response
+}
+
+/// A date, picked from a month.
+///
+/// The control is a `filter` like every other picker, so a row of them is one
+/// height and one vocabulary; the popup is the menus' own frame. egui_extras
+/// ships a date picker, but it is year/month/day combo boxes in egui's stock
+/// dress — a second visual language in the middle of a form.
+///
+/// Returns the control's response, marked changed on the frame a date is
+/// picked or cleared, so a caller that saves on change can ask `changed()`.
+pub fn date_picker(ui: &mut Ui, placeholder: &str, value: &mut Option<NaiveDate>) -> Response {
+    let shown = value.map(|d| d.format("%-d %b %Y").to_string());
+    let mut response = filter(ui, shown.as_deref().unwrap_or(placeholder), value.is_some(), true);
+
+    // Which month the popup is showing. Reset to the value (or today) each
+    // time the control is opened, so it never opens on a month you paged to
+    // last time and forgot about.
+    let month_id = response.id.with("month");
+    let today = chrono::Local::now().date_naive();
+    if response.clicked() {
+        let anchor = value.unwrap_or(today);
+        ui.ctx().data_mut(|d| d.insert_temp(month_id, first_of(anchor)));
+    }
+    let mut month: NaiveDate =
+        ui.ctx().data(|d| d.get_temp(month_id)).unwrap_or_else(|| first_of(value.unwrap_or(today)));
+
+    let mut picked: Option<Option<NaiveDate>> = None;
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(menu_frame())
+        .width(DAY * 7.0)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+            // Month and year, with a painted chevron either side.
+            ui.horizontal(|ui| {
+                if chevron(ui, false).clicked() {
+                    month = shift_month(month, -1);
+                }
+                let (title, _) =
+                    ui.allocate_exact_size(Vec2::new(DAY * 5.0, DAY), Sense::hover());
+                ui.painter().text(
+                    title.center(),
+                    egui::Align2::CENTER_CENTER,
+                    month.format("%B %Y").to_string(),
+                    egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+                    colour::TEXT,
+                );
+                if chevron(ui, true).clicked() {
+                    month = shift_month(month, 1);
+                }
+            });
+
+            // Weekday initials, Monday first.
+            ui.horizontal(|ui| {
+                for initial in ["M", "T", "W", "T", "F", "S", "S"] {
+                    let (cell, _) = ui.allocate_exact_size(Vec2::splat(DAY), Sense::hover());
+                    ui.painter().text(
+                        cell.center(),
+                        egui::Align2::CENTER_CENTER,
+                        initial,
+                        egui::FontId::proportional(text::CAPTION),
+                        colour::TEXT_MUTED,
+                    );
+                }
+            });
+
+            // Six weeks always, so the popup does not change height as you
+            // page between a four-row February and a six-row month.
+            let lead = month.weekday().num_days_from_monday() as i64;
+            let start = month - chrono::Duration::days(lead);
+            for week in 0..6 {
+                ui.horizontal(|ui| {
+                    for d in 0..7 {
+                        let day = start + chrono::Duration::days(week * 7 + d);
+                        let state = DayState {
+                            in_month: day.month() == month.month(),
+                            selected: *value == Some(day),
+                            today: day == today,
+                        };
+                        if day_cell(ui, day, state).clicked() {
+                            picked = Some(Some(day));
+                        }
+                    }
+                });
+            }
+
+            ui.add_space(space::XXS);
+            let (rule, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(rule, 0.0, colour::LINE);
+            ui.add_space(space::XXS);
+            if menu_row(ui, "Today", false, false).clicked() {
+                picked = Some(Some(today));
+            }
+            if value.is_some() && menu_row(ui, "Clear", false, false).clicked() {
+                picked = Some(None);
+            }
+            if picked.is_some() {
+                ui.close();
+            }
+        });
+    ui.ctx().data_mut(|d| d.insert_temp(month_id, month));
+
+    if let Some(new) = picked {
+        if new != *value {
+            *value = new;
+            response.mark_changed();
+        }
+    }
+    response
+}
+
+/// One day cell, and the popup's column width: a day is exactly as wide as a
+/// control is tall, so the grid is square and a week is seven controls wide.
+const DAY: f32 = size::CONTROL;
+
+#[derive(Clone, Copy)]
+struct DayState {
+    in_month: bool,
+    selected: bool,
+    today: bool,
+}
+
+fn day_cell(ui: &mut Ui, day: NaiveDate, state: DayState) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(DAY), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, day.format("%-d %B %Y"))
+    });
+    let response = motion::operable(ui, response, radius::SM as f32);
+    let inner = rect.shrink(1.0);
+    let p = ui.painter();
+
+    // The chosen day is filled, not outlined: the owner asked for no blue
+    // selection borders, and a fill says "this one" without borrowing the
+    // focus ring's shape.
+    let ink = if state.selected {
+        p.rect_filled(inner, radius::SM as f32, colour::ACCENT);
+        colour::ON_ACCENT
+    } else {
+        if response.hovered() {
+            p.rect_filled(inner, radius::SM as f32, colour::SURFACE_HOVER);
+        }
+        if state.today {
+            p.rect_stroke(
+                inner,
+                radius::SM as f32,
+                egui::Stroke::new(1.0, colour::LINE_STRONG),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if state.in_month { colour::TEXT_2 } else { colour::TEXT_FAINT }
+    };
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        day.day().to_string(),
+        egui::FontId::proportional(text::SMALL),
+        ink,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.on_hover_text(day.format("%A %-d %B %Y").to_string())
+}
+
+/// A month-paging button: a chevron drawn as two strokes, since Nunito has no
+/// arrow to borrow.
+fn chevron(ui: &mut Ui, forward: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(DAY), Sense::click());
+    let response = motion::operable(ui, response, radius::SM as f32);
+    if response.hovered() {
+        ui.painter().rect_filled(rect.shrink(1.0), radius::SM as f32, colour::SURFACE_HOVER);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let c = rect.center();
+    let (tip, back) = if forward { (CHEVRON, -CHEVRON) } else { (-CHEVRON, CHEVRON) };
+    let stroke = egui::Stroke::new(TICK_STROKE, colour::TEXT_2);
+    ui.painter().line_segment([egui::pos2(c.x + back / 2.0, c.y - CHEVRON), egui::pos2(c.x + tip / 2.0, c.y)], stroke);
+    ui.painter().line_segment([egui::pos2(c.x + tip / 2.0, c.y), egui::pos2(c.x + back / 2.0, c.y + CHEVRON)], stroke);
+    response.on_hover_text(if forward { "Next month" } else { "Previous month" })
+}
+
+/// Half the chevron's height; small enough to read as a glyph, not a shape.
+const CHEVRON: f32 = 4.0;
+
+fn first_of(d: NaiveDate) -> NaiveDate {
+    d.with_day(1).expect("every month has a first")
+}
+
+fn shift_month(first: NaiveDate, by: i32) -> NaiveDate {
+    let months = first.year() * 12 + first.month0() as i32 + by;
+    NaiveDate::from_ymd_opt(months.div_euclid(12), months.rem_euclid(12) as u32 + 1, 1)
+        .expect("the first of a month always exists")
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    #[test]
+    fn months_page_across_years() {
+        let jan = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        assert_eq!(shift_month(jan, -1), NaiveDate::from_ymd_opt(2025, 12, 1).unwrap());
+        assert_eq!(shift_month(jan, 12), NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
+        let dec = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+        assert_eq!(shift_month(dec, 1), NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
+    }
 }

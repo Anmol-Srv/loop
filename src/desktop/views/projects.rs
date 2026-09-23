@@ -23,7 +23,7 @@ use serde_json::Value;
 use super::board::{array, fraction, num_at, str_at};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, radius, shell, space, status_label, text, theme, viz, widgets as w,
+    cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -108,9 +108,6 @@ const COLS: [Col; 8] = [
 const TASK_CONTROLS_W: f32 = 420.0;
 /// Below this the title input stops giving ground; the row wraps instead.
 const TASK_TITLE_MIN_W: f32 = 160.0;
-/// A date field: room for "2026-10-15" and for the hint that teaches it,
-/// while still leaving four pickers on one row.
-const DATE_W: f32 = 150.0;
 /// A label name is one or two words; wider only invites a sentence.
 const NEW_LABEL_W: f32 = 180.0;
 
@@ -151,9 +148,10 @@ pub struct Draft {
     /// Priority as `viz::select` holds it — a string, parsed to an int on
     /// submit, the same way a draft task's is.
     pub priority: Option<String>,
-    /// `YYYY-MM-DD`, typed. Blank means "not set" and the key is omitted.
-    pub start: String,
-    pub target: String,
+    /// Picked, so never malformed. `None` means "not set" and the key is
+    /// omitted from the request.
+    pub start: Option<NaiveDate>,
+    pub target: Option<NaiveDate>,
     /// Label ids, in the order they were picked.
     pub labels: Vec<String>,
     /// Whether the make-a-label row is showing, and what is in it. Draft state
@@ -172,8 +170,8 @@ impl Default for Draft {
             title: String::new(),
             description: String::new(),
             priority: Some(DEFAULT_PRIORITY.to_owned()),
-            start: String::new(),
-            target: String::new(),
+            start: None,
+            target: None,
             labels: Vec::new(),
             new_label: false,
             new_label_name: String::new(),
@@ -714,11 +712,17 @@ fn create_form(
         ui.add_space(space::LG);
 
         // A project with no title has nothing to be called and nothing to
-        // derive a key from, so Create stays off until there is one — and a
-        // half-typed date would only come back as a 400.
-        let dates_ok = [&draft.start, &draft.target]
-            .into_iter()
-            .all(|d| d.trim().is_empty() || parse_date(d).is_some());
+        // derive a key from, so Create stays off until there is one. A target
+        // before the start would only come back as a 400, so that waits too,
+        // and says why.
+        let dates_ok = match (draft.start, draft.target) {
+            (Some(start), Some(target)) => target >= start,
+            _ => true,
+        };
+        if !dates_ok {
+            w::caption(ui, "The target date is before the start date.");
+            ui.add_space(space::SM);
+        }
         let ready = !draft.title.trim().is_empty() && dates_ok && !busy;
         ui.horizontal(|ui| {
             if w::primary(ui, if busy { "Creating…" } else { "Create" }, ready).clicked() {
@@ -761,10 +765,8 @@ fn project_body(draft: &Draft) -> Value {
             .unwrap_or(2),
     });
     let fields = body.as_object_mut().expect("json! built an object");
-    for (key, typed) in [("startDate", &draft.start), ("targetDate", &draft.target)] {
-        // Round-tripping through `NaiveDate` normalises what was typed, so the
-        // server never sees a date this form already agreed to accept.
-        if let Some(date) = parse_date(typed) {
+    for (key, date) in [("startDate", draft.start), ("targetDate", draft.target)] {
+        if let Some(date) = date {
             fields.insert(key.to_owned(), Value::String(date.to_string()));
         }
     }
@@ -786,13 +788,20 @@ fn properties_row(ui: &mut egui::Ui, draft: &mut Draft, labels: &[Value]) {
         .map(|l| (str_at(l, "id").to_owned(), str_at(l, "name").to_owned()))
         .collect();
 
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
+    // Wrapped, so four slots that do not fit at 820 fall to a second line
+    // instead of running off the form's edge.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(space::MD, space::SM);
+        ui.spacing_mut().interact_size.x = size::PICKER_W;
         labelled(ui, "Priority", |ui| {
             viz::select(ui, "P2 Normal", &priorities, &mut draft.priority);
         });
-        date_field(ui, "Start date", &mut draft.start);
-        date_field(ui, "Target date", &mut draft.target);
+        labelled(ui, "Start date", |ui| {
+            viz::date_picker(ui, "Not set", &mut draft.start);
+        });
+        labelled(ui, "Target date", |ui| {
+            viz::date_picker(ui, "Not set", &mut draft.target);
+        });
         labelled(ui, "Labels", |ui| {
             viz::multi_select(ui, "None", &options, &mut draft.labels);
         });
@@ -809,32 +818,6 @@ fn labelled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// A date, typed.
-///
-/// egui ships no date widget, and the crates that do would each cost a
-/// dependency, a popup surface and a theme to match — for two optional fields
-/// on one form. A text input that knows the single format the API takes, shows
-/// it in the hint, and will not submit what it cannot parse is the smaller
-/// thing. Revisit if a third date field turns up, or if dates ever need to be
-/// picked rather than known.
-pub(super) fn date_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    let bad = !value.trim().is_empty() && parse_date(value).is_none();
-    ui.allocate_ui(egui::vec2(DATE_W, 0.0), |ui| {
-        let field = w::field(ui, label, value, false, "e.g. 2026-10-15");
-        if bad {
-            // The border carries it at a glance; the caption is for the person
-            // who cannot tell this red from the line around every other field.
-            ui.painter().rect_stroke(
-                field.rect,
-                radius::SM as f32,
-                egui::Stroke::new(1.0, colour::DANGER),
-                egui::StrokeKind::Inside,
-            );
-            ui.add_space(space::XXS);
-            w::caption(ui, "Needs YYYY-MM-DD.");
-        }
-    });
-}
 
 /// Making a label without leaving the form.
 ///
