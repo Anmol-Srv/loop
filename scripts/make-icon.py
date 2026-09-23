@@ -46,6 +46,9 @@ def main() -> None:
             if px > 1024:
                 continue
             tile(alpha, px).save(out / f"icon_{size}x{size}{suffix}.png")
+    # The window's runtime icon (acp-app embeds it); eframe shows this in the
+    # Dock, not the bundle's icns, so it is written from the same tile.
+    tile(alpha, 512).save("assets/icon.png")
 
 
 if __name__ == "__main__":
