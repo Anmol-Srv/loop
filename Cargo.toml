@@ -35,7 +35,8 @@ argon2 = "0.6.0"
 rpassword = "7.5.4"
 egui-phosphor = { version = "0.14.0", features = ["thin"], optional = true }
 egui-notify = { version = "0.23.0", optional = true }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
+tower-http = { version = "0.7.1", features = ["trace"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -46,7 +47,7 @@ image = "0.25.10"
 [features]
 # The desktop app's GUI stack is opt-in so the server binary's build stays lean.
 #   cargo build --features app --bin acp-app
-app = ["dep:eframe", "dep:egui", "dep:egui_extras", "dep:egui-phosphor", "dep:egui-notify"]
+app = ["dep:eframe", "dep:egui", "dep:egui_extras", "dep:egui-phosphor", "dep:egui-notify", "dep:image"]
 
 [[bin]]
 name = "acp-app"

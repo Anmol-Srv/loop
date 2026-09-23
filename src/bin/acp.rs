@@ -92,7 +92,7 @@ enum AgentAction {
 enum AdminAction {
     /// Issue a setup code for someone
     Invite { email: String },
-    /// Promote or demote someone ('member' or 'admin')
+    /// Set someone's role: 'member', 'manager' or 'admin'
     Role { email: String, role: String },
     /// Revoke a person entirely: every session and every agent they own
     Revoke { email: String },
@@ -303,7 +303,7 @@ async fn main() {
                     Some(e) => e.to_string(),
                     None => format!("{} (agent)", text(&me, "label")),
                 };
-                // /api/user/me does not carry `role` today; print it only if it appears.
+                // Printed when present; an agent credential has no role.
                 let role = me
                     .get("role")
                     .and_then(Value::as_str)

@@ -11,7 +11,14 @@ use crate::models::token;
 pub struct Caller {
     pub actor: Actor,
     pub scopes: Vec<String>,
+    /// 'session' or 'agent'. An agent's `person_id` is its owner's, so the
+    /// person id alone cannot tell a person from their agent — this can.
+    pub kind: String,
 }
+
+/// However recently a session was used, it ends this long after sign-in, so a
+/// session copied off a laptop cannot be kept alive forever by using it.
+pub const SESSION_MAX_DAYS: i64 = 90;
 
 impl Caller {
     pub fn has(&self, scope: &str) -> bool {
@@ -55,22 +62,31 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
         .await?
         .ok_or_else(|| AppError::Unauthorized("invalid or expired token".into()))?;
 
+    if row.kind == "session"
+        && row.created_at < chrono::Utc::now() - chrono::Duration::days(SESSION_MAX_DAYS)
+    {
+        return Err(AppError::Unauthorized("invalid or expired token".into()));
+    }
+
     let can_apply = row.scopes.iter().any(|s| s == "write");
 
     // Every resolve touches `last_used_at` so stale sessions are visible, but
     // the expiry only slides once under 29 days — one write per person per
     // day rather than one per poll from the Mac app. Agent credentials are
-    // minted with a deliberate lifetime and never slide.
+    // minted with a deliberate lifetime and never slide. The slide stops at
+    // the 90-day cap, so the expiry an admin sees is the real one.
     sqlx::query(
         "UPDATE credential
             SET last_used_at = now(),
                 expires_at = CASE WHEN $2 AND expires_at < now() + interval '29 days'
-                                  THEN now() + interval '30 days'
+                                  THEN least(now() + interval '30 days',
+                                             created_at + ($3 || ' days')::interval)
                                   ELSE expires_at END
           WHERE id = $1",
     )
     .bind(row.id)
     .bind(row.kind == "session")
+    .bind(SESSION_MAX_DAYS.to_string())
     .execute(db)
     .await?;
 
@@ -81,6 +97,7 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
             can_apply,
         },
         scopes: row.scopes,
+        kind: row.kind,
     })
 }
 

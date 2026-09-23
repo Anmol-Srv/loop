@@ -5,7 +5,8 @@ use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::models::task::{
-    statuses_for, task_row_select, terminal_of, Task, TaskFilter, TaskRow, TASK_COLUMNS,
+    evidence_for, next_statuses, settle, task_row_select, terminal_of, Task, TaskFilter, TaskRow,
+    ANYONE, TASK_COLUMNS,
 };
 
 pub enum Assignee {
@@ -93,12 +94,16 @@ pub async fn search(state: &AppState, filter: TaskFilter) -> AppResult<Vec<Task>
     Ok(tasks)
 }
 
+/// Move a task. `expected` is the status the caller last saw; when given and
+/// no longer true, nothing moves and the caller hears who got there first —
+/// otherwise a stale screen silently undoes a teammate's move.
 pub async fn set_status(
     state: &AppState,
     actor: &Actor,
     id: Uuid,
     status: String,
     manual_reason: Option<String>,
+    expected: Option<String>,
 ) -> AppResult<Outcome<Task>> {
     let patch = json!({ "status": status, "manual_reason": manual_reason });
 
@@ -109,51 +114,70 @@ pub async fn set_status(
         return Ok(Outcome::Proposed { change_id });
     }
 
-    // Everything the rules below need, in one read: who holds it, what track
-    // that puts it on, and what evidence is already attached.
-    let (assignee, department, admin, prs, figmas): (
+    let mut tx = state.db.begin().await?;
+
+    // Everything the rules below need, in one read inside the transaction and
+    // with the row locked: two people moving the same task are serialised
+    // here, so the second one's `expected` is checked against the first one's
+    // result rather than against what both of them read.
+    let (current, assignee, department, admin, attached, last_mover): (
+        String,
         Option<Uuid>,
         Option<String>,
         bool,
-        i64,
-        i64,
+        Vec<String>,
+        Option<String>,
     ) = sqlx::query_as(
-        "SELECT t.assignee_person_id,
+        "SELECT t.status,
+                t.assignee_person_id,
                 own.department,
                 EXISTS (SELECT 1 FROM person WHERE id = $2 AND role = 'admin'),
-                (SELECT count(*) FROM artifact a
-                  WHERE a.parent_type = 'task' AND a.parent_id = t.id
-                    AND a.kind IN ('pr', 'commit')),
-                (SELECT count(*) FROM artifact a
-                  WHERE a.parent_type = 'task' AND a.parent_id = t.id
-                    AND a.kind = 'figma')
+                ARRAY(SELECT a.kind FROM artifact a
+                       WHERE a.parent_type = 'task' AND a.parent_id = t.id),
+                (SELECT coalesce(p.name, c.actor) FROM change c
+                   LEFT JOIN person p ON p.id = c.on_behalf_of
+                  WHERE c.target_type = 'task' AND c.target_id = t.id
+                    AND c.state IN ('applied', 'approved') AND c.patch ? 'status'
+                  ORDER BY c.created_at DESC LIMIT 1)
            FROM task t
            LEFT JOIN person own ON own.id = t.assignee_person_id
-          WHERE t.id = $1",
+          WHERE t.id = $1
+            FOR UPDATE OF t",
     )
     .bind(id)
     .bind(actor.person_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("task not found".into()))?;
 
+    if let Some(expected) = expected {
+        if expected != current {
+            return Err(AppError::Conflict(format!(
+                "{} moved this to {} a moment ago.",
+                last_mover.as_deref().unwrap_or("Someone"),
+                current.replace('_', " ")
+            )));
+        }
+    }
+
     let department = department.as_deref();
-    let allowed = statuses_for(department);
-    if !allowed.contains(&status.as_str()) {
+    let next = next_statuses(department, &current);
+    if !next.contains(&status.as_str()) {
         return Err(AppError::BadRequest(format!(
-            "a {} task goes to one of {}",
+            "a {} task in {current} goes to one of {}",
             department.unwrap_or("unassigned"),
-            allowed.join(", ")
+            next.join(", ")
         )));
     }
 
     // A task is moved by the person it is assigned to; an admin can override,
     // which is what an admin is for. Shipping is the exception: it records a
     // fact about production rather than about ownership, so anyone who knows
-    // it went out may say so. Checked here, not in the route, so the CLI and
-    // a replayed proposal obey the same rule.
+    // it went out may say so — but only from `completed`, which the table
+    // above has already enforced. Checked here, not in the route, so the CLI
+    // and a replayed proposal obey the same rule.
     let mine = actor.person_id.is_some() && assignee == actor.person_id;
-    if !admin && !mine && status != "shipped" {
+    if !admin && !mine && !ANYONE.contains(&status.as_str()) {
         return Err(AppError::Forbidden(
             "only the person this task is assigned to can move it".into(),
         ));
@@ -164,21 +188,17 @@ pub async fn set_status(
     // recorded rather than waved through, so the board can still answer
     // "how did this get done".
     let reason = manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
-    let needs = match (department, status.as_str()) {
-        (Some("design"), "handoff") => Some(("a Figma link", figmas > 0)),
-        (Some("design"), _) => None,
-        (_, "completed") => Some(("a PR or commit", prs > 0)),
-        _ => None,
-    };
-    if let Some((what, have)) = needs {
-        if !have && reason.is_none() {
+    if let Some(kinds) = evidence_for(department, &status) {
+        if reason.is_none() && !attached.iter().any(|k| kinds.contains(&k.as_str())) {
+            let what = match kinds {
+                ["figma"] => "a Figma link",
+                _ => "a PR or commit",
+            };
             return Err(AppError::BadRequest(format!(
                 "attach {what} first, or say why it was done without one"
             )));
         }
     }
-
-    let mut tx = state.db.begin().await?;
 
     // `done_at` is stamped at the track's terminal state and cleared on the
     // way out, so a reopened task does not keep claiming a finish date and
@@ -194,9 +214,8 @@ pub async fn set_status(
     .bind(&status)
     .bind(finished)
     .bind(&reason)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    .fetch_one(&mut *tx)
+    .await?;
 
     record(&mut tx, actor, TargetType::Task, task.id, Op::Update, patch).await?;
 
@@ -495,6 +514,11 @@ pub struct TaskDetails {
     /// Absent leaves the assignee alone, `null` unassigns, an id reassigns.
     #[serde(default, deserialize_with = "crate::models::present")]
     pub assignee_id: Option<Option<Uuid>>,
+    /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
+    /// stays out of the audit patch — and out of a replayed proposal, which is
+    /// approved against the row as it is then.
+    #[serde(default, skip_serializing)]
+    pub expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Edit a task's details, reassigning it if asked.
@@ -531,12 +555,15 @@ pub async fn update_details(
 
     let mut tx = state.db.begin().await?;
 
-    let (status, assignee): (String, Option<Uuid>) =
-        sqlx::query_as("SELECT status, assignee_person_id FROM task WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    let (status, assignee, updated_at): (String, Option<Uuid>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            "SELECT status, assignee_person_id, updated_at FROM task WHERE id = $1 FOR UPDATE",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    stale_check(details.expected_updated_at, updated_at, "task")?;
 
     let assignee = details.assignee_id.unwrap_or(assignee);
     let department: Option<String> = match assignee {
@@ -549,13 +576,7 @@ pub async fn update_details(
         ),
         None => None,
     };
-    let department = department.as_deref();
-    let status = if statuses_for(department).contains(&status.as_str()) {
-        status
-    } else {
-        "open".to_owned()
-    };
-    let finished = status == terminal_of(department);
+    let (status, finished) = settle(department.as_deref(), &status);
 
     let task: Task = sqlx::query_as(&format!(
         "UPDATE task SET
@@ -583,4 +604,21 @@ pub async fn update_details(
     record(&mut tx, actor, TargetType::Task, id, Op::Update, patch).await?;
     tx.commit().await?;
     Ok(Outcome::Applied { entity: task })
+}
+
+/// Refuse an edit made against a version of the row that is no longer there.
+/// Called with the row locked, so nothing can land between this and the write.
+/// Compared as timestamps, not strings: the client echoes what it was sent,
+/// and two spellings of one instant are the same version.
+pub fn stale_check(
+    expected: Option<chrono::DateTime<chrono::Utc>>,
+    actual: chrono::DateTime<chrono::Utc>,
+    what: &str,
+) -> AppResult<()> {
+    match expected {
+        Some(e) if e != actual => Err(AppError::Conflict(format!(
+            "Someone else edited this {what} since you opened it. Your changes are still here — check theirs and save again."
+        ))),
+        _ => Ok(()),
+    }
 }

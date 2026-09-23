@@ -1,13 +1,15 @@
 //! The `admin`-scoped endpoints (§4): everything an administrator does
 //! day-to-day, so only the first-admin bootstrap needs database access.
 
-use axum::extract::State;
-use axum::routing::{get, post};
+use axum::extract::{Path, State};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::controllers;
+use crate::controllers::people::PersonRow;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::middleware::auth::Caller;
@@ -24,6 +26,15 @@ pub struct EmailBody {
 pub struct RoleBody {
     pub email: String,
     pub role: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonPatch {
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +80,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/role", post(role))
         .route("/api/admin/revoke", post(revoke))
         .route("/api/admin/sessions", get(sessions))
+        .route("/api/admin/people/{id}", patch(update))
 }
 
 /// Refuse anything that would leave the system with no administrator. Checked
@@ -118,49 +130,49 @@ async fn role(
 ) -> AppResult<ApiResponse<PersonRole>> {
     caller.require("admin")?;
 
-    if !matches!(body.role.as_str(), "member" | "admin") {
-        return Err(AppError::BadRequest(format!(
-            "unknown role '{}'; expected 'member' or 'admin'",
-            body.role
-        )));
-    }
-
     let email = body.email.trim().to_lowercase();
-    if body.role != "admin" {
-        refuse_if_last_admin(&state, &email, "demoting them").await?;
-    }
-
-    let updated = sqlx::query_scalar::<_, String>(
-        "UPDATE person SET role = $1, updated_at = now()
-          WHERE email = $2 AND deleted_at IS NULL RETURNING role",
-    )
-    .bind(&body.role)
-    .bind(&email)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("no person with email '{email}'")))?;
-
-    // Scopes are baked into a credential when it is minted, so a demotion has
-    // no effect on a session already in someone's Keychain. Ending their
-    // sessions is what makes the demotion real; they sign in again and get the
-    // scopes their new role grants. Agent credentials are left alone — they
-    // never carry `admin` in the first place.
-    let ended = sqlx::query(
-        "UPDATE credential SET revoked_at = now()
-          WHERE kind = 'session'
-            AND revoked_at IS NULL
-            AND owner_id = (SELECT id FROM person WHERE email = $1)",
-    )
-    .bind(&email)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
+    let id = controllers::people::id_of(&state, &email).await?;
+    let (person, sessions_ended) = controllers::people::set_role(&state, id, &body.role).await?;
 
     Ok(ApiResponse::ok(PersonRole {
         email,
-        role: updated,
-        sessions_ended: ended,
+        role: person.role,
+        sessions_ended,
     }))
+}
+
+/// A person's department and role, by id — the admin's edit of someone else.
+/// Both optional; one request can change either or both. The role's name is
+/// checked before anything is written, so a typo cannot half-apply a request.
+/// The last-admin refusal can still come after the department has moved;
+/// that half stands on its own and is not worth a shared transaction.
+async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<PersonPatch>,
+) -> AppResult<ApiResponse<PersonRow>> {
+    caller.require("admin")?;
+    if body.department.is_none() && body.role.is_none() {
+        return Err(AppError::BadRequest("give a department, a role, or both".into()));
+    }
+    if let Some(role) = &body.role {
+        if !controllers::people::ROLES.contains(&role.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "unknown role '{role}'; expected one of {}",
+                controllers::people::ROLES.join(", ")
+            )));
+        }
+    }
+
+    let mut person = None;
+    if let Some(department) = &body.department {
+        person = Some(controllers::people::set_department(&state, &caller.actor, id, department).await?);
+    }
+    if let Some(role) = &body.role {
+        person = Some(controllers::people::set_role(&state, id, role).await?.0);
+    }
+    Ok(ApiResponse::ok(person.expect("one of the two was given")))
 }
 
 async fn revoke(

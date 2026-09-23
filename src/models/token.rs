@@ -23,13 +23,14 @@ pub struct TokenRow {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Resolve a raw bearer token. Unknown, revoked, and expired tokens all return
 /// `None` so a caller cannot tell them apart.
 pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<TokenRow>> {
     let row = sqlx::query_as::<_, TokenRow>(
-        "SELECT id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at
+        "SELECT id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at, created_at
          FROM credential
          WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()",
     )

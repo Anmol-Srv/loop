@@ -3,7 +3,7 @@ use crate::errors::{AppError, AppResult};
 use crate::models::token::{hash_token, TokenRow};
 
 const COLUMNS: &str =
-    "id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at";
+    "id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at, created_at";
 
 /// 256 bits of randomness from uuid's CSPRNG. Using uuid here rather than
 /// pulling in `rand` keeps the dependency list shorter.
@@ -117,9 +117,16 @@ pub async fn mint_agent(
         }
     }
 
+    // Clamped rather than refused: asking for a year is a reasonable wish
+    // with a bounded answer, and the reply carries the expiry actually given.
+    let valid_days = valid_days.clamp(1, MAX_AGENT_DAYS);
     let owner = owner_id(state, owner_email).await?;
     insert(state, "agent", label, owner, &scopes, valid_days).await
 }
+
+/// The longest an agent credential lives. Long enough for a quarter's
+/// automation, short enough that a forgotten one ends by itself.
+pub const MAX_AGENT_DAYS: i64 = 90;
 
 /// Revoking a person revokes every credential they own — sessions and agents.
 pub async fn revoke_for_person(state: &AppState, owner_email: &str) -> AppResult<u64> {

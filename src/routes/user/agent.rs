@@ -53,9 +53,13 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/agents/{id}", delete(revoke))
 }
 
-/// The person behind the credential. An agent minting an agent would have no
-/// owner to attribute it to, so it is refused.
+/// The person behind the credential. An agent carries its owner's person id,
+/// so that alone never refused an agent — the credential kind does. Without
+/// it, a read/propose token could mint a sibling valid for a century.
 async fn owner(state: &AppState, caller: &Caller) -> AppResult<(Uuid, String)> {
+    if caller.kind != "session" {
+        return Err(AppError::Forbidden("only a signed-in person can own an agent".into()));
+    }
     let id = caller
         .actor
         .person_id
@@ -76,6 +80,19 @@ async fn mint(
 ) -> AppResult<ApiResponse<Minted>> {
     caller.require("read")?;
     let (_, email) = owner(&state, &caller).await?;
+
+    // An agent can do no more than the person who made it. `write` covers the
+    // two agent-only scopes: whoever may apply a change may propose one, and
+    // may hand out a lease on work.
+    for scope in &body.scopes {
+        let held = caller.has(scope)
+            || (caller.has("write") && matches!(scope.as_str(), "propose" | "claim"));
+        if !held {
+            return Err(AppError::Forbidden(format!(
+                "you cannot give an agent '{scope}'; your own credential lacks it"
+            )));
+        }
+    }
 
     // mint_agent turns `write`/`admin` into a sentence rather than a
     // constraint violation; let that message reach the caller unaltered.

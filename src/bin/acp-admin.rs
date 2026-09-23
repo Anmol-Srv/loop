@@ -4,6 +4,7 @@ use acp_server::{
     config::Config,
     controllers::{people, token},
     db,
+    models::change::Actor,
 };
 use clap::{Parser, Subcommand};
 
@@ -21,13 +22,17 @@ enum Command {
     /// Mint a session for a person, bypassing the password. The §7 escape
     /// hatch: for scripts, and for the day the password path is broken.
     Session { email: String },
-    /// Set a password directly, bypassing the length policy.
+    /// Set a password directly, and end the person's sessions.
     ///
-    /// The break-glass path: `acp-admin` already talks straight to the
-    /// database, and a local instance sometimes needs a password you can type
-    /// quickly. It warns when the password would not survive the real rules,
-    /// so nobody sets one of these on a shared deployment by accident.
+    /// The break-glass path, held to the app's rules: it used to accept any
+    /// password with a warning, and a short one set "for now" is exactly what
+    /// outlives the emergency on a shared deployment.
     SetPassword { email: String, password: String },
+    /// Move a person to design, frontend or backend; their in-flight tasks
+    /// follow onto the new track
+    SetDepartment { email: String, department: String },
+    /// Make a person a member, manager or admin; their sessions end
+    SetRole { email: String, role: String },
     /// Mint an agent credential and print it once
     Mint {
         label: String,
@@ -74,15 +79,10 @@ async fn main() {
     let state = db::AppState { db: pool };
 
     match cli.command {
-        Command::AddPerson { email, name } => {
-            sqlx::query("INSERT INTO person (email, name) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING")
-                .bind(&email)
-                .bind(&name)
-                .execute(&state.db)
-                .await
-                .expect("insert failed");
-            println!("person ready: {email}");
-        }
+        Command::AddPerson { email, name } => match people::add_person(&state, &email, &name).await {
+            Ok(_) => println!("person ready: {}", email.trim().to_lowercase()),
+            Err(e) => die(e),
+        },
         Command::Session { email } => {
             match token::mint_session(&state, &email).await {
                 Ok((raw, row)) => {
@@ -96,36 +96,30 @@ async fn main() {
             }
         }
         Command::SetPassword { email, password } => {
-            let weak = password.chars().count() < 12;
-            let hash = match acp_server::models::password::hash(&password) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            };
-            let updated = sqlx::query(
-                "UPDATE person
-                    SET password_hash = $2, password_set_at = now(),
-                        failed_attempts = 0, locked_until = NULL
-                  WHERE email = $1 AND deleted_at IS NULL",
-            )
-            .bind(&email)
-            .bind(&hash)
-            .execute(&state.db)
-            .await
-            .expect("update failed");
-
-            if updated.rows_affected() == 0 {
-                eprintln!("no person with email '{email}'");
-                std::process::exit(1);
+            match people::set_password_directly(&state, &email, &password).await {
+                Ok(()) => println!("password set for {email}; their sessions have ended"),
+                Err(e) => die(e),
             }
-            println!("password set for {email}");
-            if weak {
-                println!(
-                    "  warning: {} characters. The API enforces a 12-character \n  minimum, so this password could not be set through the app.",
-                    password.chars().count()
-                );
+        }
+        Command::SetDepartment { email, department } => {
+            let actor = Actor { label: "acp-admin".into(), person_id: None, can_apply: true };
+            let moved = match people::id_of(&state, &email).await {
+                Ok(id) => people::set_department(&state, &actor, id, &department).await,
+                Err(e) => Err(e),
+            };
+            match moved {
+                Ok(p) => println!("{} is now in {}", p.email, p.department),
+                Err(e) => die(e),
+            }
+        }
+        Command::SetRole { email, role } => {
+            let changed = match people::id_of(&state, &email).await {
+                Ok(id) => people::set_role(&state, id, &role).await,
+                Err(e) => Err(e),
+            };
+            match changed {
+                Ok((p, ended)) => println!("{} is now {}; {ended} session(s) ended", p.email, p.role),
+                Err(e) => die(e),
             }
         }
         Command::Mint { label, owner, scopes, days } => {

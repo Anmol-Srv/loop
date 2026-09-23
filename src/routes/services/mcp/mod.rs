@@ -177,6 +177,9 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
                             id,
                             status,
                             opt_str_arg(&args, "manualReason"),
+                            // An agent only ever proposes, and a proposal is
+                            // checked when it is approved, not when it is made.
+                            None,
                         )
                         .await?,
                     )

@@ -50,6 +50,80 @@ pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
     flow_of(department).iter().chain(ASIDE.iter()).copied().collect()
 }
 
+/// Where a task may go next. The one table: `set_status` refuses anything not
+/// in it and `GET /api/user/tracks` serialises it, so the app can only offer
+/// moves the server will take.
+///
+/// Membership in a track was never enough — any state was reachable from any
+/// other, so an open task could be shipped past the PR check. The order is
+/// the rule: `completed` only from `in_progress`, `shipped` only from
+/// `completed`, `handoff` only from `in_progress`. Stepping back one is
+/// always allowed, because work gets reopened.
+pub fn next_statuses(department: Option<&str>, from: &str) -> &'static [&'static str] {
+    let design = department == Some("design");
+    match (design, from) {
+        (_, "open") => &["in_progress", "blocked", "dropped"],
+        (false, "in_progress") => &["completed", "open", "blocked", "dropped"],
+        (false, "completed") => &["shipped", "in_progress", "blocked", "dropped"],
+        (false, "shipped") => &["in_progress", "blocked", "dropped"],
+        (true, "in_progress") => &["handoff", "open", "blocked", "dropped"],
+        (true, "handoff") => &["completed", "in_progress", "blocked", "dropped"],
+        (true, "completed") => &["in_progress", "blocked", "dropped"],
+        (_, "blocked") => &["in_progress", "dropped"],
+        (_, "dropped") => &["open"],
+        // A state this track does not have: finished work left behind by a
+        // department change. `open` is the way back onto the track.
+        _ => &["open", "blocked", "dropped"],
+    }
+}
+
+/// The artifact kinds that let a task make this move, if it needs any. A
+/// `manual_reason` stands in for them; nothing else does.
+pub fn evidence_for(department: Option<&str>, to: &str) -> Option<&'static [&'static str]> {
+    match (department == Some("design"), to) {
+        (true, "handoff") => Some(&["figma"]),
+        (false, "completed") => Some(&["pr", "commit"]),
+        _ => None,
+    }
+}
+
+/// The moves anyone may make, not only the holder. Shipping records a fact
+/// about production rather than a claim about ownership.
+pub const ANYONE: [&str; 1] = ["shipped"];
+
+/// `next_statuses` and `evidence_for` as the JSON `GET /api/user/tracks`
+/// returns — generated, never written out, so it cannot drift from the rule.
+pub fn tracks_table() -> serde_json::Value {
+    let track = |dept: Option<&str>| -> serde_json::Map<String, serde_json::Value> {
+        statuses_for(dept)
+            .into_iter()
+            .map(|from| (from.to_owned(), serde_json::json!(next_statuses(dept, from))))
+            .collect()
+    };
+    let evidence = |dept: Option<&str>| -> serde_json::Map<String, serde_json::Value> {
+        ALL_STATUSES
+            .iter()
+            .filter_map(|to| evidence_for(dept, to).map(|k| (to.to_string(), serde_json::json!(k))))
+            .collect()
+    };
+    serde_json::json!({
+        "eng": track(None),
+        "design": track(Some("design")),
+        "evidence": { "eng": evidence(None), "design": evidence(Some("design")) },
+        "anyone": ANYONE,
+    })
+}
+
+/// Where a task lands when its track changes under it — reassignment, or its
+/// holder changing department. A status the new track lacks becomes `open`
+/// (a design `handoff` given to an engineer is theirs to start), and the
+/// second value says whether that is the new track's finish line, so
+/// `done_at` is recomputed alongside it and the two never disagree.
+pub fn settle(department: Option<&str>, status: &str) -> (String, bool) {
+    let status = if statuses_for(department).contains(&status) { status } else { "open" };
+    (status.to_owned(), status == terminal_of(department))
+}
+
 /// The departments a person can belong to. A task's discipline is whoever
 /// holds it, so this is the only place the vocabulary is written down.
 pub const DEPARTMENTS: [&str; 3] = ["design", "frontend", "backend"];

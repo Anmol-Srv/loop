@@ -30,6 +30,13 @@ pub async fn add(
     if url.trim().is_empty() {
         return Err(AppError::BadRequest("url is required".into()));
     }
+    // The app hands a link to `open`, which will as happily run a `file://`
+    // or an app's custom scheme as load a page. Only the web gets through. A
+    // commit is exempt: its `url` holds a hash, and nothing opens it.
+    let lower = url.trim().to_ascii_lowercase();
+    if kind != "commit" && !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err(AppError::BadRequest("a link must start with http:// or https://".into()));
+    }
 
     let id = Uuid::new_v4();
     let patch = json!({

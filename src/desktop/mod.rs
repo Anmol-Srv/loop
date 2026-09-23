@@ -95,15 +95,12 @@ impl App {
             }
         }
 
-        // A rejected token means the stored credential is no longer good.
-        if let Some(err) = net.error("__me") {
-            let err = err.to_string();
-            if err.contains("invalid") || err.contains("expired") || err.contains("missing") {
-                // Sign out first: it clears the login screen, and this one
-                // message is worth carrying back to it.
-                self.sign_out();
-                self.login.error = Some(err);
-            }
+        // Any 401, from whichever view asked: the stored credential is no
+        // longer good. Sign out first, since it clears the login screen, and
+        // this one message is worth carrying back to it.
+        if net.session_ended {
+            self.sign_out();
+            self.login.error = Some("Your session ended \u{2014} sign in again.".into());
         }
     }
 }
@@ -135,5 +132,8 @@ impl App {
         }
 
         views::chrome::ui(self, ui);
+        if let Some(net) = self.net.as_mut() {
+            net.tick(ui.ctx());
+        }
     }
 }

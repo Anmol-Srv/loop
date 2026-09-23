@@ -35,6 +35,10 @@ pub struct UpdateTaskBody {
     /// transition that would otherwise need evidence.
     #[serde(default)]
     pub manual_reason: Option<String>,
+    /// The status the mover saw. When it is no longer true the move is
+    /// refused with a 409 rather than undoing whoever got there first.
+    #[serde(default)]
+    pub expected_status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +82,13 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/claim", post(claim))
         .route("/api/user/tasks/{id}/release", post(release))
         .route("/api/user/tasks/{id}/blockers", patch(blockers))
+        .route("/api/user/tracks", get(tracks))
+}
+
+/// The transition table, so a client offers only the moves the server takes.
+async fn tracks(caller: Caller) -> AppResult<ApiResponse<serde_json::Value>> {
+    caller.require("read")?;
+    Ok(ApiResponse::ok(crate::models::task::tracks_table()))
 }
 
 async fn create(
@@ -119,8 +130,15 @@ async fn update(
 ) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
     Ok(ApiResponse::ok(
-        controllers::task::set_status(&state, &caller.actor, id, body.status, body.manual_reason)
-            .await?,
+        controllers::task::set_status(
+            &state,
+            &caller.actor,
+            id,
+            body.status,
+            body.manual_reason,
+            body.expected_status,
+        )
+        .await?,
     ))
 }
 

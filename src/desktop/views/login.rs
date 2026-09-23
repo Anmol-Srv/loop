@@ -12,7 +12,7 @@
 
 use serde_json::json;
 
-use crate::desktop::design::{avatar, colour, size, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, size, space, widgets as w};
 use crate::desktop::{creds, net::Net, App};
 
 /// The measure of the card's contents. Not a spacing token: it is a line
@@ -21,7 +21,7 @@ use crate::desktop::{creds, net::Net, App};
 const CARD_WIDTH: f32 = 320.0;
 /// Roughly how tall the composed card runs, used only to bias it above the
 /// optical centre. An estimate, not a layout constraint.
-const CARD_HEIGHT_GUESS: f32 = 420.0;
+const CARD_HEIGHT_GUESS: f32 = 480.0;
 
 #[derive(Default, PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
@@ -30,9 +30,11 @@ pub enum Mode {
     FirstTime,
 }
 
-#[derive(Default)]
 pub struct State {
     pub mode: Mode,
+    /// The server to sign in to, prefilled with the one last used. Saved next
+    /// to the credential once a sign-in succeeds.
+    pub server: String,
     pub email: String,
     pub password: String,
     pub confirm: String,
@@ -43,6 +45,29 @@ pub struct State {
     tried: bool,
     /// Unauthenticated bridge, alive only for the request in flight.
     net: Option<Net>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            mode: Mode::default(),
+            server: creds::base_url(),
+            email: String::new(),
+            password: String::new(),
+            confirm: String::new(),
+            code: String::new(),
+            error: None,
+            tried: false,
+            net: None,
+        }
+    }
+}
+
+/// Only the scheme is checked here; whether anything answers is the
+/// server's to say, and the request's error says it.
+fn server_ok(server: &str) -> bool {
+    let s = server.trim();
+    s.starts_with("http://") || s.starts_with("https://")
 }
 
 /// Codes are read off Slack and typed by hand, so accept any casing and any
@@ -71,6 +96,9 @@ fn tidy_code(raw: &str) -> String {
 fn missing(s: &State, first_time: bool) -> Option<&'static str> {
     if !s.tried && s.email.is_empty() && s.password.is_empty() && s.code.is_empty() {
         return None;
+    }
+    if !server_ok(&s.server) {
+        return Some("Enter the server address, starting https://.");
     }
     if s.email.trim().is_empty() {
         return Some("Enter your email address.");
@@ -114,7 +142,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     if let Some(token) = token {
-        match creds::store(&token) {
+        match creds::store(&token).and_then(|()| creds::store_server(&app.login.server)) {
             Ok(()) => {
                 app.login = State::default();
                 app.connect(token, &ctx);
@@ -142,16 +170,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
             ui.vertical_centered(|ui| {
                 w::title(ui, "Airtribe Control Plane");
-                ui.add_space(space::XS);
-                // No widget for a monospaced caption: the URL is a machine
-                // string and must read as one, so localhost and production are
-                // told apart at a glance.
-                ui.label(
-                    egui::RichText::new(creds::base_url())
-                        .monospace()
-                        .size(text::CAPTION)
-                        .color(colour::TEXT_FAINT),
-                );
                 ui.add_space(space::XL);
 
                 w::card(ui, |ui| {
@@ -190,9 +208,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                             submit |= entered(w::field(ui, "Password", &mut s.password, true, ""));
                         }
 
+                        ui.add_space(space::MD);
+                        submit |= entered(w::field(ui, "Server", &mut s.server, false, "https://acp.airtribe.live"));
+
                         ui.add_space(space::XL);
 
-                        let ready = !s.email.trim().is_empty()
+                        let ready = server_ok(&s.server)
+                            && !s.email.trim().is_empty()
                             && !s.password.is_empty()
                             && (!first_time
                                 || (!s.code.trim().is_empty() && s.confirm == s.password));
@@ -281,7 +303,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
         // A fresh bridge per attempt: no token to carry, and no stale reply
         // from a previous one can land on this key.
-        let mut net = Net::spawn(creds::base_url(), String::new(), ctx.clone());
+        let server = s.server.trim().trim_end_matches('/').to_string();
+        let mut net = Net::spawn(server, String::new(), ctx.clone());
         net.post("auth", path, body);
         app.login.net = Some(net);
         app.login.error = None;

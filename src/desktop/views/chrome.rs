@@ -53,6 +53,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // The address is the fallback only for a person with no name on file.
     let name = Some(field("name")).filter(|n| !n.is_empty()).unwrap_or_else(|| email.clone());
 
+    // Which server this is, beside who you are: with a hosted and a local one
+    // both in play, a write to the wrong one is the mistake worth preventing.
+    let server = net.base_url.clone();
+    let host = server.split("://").last().unwrap_or(&server).split('/').next().unwrap_or("").to_string();
+
     let on_task = app.task.is_some();
     let sel = |t: Tab| app.tab == t && !on_task;
 
@@ -83,7 +88,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     if !email.is_empty() {
                         avatar::small(ui, &email, size::AVATAR_MD)
-                            .on_hover_text(format!("{name}\n{}", sentence(&role)));
+                            .on_hover_text(format!("{name}\n{}\n{server}", sentence(&role)));
                         ui.add_space(space::XS);
                     }
                     refresh |= footer_icon(ui, icon::ARROWS_CLOCKWISE, "Refresh", true);
@@ -115,16 +120,21 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                                 .truncate()
                                 .selectable(false),
                             )
-                            .on_hover_text(email.as_str());
+                            .on_hover_text(format!("{email}\n{}", sentence(&role)));
+                            // The server, not the role, under the name: the role
+                            // rarely changes, and a write to the wrong server is
+                            // the mistake worth preventing. A third line pushed
+                            // the footer off the window.
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(sentence(&role))
+                                    egui::RichText::new(&host)
                                         .size(text::CAPTION)
                                         .color(colour::TEXT_FAINT),
                                 )
                                 .truncate()
                                 .selectable(false),
-                            );
+                            )
+                            .on_hover_text(server.as_str());
                         });
                     });
                 });

@@ -453,6 +453,10 @@ pub struct ProjectPatch {
     pub target_date: Option<Option<chrono::NaiveDate>>,
     #[serde(default)]
     pub label_ids: Option<Vec<Uuid>>,
+    /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
+    /// stays out of the audit patch and out of a replayed proposal.
+    #[serde(default, skip_serializing)]
+    pub expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The project states. `done` and `archived` are both finished; archived is
@@ -500,12 +504,19 @@ pub async fn update(
 
     let mut tx = state.db.begin().await?;
 
-    let (start, target): (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>) =
-        sqlx::query_as("SELECT start_date, target_date FROM project WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+    #[allow(clippy::type_complexity)]
+    let (start, target, updated_at): (
+        Option<chrono::NaiveDate>,
+        Option<chrono::NaiveDate>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as(
+        "SELECT start_date, target_date, updated_at FROM project WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+    super::task::stale_check(patch.expected_updated_at, updated_at, "project")?;
     let start = patch.start_date.unwrap_or(start);
     let target = patch.target_date.unwrap_or(target);
     if let (Some(s), Some(t)) = (start, target) {

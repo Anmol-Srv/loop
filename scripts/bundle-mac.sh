@@ -7,11 +7,24 @@ cd "$(dirname "$0")/.."
 NAME="Airtribe Control Plane"
 APP="target/$NAME.app"
 
-cargo build --release --features app --bin acp-app
+# UNIVERSAL=1 builds for Intel as well and joins the two with lipo — only
+# needed if someone on the team has an Intel Mac, and it doubles the build.
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+  rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
+  cargo build --release --features app --bin acp-app --target aarch64-apple-darwin
+  cargo build --release --features app --bin acp-app --target x86_64-apple-darwin
+  BIN=target/acp-app-universal
+  lipo -create -output "$BIN" \
+    target/aarch64-apple-darwin/release/acp-app \
+    target/x86_64-apple-darwin/release/acp-app
+else
+  cargo build --release --features app --bin acp-app
+  BIN=target/release/acp-app
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/acp-app "$APP/Contents/MacOS/acp-app"
+cp "$BIN" "$APP/Contents/MacOS/acp-app"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,3 +75,12 @@ echo "run    open '$APP'"
 # macOS believing the app crashed, which is what put a "reopen its windows?"
 # dialog in front of every rebuild.
 osascript -e 'quit app "Airtribe Control Plane"' 2>/dev/null || true
+
+# DIST=1 zips the bundle for handing to teammates. `ditto` rather than `zip`
+# keeps the signature and the bundle's extended attributes intact.
+if [ "${DIST:-0}" = "1" ]; then
+  ZIP="target/Airtribe-Control-Plane.zip"
+  rm -f "$ZIP"
+  ditto -c -k --keepParent "$APP" "$ZIP"
+  echo "dist   $ZIP ($(du -h "$ZIP" | cut -f1)) — $(lipo -archs "$APP/Contents/MacOS/acp-app")"
+fi

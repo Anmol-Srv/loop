@@ -1,0 +1,64 @@
+# The staging stack: Postgres, the server, and Caddy for TLS. One VM.
+#
+# Only Caddy publishes ports. The server listens on the compose network, so
+# the plain-HTTP port is unreachable from outside the machine and every client
+# comes in over HTTPS. Postgres publishes nothing at all.
+#
+#   cp .env.example .env    # then fill it in
+#   docker compose up -d
+name: acp
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: acp
+      POSTGRES_USER: acp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acp -d acp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    # Built on a Mac and loaded onto the VM by scripts/deploy-staging.sh, so the
+    # VM never compiles Rust. `docker compose build` works too, from the repo.
+    image: acp-server:staging
+    build: ..
+    restart: unless-stopped
+    environment:
+      # A direct connection, not a transaction pooler: the job worker uses
+      # LISTEN/NOTIFY, which a pooler in transaction mode silently drops.
+      DATABASE_URL: postgres://acp:${POSTGRES_PASSWORD}@db:5432/acp
+      RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Given time to finish in-flight requests on `docker compose stop`.
+    stop_grace_period: 20s
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      ACP_DOMAIN: ${ACP_DOMAIN:?set ACP_DOMAIN in deploy/.env}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

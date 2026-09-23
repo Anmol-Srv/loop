@@ -1,0 +1,16 @@
+# TLS in front of the server. Caddy gets and renews a Let's Encrypt
+# certificate for $ACP_DOMAIN on its own; with ACP_DOMAIN=localhost it issues
+# one from its internal CA instead, which is how the stack is tested locally.
+{$ACP_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy server:8080 {
+		health_uri /health/ready
+		health_interval 15s
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

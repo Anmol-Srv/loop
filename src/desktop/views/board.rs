@@ -112,7 +112,9 @@ pub struct State {
 #[derive(Default)]
 struct Page {
     /// Name and description, while Edit is open.
-    editing: Option<(String, String)>,
+    editing: Option<Draft>,
+    /// A PATCH of ours is out and its reply not yet folded in.
+    saving: bool,
     /// The label set as last picked, held until the server has echoed it back.
     /// Without it a second tick made before the first PATCH lands would be
     /// computed from the stale set and undo the first.
@@ -122,10 +124,22 @@ struct Page {
     attach: Option<Attach>,
     /// The resource whose Remove is waiting on a yes.
     removing: Option<String>,
-    /// A PATCH the server parked for approval rather than applied.
+    /// How the last save went: "Saved.", or parked for approval.
     notice: Option<String>,
     /// A remove that failed for a reason other than the link being gone.
     resource_error: Option<String>,
+}
+
+/// Name and description while Edit is open, with what they were when editing
+/// began, so a save sends only what the person changed.
+struct Draft {
+    name: String,
+    description: String,
+    was_name: String,
+    was_description: String,
+    /// The project's `updatedAt` when editing began. `None` after a refused
+    /// save: the next one goes against the project as refetched.
+    updated_at: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -332,6 +346,15 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             let requests: &mut Vec<Request> = &mut requests;
             if part == shell::Part::Header {
                 headline(ui, head, page, can_write, patching, requests);
+                // Under the title, where the task page says it: the edit that
+                // prompted it is usually right here.
+                if let Some(err) = &patch_error {
+                    ui.add_space(space::SM);
+                    w::error(ui, err);
+                } else if let Some(n) = &page.notice {
+                    ui.add_space(space::SM);
+                    w::caption(ui, n);
+                }
                 return;
             }
 
@@ -437,13 +460,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 can_write,
                 requests,
             );
-            if let Some(err) = &patch_error {
-                ui.add_space(space::SM);
-                w::error(ui, err);
-            } else if let Some(n) = &page.notice {
-                ui.add_space(space::SM);
-                w::caption(ui, n);
-            }
         },
     );
 
@@ -463,6 +479,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         app.task = Some(id);
     }
 
+    let page = page_cell.into_inner();
     let net = app.net.as_mut().unwrap();
     if let Some(body) = submit {
         // Drop a previous attempt's error, so the banner belongs to this one.
@@ -471,7 +488,16 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
     for request in requests_cell.into_inner() {
         match request {
-            Request::Patch(body) => {
+            Request::Patch(mut body) => {
+                // Against the project as shown. Not while an earlier save of
+                // ours is still out: that one moves `updatedAt`, and a second
+                // label ticked before it lands would be refused for it.
+                let at = str_at(head, "updatedAt");
+                if body.get("expectedUpdatedAt").is_none() && !at.is_empty() && !patching {
+                    body["expectedUpdatedAt"] = json!(at);
+                }
+                page.notice = None;
+                page.saving = true;
                 net.invalidate(&keys.patch);
                 net.patch(&keys.patch, &keys.detail_path, body);
             }
@@ -494,17 +520,35 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 
 /// Fold in whatever replies landed since last frame.
 fn settle(net: &mut Net, keys: &Keys, page: &mut Page) {
-    if let Some(reply) = net.data(&keys.patch).cloned() {
-        net.invalidate(&keys.patch);
+    if page.saving && !net.is_loading(&keys.patch) {
+        page.saving = false;
         // Refetched in place rather than invalidated, so the page keeps the old
-        // values on screen until the new ones arrive instead of blinking.
+        // values on screen until the new ones arrive instead of blinking. On a
+        // refusal too: the message says someone else got there first, and the
+        // page should show what they did.
         net.get(&keys.detail, &keys.detail_path);
-        // The list's rows and Home's projects carry these same fields.
-        net.invalidate(PROJECTS_KEY);
-        net.invalidate("home");
-        page.editing = None;
-        page.notice = (str_at(&reply, "status") == "proposed")
-            .then(|| "Sent for approval \u{2014} it changes once someone signs off.".to_owned());
+        match net.peek(&keys.patch).cloned() {
+            Some(Ok(reply)) => {
+                net.invalidate(&keys.patch);
+                // The list's rows and Home's projects carry these same fields.
+                net.invalidate(PROJECTS_KEY);
+                net.invalidate("home");
+                page.editing = None;
+                page.notice = Some(if str_at(&reply, "status") == "proposed" {
+                    "Sent for approval \u{2014} it changes once someone signs off.".to_owned()
+                } else {
+                    "Saved.".to_owned()
+                });
+            }
+            // The error stays in the cache for the headline to show; the draft
+            // stays open, re-based so the next Save is the person's answer.
+            Some(Err(_)) => {
+                if let Some(d) = page.editing.as_mut() {
+                    d.updated_at = None;
+                }
+            }
+            None => {}
+        }
     }
     if net.data(&keys.attach).is_some() {
         net.invalidate(&keys.attach);
@@ -542,7 +586,7 @@ fn headline(
         n => n,
     };
 
-    if let Some((draft_name, draft_body)) = page.editing.as_mut() {
+    if let Some(Draft { name: draft_name, description: draft_body, .. }) = page.editing.as_mut() {
         ui.add_space(space::XS);
         w::field(ui, "Name", draft_name, false, "e.g. Checkout redesign\u{2026}");
         ui.add_space(space::MD);
@@ -550,18 +594,37 @@ fn headline(
         ui.add_space(space::MD);
         let ready = !draft_name.trim().is_empty() && !patching;
         let mut cancel = false;
+        let mut save = false;
         ui.horizontal(|ui| {
             if w::primary(ui, if patching { "Saving\u{2026}" } else { "Save" }, ready).clicked() {
-                requests.push(Request::Patch(json!({
-                    "name": draft_name.trim(),
-                    "description": draft_body.trim(),
-                })));
+                save = true;
             }
             ui.add_space(space::XS);
             if w::ghost(ui, "Cancel").clicked() {
                 cancel = true;
             }
         });
+        if save {
+            let d = page.editing.as_ref().expect("editing");
+            // Only what was changed: a name fix must not write back a
+            // description someone else has since rewritten.
+            let mut body = json!({});
+            if d.name.trim() != d.was_name {
+                body["name"] = json!(d.name.trim());
+            }
+            if d.description.trim() != d.was_description {
+                body["description"] = json!(d.description.trim());
+            }
+            if body.as_object().is_some_and(|b| b.is_empty()) {
+                cancel = true;
+            } else {
+                let at = d.updated_at.as_deref().unwrap_or(str_at(head, "updatedAt"));
+                if !at.is_empty() {
+                    body["expectedUpdatedAt"] = json!(at);
+                }
+                requests.push(Request::Patch(body));
+            }
+        }
         if cancel {
             page.editing = None;
         }
@@ -589,7 +652,14 @@ fn headline(
         });
     });
     if edit {
-        page.editing = Some((name.to_owned(), str_at(head, "description").to_owned()));
+        let description = str_at(head, "description");
+        page.editing = Some(Draft {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            was_name: name.trim().to_owned(),
+            was_description: description.trim().to_owned(),
+            updated_at: Some(str_at(head, "updatedAt").to_owned()).filter(|a| !a.is_empty()),
+        });
     }
     ui.add_space(space::MD);
     description(ui, str_at(head, "description"));

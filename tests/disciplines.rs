@@ -217,6 +217,15 @@ async fn finishing_work_needs_evidence_or_a_reason(pool: PgPool) {
         move_to(design_token.clone(), des, serde_json::json!({ "status": "shipped" })).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "shipped is an engineering state");
 
+    // Both start the work first. This test used to complete and hand off
+    // straight from `open`; since the transition table, `completed` and
+    // `handoff` are only reachable from `in_progress`, so the evidence gate
+    // is exercised on the move it actually guards.
+    for (t, id) in [(token.clone(), eng), (design_token.clone(), des)] {
+        let response = move_to(t, id, serde_json::json!({ "status": "in_progress" })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     // Completing engineering work needs something to point at.
     let response = move_to(token.clone(), eng, serde_json::json!({ "status": "completed" })).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST, "no PR, no reason, no completion");

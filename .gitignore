@@ -3,3 +3,6 @@ target/
 .DS_Store
 .gstack/
 __pycache__/
+
+# Database dumps from deploy/backup.sh.
+backups/

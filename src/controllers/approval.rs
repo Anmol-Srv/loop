@@ -226,6 +226,9 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
                     change.target_id,
                     str_at("status")?,
                     p.get("manual_reason").and_then(Value::as_str).map(str::to_string),
+                    // Approved against the task as it is now; the transition
+                    // table still refuses a move that no longer makes sense.
+                    None,
                 )
                 .await?;
             } else if let Some(blockers) = p.get("blocked_by").and_then(Value::as_array) {

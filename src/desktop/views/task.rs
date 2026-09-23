@@ -49,6 +49,9 @@ const NOTES_KEY: &str = "task:notes";
 const NOTE_KEY: &str = "task:note:new";
 const DETAILS_KEY: &str = "task:details";
 const REMOVE_KEY: &str = "task:artifact:remove";
+/// The server's table of legal moves per track. Under `__`, not `task:`: it
+/// does not change while the app runs, so nothing here invalidates it.
+const TRACKS_KEY: &str = "__tracks";
 
 /// How far out we ask egui to wake us.
 const POLL: Duration = Duration::from_secs(2);
@@ -221,6 +224,10 @@ struct Local {
     pending: bool,
     log_error: Option<String>,
     patching: bool,
+    /// The status the page showed when the move was asked for. Sent as
+    /// `expectedStatus`, so a move made from a stale page is refused rather
+    /// than undoing a teammate's.
+    move_from: String,
     /// The last move's outcome: the message, and whether it failed. A failure
     /// is the server's own sentence — it is the only thing that explains a 403.
     notice: Option<(String, bool)>,
@@ -253,6 +260,7 @@ impl Local {
             pending: false,
             log_error: None,
             patching: false,
+            move_from: String::new(),
             notice: None,
             prompt: None,
             attaching: false,
@@ -303,6 +311,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         &format!("/api/user/artifacts?parentType=task&parentId={task_id}"),
     );
     net.get_once(NOTES_KEY, &format!("/api/user/tasks/{task_id}/notes"));
+    net.get_once(TRACKS_KEY, "/api/user/tracks");
     if can_write {
         net.get_once(PEOPLE_KEY, "/api/user/people");
     }
@@ -356,6 +365,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let mine = !me.is_empty() && str_of(&task, "assigneePersonId") == Some(me.as_str());
     let track = Track::of(str_of(&task, "discipline"));
     let can_act = admin || mine;
+    let moves = legal_moves(net.data(TRACKS_KEY), track, &status);
+    let updated_at = str_of(&task, "updatedAt").map(str::to_owned);
     // Read out of the cache before the closures borrow `net` mutably: the whole
     // question the gate asks of the list is "is the required kind already here?".
     let held: Vec<String> = net
@@ -389,7 +400,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         |ui, part| match part {
             shell::Part::Header => {
                 editing = headline(
-                    ui, net, task_id, &task, &status, track, can_act, can_write, &held, local,
+                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held, local,
                 );
             }
             shell::Part::Body => {
@@ -408,7 +419,16 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             }
         },
         |ui| {
-            let ctx = Rail { task_id, status: &status, track, can_act, can_write, busy, people: &people };
+            let ctx = Rail {
+                task_id,
+                status: &status,
+                track,
+                moves: &moves,
+                can_act,
+                can_write,
+                busy,
+                people: &people,
+            };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
     );
@@ -416,9 +436,16 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     match from_rail {
         Some(Ask::Move(next)) => {
             local.notice = None;
-            start_move(net, task_id, next, track, &held, local);
+            start_move(net, task_id, &status, next, track, &held, local);
         }
-        Some(Ask::Details(body)) => save_details(net, task_id, body, false, local),
+        Some(Ask::Details(mut body)) => {
+            // The rail edits one field the viewer can see, so the task as
+            // shown is the version the edit is made against.
+            if let Some(at) = &updated_at {
+                body["expectedUpdatedAt"] = json!(at);
+            }
+            save_details(net, task_id, body, false, local);
+        }
         None => {}
     }
 
@@ -431,6 +458,19 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
 }
 
 // ---------------------------------------------------------------- the top
+
+/// The title and description while Edit is open, with what they were when
+/// editing began, so a save sends only what the person changed.
+#[derive(Clone)]
+struct Draft {
+    title: String,
+    body: String,
+    was_title: String,
+    was_body: String,
+    /// The task's `updatedAt` when editing began. `None` after a refused save:
+    /// the next one goes against the task as refetched.
+    updated_at: Option<String>,
+}
 
 /// The title and the one move that is almost always the right one, or — while
 /// editing — the title and description as fields. Returns whether it is
@@ -447,22 +487,25 @@ fn headline(
     task: &Value,
     status: &str,
     track: Track,
+    moves: &[&'static str],
     can_act: bool,
     can_write: bool,
     held: &[String],
     local: &mut Local,
 ) -> bool {
     let busy = local.patching || local.attaching || local.saving;
-    let action = primary_move(track, status).filter(|(_, next)| can_act || anyone_may(next));
+    let action = primary_move(track, status)
+        .filter(|(_, next)| moves.contains(next) && (can_act || anyone_may(next)));
 
     // The draft lives in egui's temp store under the task id, not in a local:
     // leave for the project and come back, and the half-written words are
     // still there.
     let draft_id = egui::Id::new(("task:draft", task_id));
-    let mut draft: Option<(String, String)> = ui.data(|d| d.get_temp(draft_id));
+    let mut draft: Option<Draft> = ui.data(|d| d.get_temp(draft_id));
 
     let mut go = None;
-    if let Some((title, body)) = draft.as_mut() {
+    let mut close = false;
+    if let Some(Draft { title, body, .. }) = draft.as_mut() {
         w::field(ui, "Title", title, false, "What needs doing");
         ui.add_space(space::MD);
         w::field_multiline(
@@ -487,10 +530,29 @@ fn headline(
             cancel = w::ghost(ui, "Cancel").clicked();
         });
         if save {
-            let body = json!({ "title": title.trim(), "body": body.trim() });
-            save_details(net, task_id, body, true, local);
+            let d = draft.as_ref().expect("editing");
+            // Only what was changed, against the version editing began from:
+            // a title fix must not write back a description someone else has
+            // since rewritten.
+            let mut body = json!({});
+            if d.title.trim() != d.was_title {
+                body["title"] = json!(d.title.trim());
+            }
+            if d.body.trim() != d.was_body {
+                body["body"] = json!(d.body.trim());
+            }
+            if body.as_object().is_some_and(|b| b.is_empty()) {
+                close = true;
+            } else {
+                // After a refused save the draft is re-sent against the task as
+                // it now stands: the person has read the message and chosen.
+                if let Some(at) = d.updated_at.clone().or_else(|| str_of(task, "updatedAt").map(str::to_owned)) {
+                    body["expectedUpdatedAt"] = json!(at);
+                }
+                save_details(net, task_id, body, true, local);
+            }
         }
-        if cancel {
+        if cancel || close {
             draft = None;
         }
     } else {
@@ -526,10 +588,15 @@ fn headline(
             });
         });
         if edit {
-            draft = Some((
-                str_of(task, "title").unwrap_or_default().to_owned(),
-                str_of(task, "body").unwrap_or_default().to_owned(),
-            ));
+            let title = str_of(task, "title").unwrap_or_default().to_owned();
+            let body = str_of(task, "body").unwrap_or_default().to_owned();
+            draft = Some(Draft {
+                was_title: title.trim().to_owned(),
+                was_body: body.trim().to_owned(),
+                title,
+                body,
+                updated_at: str_of(task, "updatedAt").map(str::to_owned),
+            });
         }
     }
     let editing = draft.is_some();
@@ -537,12 +604,12 @@ fn headline(
         Some(draft) => {
             d.insert_temp(draft_id, draft);
         }
-        None => d.remove::<(String, String)>(draft_id),
+        None => d.remove::<Draft>(draft_id),
     });
 
     if let Some(next) = go {
         local.notice = None;
-        start_move(net, task_id, next, track, held, local);
+        start_move(net, task_id, status, next, track, held, local);
     }
 
     prompt_panel(ui, net, task_id, local);
@@ -610,6 +677,7 @@ struct Rail<'a> {
     task_id: &'a str,
     status: &'a str,
     track: Track,
+    moves: &'a [&'static str],
     can_act: bool,
     can_write: bool,
     busy: bool,
@@ -632,25 +700,19 @@ fn rail(
     let status = r.status;
 
     shell::property(ui, "Status", |ui| {
-        if !r.can_act || r.busy {
+        if !r.can_act || r.busy || r.moves.is_empty() {
             // A viewer with no moves gets the fact, not a control that 403s.
             c::chip(ui, status_label(status), c::status_tone(status), true);
             return;
         }
-        // Every legal state on this track in one menu, the current one resting
-        // at the top: the whole vocabulary, instead of the two or three moves a
-        // button row had room to offer.
-        let options: Vec<(String, String)> = r
-            .track
-            .states()
-            .iter()
-            .filter(|s| **s != status)
-            .map(|s| ((*s).to_owned(), status_label(s).to_owned()))
-            .collect();
+        // Every move the server allows from here in one menu, the current
+        // state resting at the top — and nothing it would refuse.
+        let options: Vec<(String, String)> =
+            r.moves.iter().map(|s| ((*s).to_owned(), status_label(s).to_owned())).collect();
         let mut slot: Option<String> = None;
         viz::value_select(ui, status_label(status), &options, &mut slot);
         if let Some(next) = slot.as_deref() {
-            ask = r.track.states().iter().copied().find(|s| *s == next).map(Ask::Move);
+            ask = r.moves.iter().copied().find(|s| *s == next).map(Ask::Move);
         }
     });
 
@@ -852,6 +914,14 @@ impl Track {
         }
     }
 
+    /// The track's key in the server's table of moves.
+    fn key(self) -> &'static str {
+        match self {
+            Track::Eng => "eng",
+            Track::Design => "design",
+        }
+    }
+
     /// The track's name in a sentence.
     fn word(self) -> &'static str {
         match self {
@@ -867,6 +937,25 @@ impl Track {
             Track::Eng => &[Kind::Pr, Kind::Commit],
             Track::Design => &[Kind::Figma],
         }
+    }
+}
+
+/// Where a task on `track` may go from `status`, from `GET /api/user/tracks` —
+/// the server's own table, so the menu never offers a move it would refuse.
+/// Until the table arrives (or from a server that lacks it) every other state
+/// on the track is offered, and the server has the last word.
+fn legal_moves(table: Option<&Value>, track: Track, status: &str) -> Vec<&'static str> {
+    let all = track.states().iter().copied().filter(|s| *s != status);
+    match table.and_then(|t| t.get(track.key())) {
+        Some(moves) => {
+            let listed: Vec<&str> = moves
+                .get(status)
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            all.filter(|s| listed.contains(s)).collect()
+        }
+        None => all.collect(),
     }
 }
 
@@ -964,17 +1053,19 @@ fn settle_move(net: &mut crate::desktop::net::Net, local: &mut Local) {
 fn start_move(
     net: &mut crate::desktop::net::Net,
     task_id: &str,
+    from: &str,
     next: &'static str,
     track: Track,
     held: &[String],
     local: &mut Local,
 ) {
+    local.move_from = from.to_owned();
     if needs_evidence(track, next)
         && !track.evidence().iter().any(|k| held.iter().any(|h| h == k.api()))
     {
         local.prompt = Some(Prompt::new(Some(next), track.evidence().to_vec()));
     } else {
-        patch_status(net, task_id, next, None);
+        patch_status(net, task_id, from, next, None);
         local.patching = true;
     }
 }
@@ -982,10 +1073,11 @@ fn start_move(
 fn patch_status(
     net: &mut crate::desktop::net::Net,
     task_id: &str,
+    from: &str,
     next: &str,
     reason: Option<&str>,
 ) {
-    let mut body = json!({ "status": next });
+    let mut body = json!({ "status": next, "expectedStatus": from });
     if let Some(reason) = reason {
         body["manualReason"] = json!(reason);
     }
@@ -1034,8 +1126,18 @@ fn settle_details(
     if !notice.is_empty() {
         local.notice = Some((notice, !ok));
     }
-    if ok && local.saving_text {
-        ctx.data_mut(|d| d.remove::<(String, String)>(egui::Id::new(("task:draft", task_id))));
+    let draft_id = egui::Id::new(("task:draft", task_id));
+    if local.saving_text {
+        ctx.data_mut(|d| {
+            if ok {
+                d.remove::<Draft>(draft_id);
+            } else if let Some(mut draft) = d.get_temp::<Draft>(draft_id) {
+                // Kept, and re-based: the refetch shows what changed, and the
+                // next Save is the person's answer to it.
+                draft.updated_at = None;
+                d.insert_temp(draft_id, draft);
+            }
+        });
     }
     local.saving = false;
     local.saving_text = false;
@@ -1074,7 +1176,7 @@ fn prompt_panel(
                 net.invalidate(ARTIFACTS_KEY);
                 match then {
                     Some(next) => {
-                        patch_status(net, task_id, next, None);
+                        patch_status(net, task_id, &local.move_from, next, None);
                         local.patching = true;
                     }
                     None => local.notice = Some(("Attached.".to_string(), false)),
@@ -1189,7 +1291,7 @@ fn prompt_panel(
         let then = local.prompt.as_ref().and_then(|p| p.then);
         local.prompt = None;
         if let Some(next) = then {
-            patch_status(net, task_id, next, Some(&reason));
+            patch_status(net, task_id, &local.move_from, next, Some(&reason));
             local.patching = true;
         }
     }
