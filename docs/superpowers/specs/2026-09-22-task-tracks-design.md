@@ -95,3 +95,39 @@ in the inline form attaches it instead of failing.
   that rewrites in-flight statuses on a department change would fix it; it has
   not been written because the case has not come up.
 - Labels attach to projects only. Tasks will want them.
+
+## Addendum, 23 Sep — editing, and what "done" counts
+
+### Rollups count `done_at`
+
+Every rollup — project progress, the per-department split, team load — had
+kept counting `status = 'done'` after that state was retired, so every project
+read 0%. They now count `done_at`, the one field both tracks stamp at their own
+finish line. Dropped tasks are out of totals: work that was never going to be
+done cannot make a project look behind.
+
+### Blockers resolve earlier than `done_at`
+
+A blocker stops blocking at `handoff`, `completed`, `shipped` or `dropped` —
+`BLOCKER_RESOLVED` in `models/task.rs`. Design unblocks engineering at handoff,
+which is what a handoff is for; engineering unblocks its dependents when the
+work is completed, not when it finally ships.
+
+### Everything is editable after creation
+
+- `PATCH /projects/{id}` — name, description, status, priority, dates, labels.
+  `null` clears a date; the start/target order is checked against the values
+  the row will have *after* the patch, not just the ones in it.
+- `PATCH /tasks/{id}/details` — title, description, priority, assignee. Any
+  writer may; status stays with the assignee on its own route.
+- `DELETE /artifacts/{id}` — audited as a `delete` change, so a removed link
+  still shows in the trail.
+
+### Reassigning across tracks
+
+Reassignment moves a task's track, since the track is the assignee's
+department. A status the new track lacks becomes `open` — a design `handoff`
+given to an engineer is theirs to start. `done_at` is recomputed against the
+new track in the same statement. This closes the "known debt" above for
+reassignment; a person *changing department* while holding in-flight work is
+still open.
