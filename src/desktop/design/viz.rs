@@ -270,9 +270,6 @@ pub fn card(
 /// answer changes. Content has to change for that to happen, and when it does
 /// the correction lands in the same frame the user sees.
 pub fn row(ui: &mut Ui, id: egui::Id, cards: &mut [&mut dyn FnMut(&mut Ui, f32) -> f32]) {
-    let floor: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
-    let mut tallest = 0.0_f32;
-
     // Wrap rather than squeeze. Below the threshold a quarter of the page is
     // narrower than the donut and its legend, and the figures start clipping
     // — a card that cannot show its own legend is worse than a shorter row.
@@ -280,6 +277,13 @@ pub fn row(ui: &mut Ui, id: egui::Id, cards: &mut [&mut dyn FnMut(&mut Ui, f32) 
 
     let rows = cards.len().div_ceil(per_row);
     for (r, chunk) in cards.chunks_mut(per_row).enumerate() {
+        // Each visual row agrees on its own height. One floor for the whole
+        // block meant that once the cards wrapped two-up, the second row was
+        // padded out to the first row's tallest card and read as half empty.
+        let row_id = id.with(("row", per_row, r));
+        let floor: f32 = ui.ctx().data(|d| d.get_temp(row_id)).unwrap_or(0.0);
+        let mut tallest = 0.0_f32;
+
         // The last row of an odd split must not stretch its cards to fill the
         // page: `columns` divides by the count it is given, so it is given the
         // full count and the empty slots are simply not drawn.
@@ -288,15 +292,15 @@ pub fn row(ui: &mut Ui, id: egui::Id, cards: &mut [&mut dyn FnMut(&mut Ui, f32) 
                 tallest = tallest.max(card(col, floor));
             }
         });
+        if (tallest - floor).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(row_id, tallest));
+            ui.ctx().request_repaint();
+        }
+
         // Between the rows only. What follows the block is the caller's gap.
         if r + 1 < rows {
             ui.add_space(space::MD);
         }
-    }
-
-    if (tallest - floor).abs() > 0.5 {
-        ui.ctx().data_mut(|d| d.insert_temp(id, tallest));
-        ui.ctx().request_repaint();
     }
 }
 
@@ -348,10 +352,12 @@ const TICK_STROKE: f32 = 2.0;
 
 /// A filter control that shows whether it is set.
 ///
-/// Three states worth telling apart, so all three get their own fill rather
-/// than sharing one and differing by border: idle is the surface, hover eases
-/// a step lighter, and active is accent-tinted with accent text. A filtered
-/// view should never be mistakable for an empty one.
+/// Three states worth telling apart: idle is the surface, hover eases a step
+/// lighter, and active is a raised neutral with full-strength semibold ink
+/// and a stronger hairline. A filtered view should never be mistakable for an
+/// empty one — but not by way of a blue box: the owner asked for the blue
+/// selected border to go everywhere, and in a properties rail a control that
+/// merely *has a value* was reading as focused.
 ///
 /// `caret` is for the ones that open a menu. A toggle that draws a caret is
 /// promising a popup it does not have.
@@ -360,7 +366,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         text::SMALL,
         egui::FontFamily::Name(if active { theme::SEMIBOLD } else { theme::MEDIUM }.into()),
     );
-    let ink = if active { colour::ACCENT } else { colour::TEXT_2 };
+    let ink = if active { colour::TEXT } else { colour::TEXT_2 };
     let galley = truncated(ui, label, font, ink, MAX_LABEL_W);
     let caret_w = if caret { CARET_COL } else { 0.0 };
     let (rect, response) = ui.allocate_exact_size(
@@ -370,7 +376,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
     let response = motion::operable(ui, response, radius::SM as f32);
 
     let fill = if active {
-        colour::ACCENT_SOFT
+        colour::SURFACE_HOVER
     } else {
         motion::hover_fill(
             ui,
@@ -387,9 +393,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         radius::SM as f32,
         egui::Stroke::new(
             1.0,
-            if active {
-                colour::ACCENT
-            } else if response.hovered() {
+            if active || response.hovered() {
                 colour::LINE_STRONG
             } else {
                 colour::LINE
@@ -406,7 +410,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         caret_at(
             p,
             egui::pos2(rect.right() - space::SM - CARET_W / 2.0, rect.center().y),
-            if active { colour::ACCENT } else { colour::TEXT_MUTED },
+            if active { colour::TEXT } else { colour::TEXT_MUTED },
         );
     }
     if response.hovered() {

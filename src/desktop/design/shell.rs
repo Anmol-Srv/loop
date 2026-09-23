@@ -59,17 +59,22 @@ pub struct NavGroup<'a> {
 /// The sidebar: a brand row, a search affordance, grouped navigation, and the
 /// signed-in person pinned at the foot.
 ///
-/// Returns `(group, item)` of whatever was clicked. Grouping is the point: a
-/// flat list of four items in 232px reads as an accident, and the group labels
-/// are what let projects and agents live here without competing with the
-/// primary destinations.
+/// Returns `(group, item)` of whatever was clicked, and whether search was.
+/// Grouping is the point: a flat list of four items in 232px reads as an
+/// accident, and the group labels are what let projects and agents live here
+/// without competing with the primary destinations.
+///
+/// The footer is drawn at both widths; it reads `ui.available_width()` to
+/// decide how much of itself fits. Hiding it when collapsed left a narrow
+/// window with no way to sign out.
 pub fn sidebar(
     ui: &mut Ui,
     brand: (&str, &str),
     groups: &[NavGroup<'_>],
     footer: impl FnOnce(&mut Ui),
-) -> Option<(usize, usize)> {
+) -> (Option<(usize, usize)>, bool) {
     let mut clicked = None;
+    let mut search = false;
     let narrow = ui.max_rect().width() < size::SIDEBAR_COLLAPSE_AT;
     let width = if narrow { size::SIDEBAR_W_NARROW } else { size::SIDEBAR_W };
 
@@ -89,8 +94,14 @@ pub fn sidebar(
             if !narrow {
                 brand_row(ui, brand.0, brand.1);
                 ui.add_space(space::MD);
-                search_field(ui);
+                search = search_field(ui).clicked();
                 ui.add_space(space::MD);
+            } else {
+                // The box has no room, so search becomes one more icon row
+                // and its hover text carries the shortcut.
+                let item = NavItem::new(egui_phosphor::thin::MAGNIFYING_GLASS, "Search (\u{2318}K)", false);
+                search = nav_item(ui, &item, true).clicked();
+                ui.add_space(space::SM);
             }
 
             for (g, group) in groups.iter().enumerate() {
@@ -112,22 +123,20 @@ pub fn sidebar(
                 ui.add_space(space::SM);
             }
 
-            if !narrow {
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    ui.add_space(space::SM);
-                    footer(ui);
-                    ui.add_space(space::MD);
-                    let line = ui.available_rect_before_wrap();
-                    ui.painter().hline(
-                        line.x_range(),
-                        ui.cursor().top(),
-                        egui::Stroke::new(1.0, colour::LINE_SOFT),
-                    );
-                });
-            }
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                ui.add_space(space::SM);
+                footer(ui);
+                ui.add_space(space::MD);
+                let line = ui.available_rect_before_wrap();
+                ui.painter().hline(
+                    line.x_range(),
+                    ui.cursor().top(),
+                    egui::Stroke::new(1.0, colour::LINE_SOFT),
+                );
+            });
         });
 
-    clicked
+    (clicked, search)
 }
 
 /// The product mark and name.
@@ -197,14 +206,14 @@ fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
     });
 }
 
-/// A search affordance. Not wired yet — it is drawn because its absence is the
-/// loudest thing missing from a sidebar of this shape, and because the
-/// keyboard shortcut needs somewhere to advertise itself.
-fn search_field(ui: &mut Ui) {
+/// The palette's front door. Drawn as a box rather than a button because
+/// that is where people look for search, and the shortcut chip teaches ⌘K.
+fn search_field(ui: &mut Ui) -> Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), size::CONTROL + 2.0),
         egui::Sense::click(),
     );
+    let response = super::motion::operable(ui, response, radius::SM as f32);
     let p = ui.painter();
     p.rect_filled(rect, radius::SM as f32, colour::INSET);
     p.rect_stroke(
@@ -246,6 +255,7 @@ fn search_field(ui: &mut Ui) {
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    response
 }
 
 fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
@@ -492,6 +502,9 @@ pub fn section_count_with(
 ) {
     ui.add_space(space::XL);
     ui.horizontal(|ui| {
+        // The count belongs to its label; at the page's default spacing the
+        // two drifted apart and read as a heading and a stray number.
+        ui.spacing_mut().item_spacing.x = space::XS;
         ui.label(
             RichText::new(label)
                 .size(text::SMALL)
@@ -523,19 +536,40 @@ pub fn divider(ui: &mut Ui) {
     ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE));
 }
 
+/// Which half of a railed page's content is being asked for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The title and its actions.
+    Header,
+    /// Everything under them.
+    Body,
+}
+
 /// A page split into a content column and a properties rail.
 ///
 /// The rail is Linear's shape and it earns its place: status, priority and
 /// owner are facts you glance at, not prose you read, so they do not belong
-/// in the reading column. Below `RAIL_AT` the window is too narrow to carry
-/// both and the rail stacks above the content instead — status, owner and
-/// priority are what you open a page to check, so on a narrow window they
-/// come first rather than below every note.
-pub fn with_rail(ui: &mut Ui, content: impl FnOnce(&mut Ui), rail: impl FnOnce(&mut Ui)) {
+/// in the reading column.
+///
+/// Below `RAIL_AT` there is not room for both, and the rail goes between the
+/// page's header and its body — title first, so you know what you are looking
+/// at; then its properties, which are what you opened it to check; then the
+/// long part. Putting the rail above everything worked for a task's six rows
+/// and buried a project's name a full screen down under its people list.
+///
+/// `content` is called twice, `Header` then `Body`, which is what lets the
+/// rail sit between them without either half borrowing the page's state
+/// twice.
+pub fn with_rail(
+    ui: &mut Ui,
+    mut content: impl FnMut(&mut Ui, Part),
+    rail: impl FnOnce(&mut Ui),
+) {
     if ui.available_width() < RAIL_AT {
+        content(ui, Part::Header);
+        ui.add_space(space::LG);
         rail_surface(ui, rail);
-        ui.add_space(space::XL);
-        content(ui);
+        content(ui, Part::Body);
         return;
     }
 
@@ -547,7 +581,8 @@ pub fn with_rail(ui: &mut Ui, content: impl FnOnce(&mut Ui), rail: impl FnOnce(&
             Layout::top_down(Align::Min),
             |ui| {
                 ui.set_width(ui.available_width());
-                content(ui);
+                content(ui, Part::Header);
+                content(ui, Part::Body);
             },
         );
         ui.allocate_ui_with_layout(

@@ -23,11 +23,11 @@ use serde_json::Value;
 use super::board::{array, fraction, num_at, str_at};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, radius, shell, space, status_label, text, viz, widgets as w,
+    cards as c, colour, radius, shell, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::App;
 
-const PROJECTS_KEY: &str = "board:projects";
+pub(super) const PROJECTS_KEY: &str = "board:projects";
 pub(super) const PEOPLE_KEY: &str = "board:people";
 /// Where a create's reply is collected.
 const CREATE_KEY: &str = "board:create";
@@ -35,13 +35,17 @@ const CREATE_KEY: &str = "board:create";
 const TABLE: &str = "projects:table";
 /// The shared label vocabulary. Not under `board:` — it outlives any one
 /// project, so a create's invalidation sweep has no business dropping it.
-const LABELS_KEY: &str = "projects:labels";
+pub(super) const LABELS_KEY: &str = "projects:labels";
 /// Where a new label's reply is collected.
 const NEW_LABEL_KEY: &str = "projects:new-label";
 
-/// How far each avatar in the roster sits over the one before it.
+/// How far each avatar in the roster sits over the one before it. The project
+/// page no longer stacks faces (the initials collided), but the names stay
+/// exported for whichever view wants a stack next.
+#[allow(dead_code)]
 pub(super) const AVATAR_OVERLAP: f32 = 6.0;
 /// Past this the roster shows a "+N" instead of more faces.
+#[allow(dead_code)]
 pub(super) const MAX_AVATARS: usize = 5;
 /// The prose measure for a project description: ~70 characters at `text::BODY`,
 /// which is where a paragraph stops needing a finger to track the line.
@@ -271,7 +275,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let mut start_create = false;
-    shell::page_title(ui, "Projects", &subtitle(list.len(), loading), |ui| {
+    shell::page_title(ui, "Projects", "", |ui| {
         // The form is the button's own state: while it is open the button
         // would only re-open what is already open.
         if app.board.creating.is_none() && w::primary(ui, "Create project", can_write).clicked() {
@@ -294,6 +298,19 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let mut open: Option<String> = None;
+    let mut shown: Vec<Value> = Vec::new();
+    if !list.is_empty() {
+        toolbar(ui, &mut app.board.filters, &labels);
+        shown = list.iter().filter(|p| app.board.filters.keeps(p)).cloned().collect();
+        sort_projects(&mut shown, &flows);
+        ui.label(
+            RichText::new(count_line(shown.len(), list.len()))
+                .size(text::SMALL)
+                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                .color(colour::TEXT_MUTED),
+        );
+        ui.add_space(space::SM);
+    }
     if let Some(err) = error {
         w::error(ui, &err);
     } else if list.is_empty() {
@@ -306,8 +323,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 "Create one and hand out its first tasks in the same step.",
             );
         }
+    } else if shown.is_empty() {
+        w::empty(ui, "No projects match these filters.", "Clear them to see every project.");
     } else {
-        table(ui, &list, &flows, &mut open);
+        table(ui, &shown, &flows, &mut open);
         ui.add_space(space::XXL);
     }
 
@@ -322,12 +341,96 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn subtitle(n: usize, loading: bool) -> String {
-    match (n, loading) {
-        (0, true) => String::new(),
-        (1, _) => "1 project".to_owned(),
-        (n, _) => format!("{n} projects"),
+/// "5 projects", or "2 of 5 projects" once a filter is hiding some. Over the
+/// table rather than in the toolbar, where it ran into the last filter at 820.
+fn count_line(shown: usize, total: usize) -> String {
+    let noun = if total == 1 { "project" } else { "projects" };
+    if shown == total {
+        format!("{total} {noun}")
+    } else {
+        format!("{shown} of {total} {noun}")
     }
+}
+
+// ------------------------------------------------------------------- filters
+
+/// The list's filter bar. Lives on `board::State` so a filtered list is still
+/// filtered after a trip into a project and back.
+#[derive(Default)]
+pub struct ListFilters {
+    pub search: String,
+    pub status: Option<String>,
+    pub label: Option<String>,
+    pub priority: Option<String>,
+}
+
+impl ListFilters {
+    fn any(&self) -> bool {
+        !self.search.trim().is_empty()
+            || self.status.is_some()
+            || self.label.is_some()
+            || self.priority.is_some()
+    }
+
+    fn keeps(&self, p: &Value) -> bool {
+        let labels = array(p.get("labels"));
+        let names: Vec<&str> = labels.iter().map(|l| str_at(l, "name")).collect();
+        let mut hay = vec![str_at(p, "name"), str_at(p, "description")];
+        hay.extend(names);
+        viz::matches(&self.search, &hay)
+            && self.status.as_deref().is_none_or(|s| s == str_at(p, "status"))
+            && self.label.as_deref().is_none_or(|id| labels.iter().any(|l| str_at(l, "id") == id))
+            && self.priority.as_deref().is_none_or(|v| v == num_at(p, "priority").to_string())
+    }
+}
+
+/// Status in the order a person works through them: what is moving, what is
+/// parked, what is over.
+pub(super) const PROJECT_STATUSES: [(&str, &str); 4] =
+    [("active", "Active"), ("paused", "Paused"), ("done", "Done"), ("archived", "Archived")];
+
+fn toolbar(ui: &mut egui::Ui, f: &mut ListFilters, labels: &[Value]) {
+    let statuses = owned(&PROJECT_STATUSES);
+    let priorities = owned(&PRIORITIES);
+    let label_options: Vec<(String, String)> = labels
+        .iter()
+        .map(|l| (str_at(l, "id").to_owned(), str_at(l, "name").to_owned()))
+        .collect();
+    viz::toolbar(ui, |ui| {
+        viz::search(ui, "Search name, description, label\u{2026}", &mut f.search);
+        viz::select(ui, "Status", &statuses, &mut f.status);
+        viz::select(ui, "Label", &label_options, &mut f.label);
+        viz::select(ui, "Priority", &priorities, &mut f.priority);
+        if f.any() && viz::clear(ui).clicked() {
+            *f = ListFilters::default();
+        }
+    });
+}
+
+/// A `(value, label)` table as the owned pairs `viz::select` takes.
+pub(super) fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect()
+}
+
+/// Active, paused, done, archived; inside each, what is late first, then the
+/// urgent, then whatever is due soonest — a project with no date goes last,
+/// since it has promised nothing yet. Created date breaks the last tie so rows
+/// do not trade places between frames.
+fn sort_projects(rows: &mut [Value], flows: &HashMap<String, Value>) {
+    let status_rank = |p: &Value| {
+        PROJECT_STATUSES.iter().position(|(s, _)| *s == str_at(p, "status")).unwrap_or(4)
+    };
+    let key = |p: &Value| {
+        let flow = flows.get(str_at(p, "id"));
+        let (done, total) =
+            flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
+        let overdue = matches!(health(p, done, total), Some((_, Health::Overdue)));
+        let target = parse_date(str_at(p, "targetDate"));
+        (status_rank(p), !overdue, num_at(p, "priority"), target.is_none(), target)
+    };
+    rows.sort_by(|a, b| {
+        key(a).cmp(&key(b)).then(str_at(a, "createdAt").cmp(str_at(b, "createdAt")))
+    });
 }
 
 // --------------------------------------------------------------------- table
@@ -414,14 +517,14 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
 
     // A date the table can act on: "in 3 weeks" answers "is this project in
     // trouble", where "2026-10-15" makes you do the subtraction yourself.
-    match due(p) {
-        Some((when, overdue)) => row.at(6, |ui| {
-            let ink = if overdue { colour::DANGER } else { colour::TEXT_MUTED };
-            ui.add(
-                egui::Label::new(RichText::new(when).size(text::SMALL).color(ink))
+    match health(p, done, total) {
+        Some((days, h)) => row.at(6, |ui| {
+            let r = ui.add(
+                egui::Label::new(RichText::new(relative_day(days)).size(text::SMALL).color(h.ink()))
                     .truncate()
                     .selectable(false),
             );
+            r.on_hover_text(h.hover(p, done, total));
         }),
         None => row.muted(6, ""),
     }
@@ -432,7 +535,7 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
 /// How loud a priority is allowed to be. Same vocabulary as the task tables —
 /// P0 and P1 get colour, below normal the pill recedes — because a project's
 /// priority and a task's priority are the same scale and must not read as two.
-fn priority_tone(priority: i64) -> c::Tone {
+pub(super) fn priority_tone(priority: i64) -> c::Tone {
     match priority {
         0 => c::Tone::Blocked,
         1 => c::Tone::Running,
@@ -449,7 +552,7 @@ fn priority_tone(priority: i64) -> c::Tone {
 /// Agent, each the same hue. Pink has no token of its own and takes Agent's
 /// violet, the nearest hue that is not already a state colour — mapping it to
 /// the rose `DANGER` would make a "Marketing" chip read as a failure.
-fn label_tone(name: &str) -> c::Tone {
+pub(super) fn label_tone(name: &str) -> c::Tone {
     match name {
         "blue" => c::Tone::Info,
         "green" => c::Tone::Ok,
@@ -460,18 +563,64 @@ fn label_tone(name: &str) -> c::Tone {
     }
 }
 
-/// The target date in words, and whether it has gone by. A date on a finished
-/// project is history rather than a warning, so it does not turn red.
-fn due(p: &Value) -> Option<(String, bool)> {
+/// How a project stands against its target date.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Health {
+    Fine,
+    /// Due within `AT_RISK_DAYS` and under half done.
+    AtRisk,
+    Overdue,
+}
+
+/// A week is the horizon a team can still do something about; closer than
+/// that with most of the work open, the date is a warning, not a plan.
+const AT_RISK_DAYS: i64 = 7;
+
+impl Health {
+    pub(super) fn ink(self) -> egui::Color32 {
+        match self {
+            Health::Fine => colour::TEXT_MUTED,
+            Health::AtRisk => colour::WARN,
+            Health::Overdue => colour::DANGER,
+        }
+    }
+
+    /// The date itself, and why it is coloured when it is.
+    pub(super) fn hover(self, p: &Value, done: i64, total: i64) -> String {
+        let date = str_at(p, "targetDate");
+        match self {
+            Health::Fine => format!("Target {date}"),
+            Health::AtRisk => format!(
+                "At risk \u{2014} due {date}, {}% done",
+                (fraction(done, total) * 100.0) as i64
+            ),
+            Health::Overdue => format!("Overdue \u{2014} was due {date}"),
+        }
+    }
+}
+
+/// Days to the target (negative once past), and what that means for this
+/// project. A date on a finished or archived project is history rather than a
+/// warning, so it never colours.
+pub(super) fn health(p: &Value, done: i64, total: i64) -> Option<(i64, Health)> {
     let target = parse_date(str_at(p, "targetDate"))?;
     let days = (target - Utc::now().date_naive()).num_days();
-    Some((relative_day(days), days < 0 && str_at(p, "status") != "done"))
+    let h = if matches!(str_at(p, "status"), "done" | "archived") {
+        Health::Fine
+    } else if days < 0 {
+        Health::Overdue
+    } else if days <= AT_RISK_DAYS && fraction(done, total) < 0.5 {
+        Health::AtRisk
+    } else {
+        Health::Fine
+    };
+    Some((days, h))
 }
 
 /// A day count as a person would say it. Days up to a fortnight, then weeks,
 /// then months — the unit people plan in changes with the distance, and
 /// "in 84 days" is a number nobody converts.
-fn relative_day(days: i64) -> String {
+pub(super) fn relative_day(days: i64) -> String {
     let (n, unit) = match days.abs() {
         0 => return "today".to_owned(),
         n if n < 14 => (n, "day"),
@@ -488,7 +637,7 @@ fn relative_day(days: i64) -> String {
 
 /// The one date format the API takes. Blank parses to `None` like anything
 /// else malformed; callers that care about the difference check for empty.
-fn parse_date(s: &str) -> Option<NaiveDate> {
+pub(super) fn parse_date(s: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
 }
 
@@ -668,7 +817,7 @@ fn labelled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
 /// it in the hint, and will not submit what it cannot parse is the smaller
 /// thing. Revisit if a third date field turns up, or if dates ever need to be
 /// picked rather than known.
-fn date_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+pub(super) fn date_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     let bad = !value.trim().is_empty() && parse_date(value).is_none();
     ui.allocate_ui(egui::vec2(DATE_W, 0.0), |ui| {
         let field = w::field(ui, label, value, false, "e.g. 2026-10-15");

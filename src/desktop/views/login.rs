@@ -38,6 +38,9 @@ pub struct State {
     pub confirm: String,
     pub code: String,
     pub error: Option<String>,
+    /// Set by a submit that had something missing, so the form says what —
+    /// including on a pristine form, where nothing is flagged until then.
+    tried: bool,
     /// Unauthenticated bridge, alive only for the request in flight.
     net: Option<Net>,
 }
@@ -59,11 +62,14 @@ fn tidy_code(raw: &str) -> String {
         .join("-")
 }
 
-/// What the disabled submit is waiting on, so the reason is in the form and
-/// not only in a tooltip on a control that cannot be hovered in every case.
-/// `None` on a pristine form: nothing is missing until something is typed.
+/// What the form is still waiting on. `None` on a pristine form until a
+/// submit is tried: nothing is missing before anyone has typed.
+///
+/// The button stays enabled and this line explains instead. A disabled
+/// primary draws as bare grey text, which on a fresh form read as a label
+/// rather than as the way in.
 fn missing(s: &State, first_time: bool) -> Option<&'static str> {
-    if s.email.is_empty() && s.password.is_empty() && s.code.is_empty() {
+    if !s.tried && s.email.is_empty() && s.password.is_empty() && s.code.is_empty() {
         return None;
     }
     if s.email.trim().is_empty() {
@@ -193,20 +199,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
                         let label =
                             if first_time { "Set password and sign in" } else { "Sign in" };
-                        // Justified so the one filled control spans the card's
-                        // measure; `w::primary` sets the height, not the width.
-                        let clicked = ui
-                            .with_layout(
-                                egui::Layout::top_down_justified(egui::Align::Center),
-                                |ui| w::primary(ui, label, ready && !busy),
-                            )
-                            .inner
-                            .on_disabled_hover_text(if busy {
-                                "Signing you in\u{2026}"
-                            } else {
-                                "Fill in every field to continue."
-                            })
+                        // Left, on the same edge as the fields, the error and the
+                        // link: `w::primary` sizes to its label, and a centred
+                        // label-width button floated off that edge.
+                        let clicked = w::primary(ui, label, !busy)
+                            .on_disabled_hover_text("Signing you in\u{2026}")
                             .clicked();
+                        if (submit || clicked) && !ready {
+                            s.tried = true;
+                        }
                         submit = (submit || clicked) && ready && !busy;
 
                         if let Some(next) = (!busy).then(|| missing(s, first_time)).flatten() {
@@ -221,8 +222,20 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
                         if let Some(err) = &s.error {
                             ui.add_space(space::MD);
-                            // Verbatim, always.
-                            w::error(ui, err);
+                            // Verbatim, always — only the first letter is raised,
+                            // so it reads as a sentence. The next step is ours.
+                            let mut chars = err.chars();
+                            let err: String = chars
+                                .next()
+                                .map(|f| f.to_uppercase().chain(chars).collect())
+                                .unwrap_or_default();
+                            w::error(ui, &err);
+                            // Only for a wrong password: a lockout or a spent
+                            // code already says what to do in its own words.
+                            if !first_time && err.contains("incorrect") {
+                                ui.add_space(space::XS);
+                                w::caption(ui, "Check both and try again. New here? Use a setup code below.");
+                            }
                         }
 
                         ui.add_space(space::LG);
@@ -237,6 +250,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                             s.confirm.clear();
                             s.code.clear();
                             s.error = None;
+                            s.tried = false;
                         }
                     });
                 });

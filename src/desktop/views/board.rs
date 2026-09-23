@@ -1,35 +1,38 @@
-//! Board: the project list, and inside a project its flow and its tasks.
+//! Board: the project list, and inside a project its properties, resources
+//! and tasks.
 //!
-//! Two modes, chosen by `app.project`. The project detail screen opens with
-//! what the project *is* — name, a meta line of three facts, the description —
-//! and only then how far along it is. The list screen answers "where is the
-//! work"; someone who has clicked into one project is asking the slower
-//! question, and prose at the top is the answer to it.
+//! Two modes, chosen by `app.project`. The project page is Linear's shape: a
+//! reading column (name, description, the per-department split, resources,
+//! tasks) and a properties rail beside it. Status, priority, dates, labels and
+//! who is on it are facts you glance at and change in place, so they live in
+//! the rail; the old meta line under the title carried three of them and let
+//! you change none, and never said the project was late.
 //!
-//! Under that, the flow strip: done/total per discipline. It reports, it does
-//! not gate — a discipline may run ahead of the one to its left, so there is
-//! no arrow implying an order the data does not have.
+//! The flow strip reports done/total per department. It does not gate — a
+//! department may run ahead of the one to its left, so there is no arrow
+//! implying an order the data does not have.
 //!
-//! Below the strip, the work itself, as a table on the same column machinery
-//! as the projects list. It was a column of cards grouped by phase; both
-//! halves of that were wrong. Cards cannot be compared down a page, which is
-//! the whole reason you open a project, and phases are a server-side detail —
-//! every project has one default phase and nobody here chooses it, so the
-//! headings were dividing the list by a fact with one value.
+//! The work itself is a table on the same column machinery as the projects
+//! list, sliced into open work and finished: cards cannot be compared down a
+//! page, which is the whole reason you open a project.
 
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use egui::RichText;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::projects::{
-    AVATAR_OVERLAP, DEFAULT_PRIORITY, MAX_AVATARS, PEOPLE_KEY, PRIORITIES, PROSE_W,
+    date_field, health, label_tone, owned, parse_date, priority_tone, relative_day, Health,
+    DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
 };
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::tokens::discipline_colour;
 use crate::desktop::design::{
-    avatar, cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
+    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
+    viz, widgets as w,
 };
+use crate::desktop::net::Net;
 use crate::desktop::App;
 
 /// The usual order of the flow. Anything the server reports that is not in
@@ -46,20 +49,18 @@ const TABLE: &str = "board:tasks:table";
 // ---- table geometry. Fixed so the columns line up with the header and with
 // ---- each other; the description takes whatever is left.
 /// The title is what the eye runs down, so it gets the widest fixed column;
-/// past this it truncates rather than pushing the row around.
-const COL_TASK: f32 = 260.0;
+/// past this it truncates rather than pushing the row around. Sized so title,
+/// assignee and status fit the content column beside the rail at 1100 wide —
+/// any wider and the table shoved the rail off the window.
+const COL_TASK: f32 = 210.0;
 /// The description's floor. Below this a one-liner is cut to nothing useful.
 const COL_DESCRIPTION: f32 = 180.0;
 /// A face plus a name that is usually two words.
-const COL_ASSIGNEE: f32 = 150.0;
+const COL_ASSIGNEE: f32 = 140.0;
 /// Just wide enough for the "P0" pill.
 const COL_PRIORITY: f32 = 52.0;
 const COL_STATUS: f32 = 104.0;
 const COL_CREATED: f32 = 78.0;
-
-/// The roster's share of the meta line. Past this the names truncate rather
-/// than crowding out the two facts that follow them.
-const MEMBERS_W: f32 = 260.0;
 
 /// Alignment lives with the width, so "Created" sits over the age beneath it.
 /// Ranked by what a narrow window can do without. Title, assignee and status
@@ -100,7 +101,98 @@ pub struct State {
     pub creating: Option<super::projects::Draft>,
     /// The open Add task form, if there is one.
     pub adding: Option<TaskDraft>,
+    /// The project list's filter bar, kept across a trip into a project.
+    pub filters: super::projects::ListFilters,
+    /// Each project page's drafts, keyed by project id, so a half-typed edit
+    /// survives going to a task and coming back.
+    pages: HashMap<String, Page>,
 }
+
+/// What one project page remembers between frames.
+#[derive(Default)]
+struct Page {
+    /// Name and description, while Edit is open.
+    editing: Option<(String, String)>,
+    /// The date being typed in the rail, and what is typed so far.
+    date: Option<(DateSlot, String)>,
+    /// The label set as last picked, held until the server has echoed it back.
+    /// Without it a second tick made before the first PATCH lands would be
+    /// computed from the stale set and undo the first.
+    labels: Option<Vec<String>>,
+    /// Which slice of the task table: open work, finished, or all.
+    tab: usize,
+    attach: Option<Attach>,
+    /// The resource whose Remove is waiting on a yes.
+    removing: Option<String>,
+    /// A PATCH the server parked for approval rather than applied.
+    notice: Option<String>,
+    /// A remove that failed for a reason other than the link being gone.
+    resource_error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DateSlot {
+    Start,
+    Target,
+}
+
+impl DateSlot {
+    fn field(self) -> &'static str {
+        match self {
+            DateSlot::Start => "startDate",
+            DateSlot::Target => "targetDate",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            DateSlot::Start => "Start date",
+            DateSlot::Target => "Target date",
+        }
+    }
+}
+
+/// The open "+ Add" form under Resources.
+#[derive(Default)]
+struct Attach {
+    /// `viz::select`'s slot. `None` is the resting kind, the first of `KINDS`.
+    kind: Option<String>,
+    url: String,
+    title: String,
+}
+
+/// What a project's resources can be: `(api value, label, example)`. A mirror
+/// of the task page's evidence kinds, less the commit — a hash belongs to the
+/// task that made it, not to the project it rolls up into, so every kind here
+/// is a URL and one check covers them all.
+const KINDS: [(&str, &str, &str); 4] = [
+    ("pr", "PR", "https://github.com/org/repo/pull/123"),
+    ("doc", "Doc", "https://\u{2026}"),
+    ("figma", "Figma link", "https://figma.com/file/\u{2026}"),
+    ("link", "Link", "https://\u{2026}"),
+];
+
+fn kind_label(kind: &str) -> &'static str {
+    KINDS.iter().find(|(k, _, _)| *k == kind).map_or("Link", |(_, l, _)| l)
+}
+
+/// Same hue per kind as the task page, so a PR reads as a PR on both.
+fn kind_tone(kind: &str) -> c::Tone {
+    match kind {
+        "pr" => c::Tone::Info,
+        "commit" => c::Tone::Ok,
+        "figma" => c::Tone::Agent,
+        _ => c::Tone::Quiet,
+    }
+}
+
+/// The task table's three slices. Open work is the default: it is what someone
+/// opening a project is there to chase.
+const TABS: [&str; 3] = ["Open work", "Finished", "All"];
+
+/// The rail's progress bar. Short: it sits beside "2 of 6 done" in a value
+/// column about 140 wide.
+const RAIL_BAR_W: f32 = 56.0;
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     match app.project.clone() {
@@ -111,14 +203,52 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
 // -------------------------------------------------------------- project detail
 
-fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
-    let detail_key = format!("board:project:{project_id}");
-    let flow_key = format!("board:flow:{project_id}");
-    let tasks_key = format!("board:tasks:{project_id}");
-    let tasks_path = format!("/api/user/tasks?projectId={project_id}");
+/// Every request key and path this page uses, in one place.
+struct Keys {
+    detail: String,
+    detail_path: String,
+    flow: String,
+    tasks: String,
+    patch: String,
+    artifacts: String,
+    artifacts_path: String,
+    attach: String,
+    remove: String,
+}
 
+impl Keys {
+    fn new(id: &str) -> Self {
+        Self {
+            detail: format!("board:project:{id}"),
+            detail_path: format!("/api/user/projects/{id}"),
+            flow: format!("board:flow:{id}"),
+            tasks: format!("board:tasks:{id}"),
+            // Not under `board:`: an Add task sweeps that prefix, and a PATCH
+            // reply swept before it is read would leave its edit open forever.
+            patch: format!("project:patch:{id}"),
+            artifacts: format!("project:artifacts:{id}"),
+            artifacts_path: format!("/api/user/artifacts?parentType=project&parentId={id}"),
+            attach: format!("project:attach:{id}"),
+            remove: format!("project:remove:{id}"),
+        }
+    }
+}
+
+/// What the page asked the server for this frame. Collected and sent at the
+/// end, once nothing is borrowing `app`.
+enum Request {
+    Patch(Value),
+    Attach(Value),
+    Remove(String),
+}
+
+fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
+    let keys = Keys::new(project_id);
     let can_write = app.can_write();
+    let page = app.board.pages.entry(project_id.to_owned()).or_default();
     let net = app.net.as_mut().unwrap();
+
+    settle(net, &keys, page);
 
     // A finished Add task: the list here, the flow strip, the sidebar counts
     // and both personal lists all hold a board without it.
@@ -131,160 +261,807 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
     let net = app.net.as_mut().unwrap();
 
-    net.get_once(&detail_key, &format!("/api/user/projects/{project_id}"));
-    net.get_once(&flow_key, &format!("/api/user/projects/{project_id}/flow"));
-    net.get_once(&tasks_key, &tasks_path);
+    net.get_once(&keys.detail, &keys.detail_path);
+    net.get_once(&keys.flow, &format!("/api/user/projects/{project_id}/flow"));
+    net.get_once(&keys.tasks, &format!("/api/user/tasks?projectId={project_id}"));
+    net.get_once(&keys.artifacts, &keys.artifacts_path);
     // The assignee picker wants names and departments. Same key the list
     // screen fills, so arriving from it costs nothing.
     net.get_once(PEOPLE_KEY, "/api/user/people");
+    net.get_once(LABELS_KEY, "/api/user/labels");
 
-    let detail = net.data(&detail_key).cloned();
-
-    let flow = net.data(&flow_key).cloned();
-    let flow_error = net.error(&flow_key).map(str::to_string);
-
-    let mut tasks = array(net.data(&tasks_key));
-    let tasks_loading = net.is_loading(&tasks_key);
-    let tasks_error = net.error(&tasks_key).map(str::to_string);
+    let detail = net.data(&keys.detail).cloned();
+    let flow = net.data(&keys.flow).cloned();
+    let flow_error = net.error(&keys.flow).map(str::to_string);
+    let mut tasks = array(net.data(&keys.tasks));
+    let tasks_loading = net.is_loading(&keys.tasks);
+    let tasks_error = net.error(&keys.tasks).map(str::to_string);
     let add_error = net.error(ADD_KEY).map(str::to_string);
     let posting = net.is_loading(ADD_KEY);
-
-    sort_tasks(&mut tasks);
-
-    let mut back = false;
-    let mut open_task: Option<String> = None;
-
-    if shell::back(ui, "Projects").clicked() {
-        back = true;
-    }
-    // Name, state and identifier on one line. `page_title`'s trailing slot is
-    // right-aligned, and a key belongs *to* the name — it reads as an aside
-    // beside it, not as a control at the other end of the header.
-    let fallback = Value::Null;
-    let head = detail.as_ref().or(flow.as_ref()).unwrap_or(&fallback);
-    let name = match str_at(head, "name") {
-        "" => "Project",
-        n => n,
-    };
-    let status = str_at(head, "status");
-    let key = str_at(head, "key");
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        // Bounded to what is left after the chip and the key, so a long name
-        // truncates instead of pushing them off the row.
-        let width = (ui.available_width() - trailing_w(ui, status, key)).max(size::ROW);
-        ui.allocate_ui(egui::vec2(width, size::ROW), |ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(name)
-                        .size(text::TITLE)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
-                )
-                .truncate(),
-            );
-        });
-        if !status.is_empty() {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
-        }
-        if !key.is_empty() {
-            w::mono_caption(ui, key);
-        }
-    });
-
-    ui.add_space(space::XXS);
-    let (done, total) = flow
-        .as_ref()
-        .map(|f| (num_at(f, "done"), num_at(f, "total")))
-        .unwrap_or((0, 0));
-    // The people on a project are whoever holds its tasks — distinct, in
-    // first-seen order so the stack does not reshuffle as tasks are added.
-    let mut members: Vec<&str> = Vec::new();
-    for t in &tasks {
-        if let Some(who) = t.get("assigneeName").and_then(Value::as_str) {
-            if !members.contains(&who) {
-                members.push(who);
-            }
-        }
-    }
-    meta_line(ui, head, &members, done, total);
-
-    ui.add_space(space::LG);
-    description(ui, str_at(head, "description"));
-
-    if let Some(err) = flow_error {
-        ui.add_space(space::XL);
-        w::error(ui, &err);
-    } else if let Some(f) = flow.as_ref().filter(|f| !flow_columns(f).is_empty()) {
-        // Sits with the meta line rather than as a section of its own: it is
-        // the same sentence, broken down. A project whose tasks have no
-        // discipline yet draws nothing, and the spacing goes with it.
-        ui.add_space(space::SM);
-        flow_strip(ui, f);
-    }
-
-
-    // The button lives in the heading's trailing slot rather than under the
-    // table: the thing you add to is named right there.
-    let mut start_add = false;
-    let form_open = app.board.adding.is_some();
-    shell::section_count_with(ui, "Tasks", tasks.len(), |ui| {
-        // While the form is open the button would only re-open what is open.
-        if !form_open && w::primary(ui, "Add task", can_write).clicked() {
-            start_add = true;
-        }
-    });
-    if start_add {
-        app.board.adding = Some(TaskDraft::default());
-    }
-
+    let patching = net.is_loading(&keys.patch);
+    let patch_error = net.error(&keys.patch).map(str::to_string);
+    let refreshing = net.is_loading(&keys.detail);
+    let artifacts = net.data(&keys.artifacts).and_then(Value::as_array).cloned();
+    let artifacts_error = net.error(&keys.artifacts).map(str::to_string);
+    let attaching = net.is_loading(&keys.attach);
+    let attach_error = net.error(&keys.attach).map(str::to_string);
+    let all_labels = array(net.data(LABELS_KEY));
     // Anyone here can be handed a task; the project has no roster of its own.
     // The menu shows each person's department, since that is what the task's
-    // discipline will become.
+    // department will become.
     let mut members: Vec<(String, String)> =
         array(net.data(PEOPLE_KEY)).iter().map(super::projects::person_option).collect();
     members.sort_by(|a, b| a.1.cmp(&b.1));
 
+    sort_tasks(&mut tasks);
+
+    // The picked label set is only worth holding while the server has not yet
+    // caught up with it.
+    if !patching && !refreshing {
+        page.labels = None;
+    }
+
+    let mut back = false;
+    let mut open_task: Option<String> = None;
+    let requests: Vec<Request> = Vec::new();
+
+    if shell::back(ui, "Projects").clicked() {
+        back = true;
+    }
+
+    let fallback = Value::Null;
+    let head = detail.as_ref().or(flow.as_ref()).unwrap_or(&fallback);
+    let (done, total) = flow
+        .as_ref()
+        .map(|f| (num_at(f, "done"), num_at(f, "total")))
+        .unwrap_or((0, 0));
+
+    let form_open = app.board.adding.is_some();
+    let mut start_add = false;
+    let mut add_outcome: Option<Form> = None;
+
+    // Both halves of the page edit the same drafts and queue requests; the
+    // rail and the content never run at once, so a RefCell is all it takes.
+    let page_cell = std::cell::RefCell::new(page);
+    let requests_cell = std::cell::RefCell::new(requests);
+    shell::with_rail(
+        ui,
+        |ui, part| {
+            let mut page = page_cell.borrow_mut();
+            let page: &mut Page = &mut page;
+            let mut requests = requests_cell.borrow_mut();
+            let requests: &mut Vec<Request> = &mut requests;
+            if part == shell::Part::Header {
+                headline(ui, head, page, can_write, patching, requests);
+                return;
+            }
+
+            if let Some(err) = &flow_error {
+                ui.add_space(space::XL);
+                w::error(ui, err);
+            } else if let Some(f) = flow.as_ref().filter(|f| !flow_columns(f).is_empty()) {
+                // The same sentence as the rail's progress, broken down by
+                // department. A project whose tasks have no department yet
+                // draws nothing, and the spacing goes with it.
+                ui.add_space(space::MD);
+                flow_strip(ui, f);
+            }
+
+            shell::divider(ui);
+            resources(
+                ui,
+                project_id,
+                artifacts.as_deref(),
+                artifacts_error.as_deref(),
+                page,
+                can_write,
+                attaching,
+                attach_error.as_deref(),
+                requests,
+            );
+
+            shell::divider(ui);
+            let finished = tasks.iter().filter(|t| is_finished(t)).count();
+            let counts = [tasks.len() - finished, finished, tasks.len()];
+            // The button lives in the heading's trailing slot rather than under
+            // the table: the thing you add to is named right there.
+            shell::section_count_with(ui, "Tasks", tasks.len(), |ui| {
+                // While the form is open the button would only re-open it.
+                if !form_open {
+                    let r = w::primary(ui, "Add task", can_write);
+                    if !can_write {
+                        r.on_disabled_hover_text("Needs write access.");
+                    } else if r.clicked() {
+                        start_add = true;
+                    }
+                }
+            });
+            if !tasks.is_empty() {
+                let labels: Vec<String> =
+                    TABS.iter().zip(counts).map(|(l, n)| format!("{l} {n}")).collect();
+                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                if let Some(i) = c::tabs(ui, &refs, page.tab) {
+                    page.tab = i;
+                }
+            }
+
+            if let Some(draft) = app.board.adding.as_mut() {
+                add_outcome = add_form(ui, draft, &members, posting, add_error.as_deref());
+                ui.add_space(space::LG);
+            }
+
+            let shown: Vec<Value> = tasks
+                .iter()
+                .filter(|t| match page.tab {
+                    0 => !is_finished(t),
+                    1 => is_finished(t),
+                    _ => true,
+                })
+                .cloned()
+                .collect();
+            if let Some(err) = &tasks_error {
+                w::error(ui, err);
+            } else if tasks.is_empty() {
+                if tasks_loading {
+                    w::loading(ui, "Loading tasks");
+                } else if !form_open {
+                    w::empty(
+                        ui,
+                        "No tasks yet.",
+                        "Add one and assign it to someone on this project.",
+                    );
+                }
+            } else if shown.is_empty() {
+                let (what, next) = if page.tab == 0 {
+                    ("No open work.", "Everything here is finished \u{2014} see Finished.")
+                } else {
+                    ("Nothing finished yet.", "Tasks land here once they are done or dropped.")
+                };
+                w::empty(ui, what, next);
+            } else {
+                table(ui, &shown, &mut open_task);
+                ui.add_space(space::XXL);
+            }
+        },
+        |ui| {
+            let mut page = page_cell.borrow_mut();
+            let page: &mut Page = &mut page;
+            let mut requests = requests_cell.borrow_mut();
+            let requests: &mut Vec<Request> = &mut requests;
+            rail(
+                ui,
+                head,
+                page,
+                &tasks,
+                &all_labels,
+                (done, total),
+                can_write,
+                requests,
+            );
+            if let Some(err) = &patch_error {
+                ui.add_space(space::SM);
+                w::error(ui, err);
+            } else if let Some(n) = &page.notice {
+                ui.add_space(space::SM);
+                w::caption(ui, n);
+            }
+        },
+    );
+
+    if start_add {
+        app.board.adding = Some(TaskDraft::default());
+    }
     let mut submit: Option<Value> = None;
-    let mut close_form = false;
-    if let Some(draft) = app.board.adding.as_mut() {
-        match add_form(ui, draft, &members, posting, add_error.as_deref()) {
-            Some(Form::Submit(body)) => submit = Some(body),
-            Some(Form::Cancel) => close_form = true,
-            None => {}
-        }
-        ui.add_space(space::LG);
+    match add_outcome {
+        Some(Form::Submit(body)) => submit = Some(body),
+        Some(Form::Cancel) => app.board.adding = None,
+        None => {}
     }
-    if close_form {
-        app.board.adding = None;
-    }
-
-    if let Some(err) = tasks_error {
-        w::error(ui, &err);
-    } else if tasks.is_empty() {
-        if tasks_loading {
-            w::loading(ui, "tasks");
-        } else if app.board.adding.is_none() {
-            w::empty(ui, "No tasks yet.", "Add one and assign it to someone on this project.");
-        }
-    } else {
-        table(ui, &tasks, &mut open_task);
-        ui.add_space(space::XXL);
-    }
-
     if back {
         app.project = None;
     }
     if let Some(id) = open_task {
         app.task = Some(id);
     }
+
     let net = app.net.as_mut().unwrap();
     if let Some(body) = submit {
         // Drop a previous attempt's error, so the banner belongs to this one.
         net.invalidate(ADD_KEY);
         net.post(ADD_KEY, &format!("/api/user/projects/{project_id}/tasks"), body);
     }
+    for request in requests_cell.into_inner() {
+        match request {
+            Request::Patch(body) => {
+                net.invalidate(&keys.patch);
+                net.patch(&keys.patch, &keys.detail_path, body);
+            }
+            Request::Attach(body) => {
+                net.invalidate(&keys.attach);
+                net.post(&keys.attach, "/api/user/artifacts", body);
+            }
+            Request::Remove(id) => {
+                net.invalidate(&keys.remove);
+                net.send(
+                    &keys.remove,
+                    reqwest::Method::DELETE,
+                    &format!("/api/user/artifacts/{id}"),
+                    Value::Null,
+                );
+            }
+        }
+    }
 }
+
+/// Fold in whatever replies landed since last frame.
+fn settle(net: &mut Net, keys: &Keys, page: &mut Page) {
+    if let Some(reply) = net.data(&keys.patch).cloned() {
+        net.invalidate(&keys.patch);
+        // Refetched in place rather than invalidated, so the page keeps the old
+        // values on screen until the new ones arrive instead of blinking.
+        net.get(&keys.detail, &keys.detail_path);
+        // The list's rows and Home's projects carry these same fields.
+        net.invalidate(PROJECTS_KEY);
+        net.invalidate("home");
+        page.editing = None;
+        page.date = None;
+        page.notice = (str_at(&reply, "status") == "proposed")
+            .then(|| "Sent for approval \u{2014} it changes once someone signs off.".to_owned());
+    }
+    if net.data(&keys.attach).is_some() {
+        net.invalidate(&keys.attach);
+        net.invalidate(&keys.artifacts);
+        page.attach = None;
+    }
+    if let Some(result) = net.peek(&keys.remove).cloned() {
+        net.invalidate(&keys.remove);
+        net.invalidate(&keys.artifacts);
+        page.removing = None;
+        // A second Remove of the same link is a 404 that says so; the list
+        // refresh already tells the truth, so that one is not an error.
+        page.resource_error = result.err().filter(|e| !e.contains("already gone"));
+    }
+}
+
+/// Finished is `doneAt` set or dropped: each track has its own last state, and
+/// only the stamp knows which one this task's assignee is on.
+fn is_finished(t: &Value) -> bool {
+    str_at(t, "status") == "dropped" || !t.get("doneAt").map_or(true, Value::is_null)
+}
+
+/// The title, and the description as prose — or both as fields, once Edit is
+/// pressed.
+fn headline(
+    ui: &mut egui::Ui,
+    head: &Value,
+    page: &mut Page,
+    can_write: bool,
+    patching: bool,
+    requests: &mut Vec<Request>,
+) {
+    let name = match str_at(head, "name") {
+        "" => "Project",
+        n => n,
+    };
+
+    if let Some((draft_name, draft_body)) = page.editing.as_mut() {
+        ui.add_space(space::XS);
+        w::field(ui, "Name", draft_name, false, "e.g. Checkout redesign\u{2026}");
+        ui.add_space(space::MD);
+        w::field_multiline(ui, "Description", draft_body, 4, "What this project is for\u{2026}");
+        ui.add_space(space::MD);
+        let ready = !draft_name.trim().is_empty() && !patching;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            if w::primary(ui, if patching { "Saving\u{2026}" } else { "Save" }, ready).clicked() {
+                requests.push(Request::Patch(json!({
+                    "name": draft_name.trim(),
+                    "description": draft_body.trim(),
+                })));
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                cancel = true;
+            }
+        });
+        if cancel {
+            page.editing = None;
+        }
+        return;
+    }
+
+    let mut edit = false;
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked()
+            {
+                edit = true;
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(name)
+                            .size(text::TITLE)
+                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                            .color(colour::TEXT),
+                    )
+                    .truncate(),
+                );
+            });
+        });
+    });
+    if edit {
+        page.editing = Some((name.to_owned(), str_at(head, "description").to_owned()));
+    }
+    ui.add_space(space::MD);
+    description(ui, str_at(head, "description"));
+}
+
+// ---------------------------------------------------------------------- rail
+
+/// Everything about the project that is a fact rather than prose, each
+/// editable where it sits when the viewer may write.
+#[allow(clippy::too_many_arguments)]
+fn rail(
+    ui: &mut egui::Ui,
+    head: &Value,
+    page: &mut Page,
+    tasks: &[Value],
+    all_labels: &[Value],
+    (done, total): (i64, i64),
+    can_write: bool,
+    requests: &mut Vec<Request>,
+) {
+    let status = str_at(head, "status");
+    shell::property(ui, "Status", |ui| {
+        if !can_write {
+            if !status.is_empty() {
+                c::chip(ui, status_label(status), c::status_tone(status), true);
+            }
+            return;
+        }
+        let options: Vec<(String, String)> =
+            owned(&PROJECT_STATUSES).into_iter().filter(|(v, _)| v != status).collect();
+        let mut slot = None;
+        viz::select(ui, status_label(status), &options, &mut slot);
+        if let Some(next) = slot {
+            requests.push(Request::Patch(json!({ "status": next })));
+        }
+    });
+
+    let priority = num_at(head, "priority").clamp(0, 4);
+    shell::property(ui, "Priority", |ui| {
+        if !can_write {
+            c::chip(ui, &format!("P{priority}"), priority_tone(priority), false);
+            return;
+        }
+        let current = PRIORITIES[priority as usize];
+        let options: Vec<(String, String)> =
+            owned(&PRIORITIES).into_iter().filter(|(v, _)| v != current.0).collect();
+        let mut slot = None;
+        viz::select(ui, current.1, &options, &mut slot);
+        if let Some(p) = slot.and_then(|p| p.parse::<i32>().ok()) {
+            requests.push(Request::Patch(json!({ "priority": p })));
+        }
+    });
+
+    for slot in [DateSlot::Start, DateSlot::Target] {
+        date_row(ui, head, slot, page, (done, total), can_write, requests);
+    }
+
+    let chosen: Vec<String> = page.labels.clone().unwrap_or_else(|| {
+        array(head.get("labels")).iter().map(|l| str_at(l, "id").to_owned()).collect()
+    });
+    shell::property(ui, "Labels", |ui| {
+        if !can_write {
+            let labels = array(head.get("labels"));
+            if labels.is_empty() {
+                faint(ui, "None");
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
+                for l in &labels {
+                    c::chip(ui, str_at(l, "name"), label_tone(str_at(l, "colour")), false);
+                }
+            });
+            return;
+        }
+        let options: Vec<(String, String)> = all_labels
+            .iter()
+            .map(|l| (str_at(l, "id").to_owned(), str_at(l, "name").to_owned()))
+            .collect();
+        let mut picked = chosen.clone();
+        viz::multi_select(ui, "Add labels", &options, &mut picked);
+        if picked != chosen {
+            requests.push(Request::Patch(json!({ "labelIds": picked })));
+            page.labels = Some(picked);
+        }
+    });
+
+    shell::property(ui, "Progress", |ui| {
+        if total == 0 {
+            faint(ui, "No tasks yet");
+            return;
+        }
+        ui.spacing_mut().item_spacing.x = space::SM;
+        w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT);
+        value(ui, &format!("{done} of {total} done"));
+    });
+
+    // One row per person holding work here, busiest first. A stack of
+    // overlapping faces made the initials collide into one smear; a name and
+    // what they still have open is what the row is for.
+    let mut people: Vec<(&str, usize)> = Vec::new();
+    for t in tasks {
+        let who = str_at(t, "assigneeName");
+        if who.is_empty() {
+            continue;
+        }
+        let open = usize::from(!is_finished(t));
+        match people.iter_mut().find(|(n, _)| *n == who) {
+            Some((_, n)) => *n += open,
+            None => people.push((who, open)),
+        }
+    }
+    people.sort_by(|a, b| b.1.cmp(&a.1));
+    shell::property(ui, "People", |ui| {
+        if people.is_empty() {
+            faint(ui, "Nobody yet");
+            return;
+        }
+        ui.vertical(|ui| {
+            for (who, open) in &people {
+                ui.horizontal(|ui| {
+                    ui.set_min_height(size::CONTROL);
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    avatar::small(ui, who, size::AVATAR_SM);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let note = if *open == 0 { "all done".to_owned() } else { format!("{open} open") };
+                        faint(ui, &note);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(*who).size(text::SMALL).color(colour::TEXT),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                });
+            }
+        });
+    });
+
+    let key = str_at(head, "key");
+    if !key.is_empty() {
+        shell::property(ui, "Key", |ui| w::mono_caption(ui, key));
+    }
+    if let Some((relative, absolute)) = created(str_at(head, "createdAt")) {
+        shell::property(ui, "Created", |ui| {
+            value(ui, &relative).on_hover_text(absolute);
+        });
+    }
+}
+
+/// A date in the rail: words at rest, the shared typed date field once
+/// clicked. Blank saves as "no date", which is how a date is cleared.
+fn date_row(
+    ui: &mut egui::Ui,
+    head: &Value,
+    slot: DateSlot,
+    page: &mut Page,
+    (done, total): (i64, i64),
+    can_write: bool,
+    requests: &mut Vec<Request>,
+) {
+    let raw = str_at(head, slot.field());
+    let label = match slot {
+        DateSlot::Start => "Start",
+        DateSlot::Target => "Target",
+    };
+    let editing = page.date.as_ref().is_some_and(|(s, _)| *s == slot);
+
+    let mut open = false;
+    shell::property(ui, label, |ui| {
+        if editing {
+            faint(ui, "Editing\u{2026}");
+            return;
+        }
+        let (words, ink, hover) = date_words(head, slot, done, total);
+        let sense = if can_write { egui::Sense::click() } else { egui::Sense::hover() };
+        let r = ui.add(
+            egui::Label::new(RichText::new(words).size(text::SMALL).color(ink))
+                .sense(sense)
+                .selectable(false)
+                .truncate(),
+        );
+        if !can_write {
+            r.on_hover_text(hover);
+            return;
+        }
+        let r = motion::operable(ui, r, radius::SM as f32);
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if r.on_hover_text(format!("{hover} \u{00B7} click to change")).clicked() {
+            open = true;
+        }
+    });
+    if open {
+        page.date = Some((slot, raw.to_owned()));
+    }
+
+    let mut close = false;
+    if let Some((s, typed)) = page.date.as_mut().filter(|(s, _)| *s == slot) {
+        date_field(ui, s.label(), typed);
+        ui.add_space(space::XS);
+        w::caption(ui, "Leave blank to clear it.");
+        ui.add_space(space::SM);
+        let trimmed = typed.trim();
+        let parsed = parse_date(trimmed);
+        let ok = trimmed.is_empty() || parsed.is_some();
+        ui.horizontal(|ui| {
+            if w::primary(ui, "Save", ok).clicked() {
+                let v = parsed.map_or(Value::Null, |d| Value::String(d.to_string()));
+                requests.push(Request::Patch(json!({ s.field(): v })));
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                close = true;
+            }
+        });
+        ui.add_space(space::SM);
+    }
+    if close {
+        page.date = None;
+    }
+}
+
+/// A rail date in words, the colour it should be, and its hover. The target
+/// says how it stands — "5 days overdue" in red, amber when at risk — because
+/// that is the question a target date is there to answer.
+fn date_words(head: &Value, slot: DateSlot, done: i64, total: i64) -> (String, egui::Color32, String) {
+    let raw = str_at(head, slot.field());
+    let Some(date) = parse_date(raw) else {
+        return ("Not set".to_owned(), colour::TEXT_FAINT, "No date yet".to_owned());
+    };
+    let days = (date - Utc::now().date_naive()).num_days();
+    if slot == DateSlot::Start {
+        return (relative_day(days), colour::TEXT, raw.to_owned());
+    }
+    match health(head, done, total) {
+        Some((_, Health::Overdue)) => (
+            relative_day(days).replace(" ago", " overdue"),
+            colour::DANGER,
+            Health::Overdue.hover(head, done, total),
+        ),
+        Some((_, h)) => {
+            let ink = if h == Health::Fine { colour::TEXT } else { h.ink() };
+            (relative_day(days), ink, h.hover(head, done, total))
+        }
+        None => (relative_day(days), colour::TEXT, raw.to_owned()),
+    }
+}
+
+fn faint(ui: &mut egui::Ui, s: &str) {
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_FAINT));
+}
+
+// ----------------------------------------------------------------- resources
+
+/// The project's own links: the design file, the spec, the umbrella PR. One
+/// list, the same shape as a task's.
+#[allow(clippy::too_many_arguments)]
+fn resources(
+    ui: &mut egui::Ui,
+    project_id: &str,
+    rows: Option<&[Value]>,
+    error: Option<&str>,
+    page: &mut Page,
+    can_write: bool,
+    attaching: bool,
+    attach_error: Option<&str>,
+    requests: &mut Vec<Request>,
+) {
+    let mut add = false;
+    shell::section_count_with(ui, "Resources", rows.map_or(0, <[Value]>::len), |ui| {
+        if can_write && page.attach.is_none() && w::ghost(ui, "+ Add").clicked() {
+            add = true;
+        }
+    });
+    if add {
+        page.attach = Some(Attach::default());
+    }
+
+    if let Some(form) = page.attach.as_mut() {
+        let mut close = false;
+        attach_form(ui, project_id, form, attaching, attach_error, &mut close, requests);
+        if close {
+            page.attach = None;
+        }
+        ui.add_space(space::MD);
+    }
+
+    if let Some(err) = error {
+        w::error(ui, &format!("Could not load resources: {err}"));
+        return;
+    }
+    if let Some(err) = &page.resource_error {
+        w::error(ui, &format!("Could not remove that link: {err}. Try again."));
+        ui.add_space(space::SM);
+    }
+    let Some(rows) = rows else {
+        w::loading(ui, "Loading resources");
+        return;
+    };
+    if rows.is_empty() {
+        if page.attach.is_none() {
+            w::empty(ui, "No resources yet.", "PRs, docs and Figma files live here.");
+        }
+        return;
+    }
+
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(space::SM);
+            }
+            resource_row(ui, row, page, can_write, requests);
+        }
+    });
+}
+
+fn resource_row(
+    ui: &mut egui::Ui,
+    row: &Value,
+    page: &mut Page,
+    can_write: bool,
+    requests: &mut Vec<Request>,
+) {
+    let id = str_at(row, "id");
+    let kind = str_at(row, "kind");
+    let url = str_at(row, "url");
+    let title = str_at(row, "title").trim();
+    let where_ = host_path(url);
+    let confirming = page.removing.as_deref() == Some(id);
+
+    ui.horizontal(|ui| {
+        ui.set_min_height(size::CONTROL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            if can_write {
+                // Destructive, so it asks first — inline, where the eye already is.
+                if confirming {
+                    if w::ghost(ui, "Keep").clicked() {
+                        page.removing = None;
+                    }
+                    if w::danger(ui, "Remove", true).clicked() {
+                        requests.push(Request::Remove(id.to_owned()));
+                    }
+                    faint(ui, "Remove this link?");
+                } else if w::ghost(ui, "Remove").clicked() {
+                    page.removing = Some(id.to_owned());
+                }
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                c::chip(ui, kind_label(kind), kind_tone(kind), false);
+                let name = if title.is_empty() { where_ } else { title };
+                // Half the row at most, so the address beside it still shows
+                // where the link goes.
+                let room = if title.is_empty() { ui.available_width() } else { ui.available_width() * 0.55 };
+                let r = ui.add(
+                    egui::Label::new(
+                        RichText::new(elide(ui, name, room))
+                            .size(text::SMALL)
+                            .color(colour::TEXT),
+                    )
+                    .sense(egui::Sense::click())
+                    .selectable(false),
+                );
+                let r = motion::operable(ui, r, radius::SM as f32);
+                if r.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if r.on_hover_text(url).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+                if !title.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(where_).size(text::SMALL).color(colour::TEXT_MUTED),
+                        )
+                        .truncate(),
+                    );
+                }
+            });
+        });
+    });
+}
+
+/// "github.com/org/repo/pull/12" from the full URL: the scheme is noise, the
+/// host and path say where the link goes.
+fn host_path(url: &str) -> &str {
+    url.split_once("://").map_or(url, |(_, rest)| rest).trim_end_matches('/')
+}
+
+/// Cut `s` to fit `width` at the row's type size, with an ellipsis.
+fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
+    let font = egui::FontId::proportional(text::SMALL);
+    let full = ui.painter().layout_no_wrap(s.to_owned(), font, colour::TEXT).size().x;
+    if full <= width || full <= 0.0 {
+        return s.to_owned();
+    }
+    let keep = (s.chars().count() as f32 * (width / full)) as usize;
+    s.chars().take(keep.saturating_sub(1)).collect::<String>() + "\u{2026}"
+}
+
+/// The typed attach form: the kind decides the example, and a URL that is not
+/// one says so before it is sent.
+fn attach_form(
+    ui: &mut egui::Ui,
+    project_id: &str,
+    form: &mut Attach,
+    busy: bool,
+    error: Option<&str>,
+    close: &mut bool,
+    requests: &mut Vec<Request>,
+) {
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        let (default, default_label, _) = KINDS[0];
+        let options: Vec<(String, String)> =
+            KINDS[1..].iter().map(|(k, l, _)| ((*k).to_owned(), (*l).to_owned())).collect();
+        w::caption(ui, "Kind");
+        ui.add_space(space::XXS);
+        viz::select(ui, default_label, &options, &mut form.kind);
+        let kind = form.kind.clone().unwrap_or_else(|| default.to_owned());
+        let hint = KINDS.iter().find(|(k, _, _)| *k == kind).map_or("https://\u{2026}", |(_, _, h)| h);
+
+        ui.add_space(space::MD);
+        let typed = form.url.trim().to_owned();
+        let bad = !typed.is_empty() && !(typed.starts_with("http://") || typed.starts_with("https://"));
+        let entry = w::field(ui, "URL", &mut form.url, false, hint);
+        if bad {
+            // The border carries it at a glance; the caption is for the person
+            // who cannot tell this red from the line around every other field.
+            ui.painter().rect_stroke(
+                entry.rect,
+                radius::SM as f32,
+                egui::Stroke::new(1.0, colour::DANGER),
+                egui::StrokeKind::Inside,
+            );
+            ui.add_space(space::XXS);
+            w::caption(ui, "Needs a URL starting http:// or https://.");
+        }
+        ui.add_space(space::MD);
+        w::field(ui, "Title", &mut form.title, false, "Optional \u{2014} \u{201c}Checkout spec\u{201d}\u{2026}");
+        ui.add_space(space::LG);
+
+        if let Some(err) = error {
+            w::error(ui, err);
+            ui.add_space(space::MD);
+        }
+        let ready = !typed.is_empty() && !bad && !busy;
+        ui.horizontal(|ui| {
+            if w::primary(ui, if busy { "Adding\u{2026}" } else { "Add" }, ready).clicked() {
+                requests.push(Request::Attach(json!({
+                    "parentType": "project",
+                    "parentId": project_id,
+                    "kind": kind,
+                    "url": typed,
+                    "title": form.title.trim(),
+                })));
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                *close = true;
+            }
+        });
+    });
+}
+
 
 /// Open work first, then what is finished, then what was abandoned; inside a
 /// group the urgent thing on top, and ties broken by age so the order does not
@@ -305,97 +1082,6 @@ fn sort_tasks(tasks: &mut [Value]) {
             .then(num_at(a, "priority").cmp(&num_at(b, "priority")))
             .then(str_at(a, "createdAt").cmp(str_at(b, "createdAt")))
     });
-}
-
-/// The three facts about a project, in one quiet row: when it started, who is
-/// on it, how much of it is done.
-///
-/// Not a card. Three facts do not need a container — the space around them
-/// already groups them, and a box here would be the first of the nested cards
-/// this page exists to avoid. Labels are muted, values full-strength: the
-/// label is scaffolding you read once, the value is what you came for.
-fn meta_line(ui: &mut egui::Ui, p: &Value, members: &[&str], done: i64, total: i64) {
-    ui.horizontal(|ui| {
-        // Tight inside a fact, generous between them: proximity does the
-        // grouping that separators would otherwise have to.
-        ui.spacing_mut().item_spacing.x = space::XS;
-
-        if let Some((relative, absolute)) = created(str_at(p, "createdAt")) {
-            label(ui, "Created");
-            value(ui, &relative).on_hover_text(absolute);
-            ui.add_space(space::XL);
-        }
-
-        if members.is_empty() {
-            label(ui, "Nobody assigned");
-        } else {
-            // The same overlapping stack the cards use, so a roster is one
-            // shape across the app. The ring is the canvas, not a surface:
-            // there is no card behind this row to cut out of.
-            ui.spacing_mut().item_spacing.x = -AVATAR_OVERLAP;
-            for who in members.iter().take(MAX_AVATARS) {
-                let r = avatar::small(ui, who, size::AVATAR_SM).on_hover_text(*who);
-                ui.painter().circle_stroke(
-                    r.rect.center(),
-                    size::AVATAR_SM / 2.0,
-                    egui::Stroke::new(1.5, colour::CANVAS),
-                );
-            }
-            ui.spacing_mut().item_spacing.x = space::XS;
-            ui.add_space(AVATAR_OVERLAP + space::XS);
-            let shown = members.iter().take(MAX_AVATARS).copied().collect::<Vec<_>>().join(", ");
-            let rest = members.len().saturating_sub(MAX_AVATARS);
-            let names = if rest > 0 { format!("{shown} +{rest}") } else { shown };
-            // Capped: three long names would otherwise push the done count off
-            // the end of the row.
-            ui.allocate_ui(egui::vec2(MEMBERS_W.min(ui.available_width()), size::ROW), |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(names).size(text::SMALL).color(colour::TEXT),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(members.join(", "));
-            });
-        }
-        ui.add_space(space::XL);
-
-        if total > 0 {
-            value(ui, &format!("{done} of {total}"));
-            label(ui, "done");
-        } else {
-            label(ui, "No tasks yet");
-        }
-    });
-}
-
-/// What the status chip and the key will take on the title row, so the name
-/// can be bounded to what is left. Mirrors `cards::chip`'s own sizing — the
-/// label, its dot, and padding either side.
-fn trailing_w(ui: &egui::Ui, status: &str, key: &str) -> f32 {
-    let mut width = 0.0;
-    if !status.is_empty() {
-        let galley = ui.painter().layout_no_wrap(
-            status_label(status).to_owned(),
-            egui::FontId::proportional(text::CAPTION),
-            colour::TEXT,
-        );
-        width += galley.size().x + space::SM * 3.0 + 10.0;
-    }
-    if !key.is_empty() {
-        let galley = ui.painter().layout_no_wrap(
-            key.to_owned(),
-            egui::FontId::monospace(text::CAPTION),
-            colour::TEXT,
-        );
-        width += galley.size().x + space::SM;
-    }
-    width
-}
-
-/// A meta-line label: the word, not the fact.
-fn label(ui: &mut egui::Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
 }
 
 /// A meta-line value. Full ink — the owner wants the numbers readable at a
@@ -513,7 +1199,10 @@ fn table(ui: &mut egui::Ui, rows: &[Value], open: &mut Option<String>) {
 
 fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     let status = str_at(t, "status");
-    let blocked = num_at(t, "blockersDone") < num_at(t, "blockersTotal");
+    // Only when the status column does not already say so: "blocked" twice on
+    // one row is one fact wearing two chips.
+    let blocked =
+        num_at(t, "blockersDone") < num_at(t, "blockersTotal") && status != "blocked";
 
     row.at(0, |ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
@@ -551,18 +1240,6 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     });
 
     row.muted(5, &since(str_at(t, "createdAt")));
-}
-
-/// How loud a priority is allowed to be. P0 and P1 are the only ones worth
-/// colour; below normal the pill recedes, because a column of five tinted
-/// pills is a column you stop reading.
-fn priority_tone(priority: i64) -> c::Tone {
-    match priority {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
 }
 
 // ------------------------------------------------------------------ add task

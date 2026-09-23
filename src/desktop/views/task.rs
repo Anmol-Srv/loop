@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
-use super::projects::PROSE_W;
+use super::projects::{person_option, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::{
     avatar, cards as c, colour, pad, radius, shell, size, space, status_label, text, theme, viz,
     widgets as w,
@@ -47,6 +47,8 @@ const ARTIFACTS_KEY: &str = "task:artifacts";
 const ATTACH_KEY: &str = "task:artifact:new";
 const NOTES_KEY: &str = "task:notes";
 const NOTE_KEY: &str = "task:note:new";
+const DETAILS_KEY: &str = "task:details";
+const REMOVE_KEY: &str = "task:artifact:remove";
 
 /// How far out we ask egui to wake us.
 const POLL: Duration = Duration::from_secs(2);
@@ -229,6 +231,16 @@ struct Local {
     posting_note: bool,
     /// A failed note POST. Kept apart from `notice`, which belongs to a move.
     note_error: Option<String>,
+    /// A details PATCH is out; `saving_text` when it carries the title and
+    /// description draft, which is only thrown away once the save lands.
+    saving: bool,
+    saving_text: bool,
+    /// The resource whose "Remove this link?" row is showing.
+    confirm_remove: Option<String>,
+    removing: bool,
+    /// A failed remove, shown over the list it failed in rather than up by
+    /// the title where the move notices live.
+    resource_error: Option<String>,
 }
 
 impl Local {
@@ -247,6 +259,11 @@ impl Local {
             note: String::new(),
             posting_note: false,
             note_error: None,
+            saving: false,
+            saving_text: false,
+            confirm_remove: None,
+            removing: false,
+            resource_error: None,
         }
     }
 }
@@ -277,6 +294,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // what an admin is for. Read before `net` is borrowed mutably below.
     let me = me_str(app, "personId");
     let admin = me_str(app, "role") == "admin";
+    let can_write = app.can_write();
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     net.get_once(TASK_KEY, &format!("/api/user/tasks/{task_id}"));
@@ -285,18 +303,39 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         &format!("/api/user/artifacts?parentType=task&parentId={task_id}"),
     );
     net.get_once(NOTES_KEY, &format!("/api/user/tasks/{task_id}/notes"));
+    if can_write {
+        net.get_once(PEOPLE_KEY, "/api/user/people");
+    }
 
     let task = net.data(TASK_KEY).cloned();
 
+    // A breadcrumb, not an id: "22222222" told nobody anything, the project
+    // name tells you where you are and is the likeliest place to go next.
     let mut leave = false;
+    let mut open_project: Option<String> = None;
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
         if shell::back(ui, "Back").clicked() {
             leave = true;
         }
-        w::id(ui, task_id);
+        let project = task.as_ref().and_then(|t| {
+            Some((str_of(t, "projectName").filter(|n| !n.is_empty())?, str_of(t, "projectId")?))
+        });
+        if let Some((name, id)) = project {
+            faint(ui, "\u{00B7}");
+            if w::link(ui, name).clicked() {
+                open_project = Some(id.to_owned());
+            }
+        }
     });
     if leave {
         app.task = None;
+        return;
+    }
+    if let Some(project_id) = open_project {
+        app.task = None;
+        app.project = Some(project_id);
+        app.tab = Tab::Projects;
         return;
     }
     ui.add_space(space::XS);
@@ -328,37 +367,59 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // Fold in the reply to a move started on an earlier frame. Done here, where
     // `net` is still free, so neither column has to own it.
     settle_move(net, local);
+    settle_details(ui.ctx(), net, task_id, local);
 
     // The rail cannot hold `net` — the content column has it — so it reports
-    // what was asked for and the move is made once both closures are gone.
-    let mut from_rail: Option<&'static str> = None;
-    let mut open_project: Option<String> = None;
-    let busy = local.patching || local.attaching;
+    // what was asked for and the request is made once both closures are gone.
+    let mut from_rail: Option<Ask> = None;
+    let busy = local.patching || local.attaching || local.saving;
+    let people: Vec<Value> = if can_write {
+        net.data(PEOPLE_KEY).and_then(Value::as_array).cloned().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // Agents are the next phase: a human task has no run log to watch, and
+    // "Waiting for the agent's first line" on every one of them was a promise
+    // nobody was going to keep.
+    let agent = str_of(&task, "assigneeKind") == Some("agent");
 
+    let mut editing = false;
     shell::with_rail(
         ui,
-        |ui| {
-            headline(ui, net, task_id, &task, &status, track, can_act, &held, local);
-            description(ui, &task);
-            manual_reason(ui, &task);
+        |ui, part| match part {
+            shell::Part::Header => {
+                editing = headline(
+                    ui, net, task_id, &task, &status, track, can_act, can_write, &held, local,
+                );
+            }
+            shell::Part::Body => {
+                if !editing {
+                    description(ui, &task);
+                }
+                manual_reason(ui, &task);
 
-            shell::divider(ui);
-            resources(ui, net, track, local);
+                shell::divider(ui);
+                resources(ui, net, track, can_write, local);
 
-            shell::divider(ui);
-            notes(ui, net, task_id, local);
+                shell::divider(ui);
+                notes(ui, net, task_id, local);
 
-            shell::divider(ui);
-            run_log(ui, net, task_id, &status, local);
+                run_log(ui, net, task_id, &status, agent, local);
+            }
         },
         |ui| {
-            from_rail = rail(ui, &task, &status, track, can_act, busy, &mut open_project);
+            let ctx = Rail { task_id, status: &status, track, can_act, can_write, busy, people: &people };
+            from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
     );
 
-    if let Some(next) = from_rail {
-        local.notice = None;
-        start_move(net, task_id, next, track, &held, local);
+    match from_rail {
+        Some(Ask::Move(next)) => {
+            local.notice = None;
+            start_move(net, task_id, next, track, &held, local);
+        }
+        Some(Ask::Details(body)) => save_details(net, task_id, body, false, local),
+        None => {}
     }
 
     // `net`'s borrow of `app` ends above, so navigation happens last.
@@ -371,7 +432,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
 
 // ---------------------------------------------------------------- the top
 
-/// The title and the one move that is almost always the right one.
+/// The title and the one move that is almost always the right one, or — while
+/// editing — the title and description as fields. Returns whether it is
+/// editing, so the reading copy of the description is not drawn twice.
 ///
 /// One button, not a row: the alternatives all live in the rail's status
 /// dropdown, so the heading can carry the obvious next step alone and the eye
@@ -385,52 +448,96 @@ fn headline(
     status: &str,
     track: Track,
     can_act: bool,
+    can_write: bool,
     held: &[String],
     local: &mut Local,
-) {
-    let busy = local.patching || local.attaching;
+) -> bool {
+    let busy = local.patching || local.attaching || local.saving;
     let action = primary_move(track, status).filter(|(_, next)| can_act || anyone_may(next));
 
+    // The draft lives in egui's temp store under the task id, not in a local:
+    // leave for the project and come back, and the half-written words are
+    // still there.
+    let draft_id = egui::Id::new(("task:draft", task_id));
+    let mut draft: Option<(String, String)> = ui.data(|d| d.get_temp(draft_id));
+
     let mut go = None;
-    ui.horizontal(|ui| {
-        // The button is laid out after the title, so the title has to leave it
-        // room: unbounded, a long one takes the whole row and pushes it off.
-        let reserve = match action {
-            Some((copy, _)) => {
-                ui.painter()
-                    .layout_no_wrap(
-                        copy.to_owned(),
-                        egui::FontId::proportional(text::BODY),
-                        colour::TEXT,
-                    )
-                    .size()
-                    .x
-                    + pad::BUTTON.0 * 2.0
-                    + space::MD
-            }
-            None => 0.0,
-        };
-        ui.add_sized(
-            [(ui.available_width() - reserve).max(size::ROW), size::ROW],
-            egui::Label::new(
-                RichText::new(str_of(task, "title").unwrap_or("Untitled"))
-                    .size(text::TITLE)
-                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
-            )
-            .truncate()
-            .halign(egui::Align::LEFT),
+    if let Some((title, body)) = draft.as_mut() {
+        w::field(ui, "Title", title, false, "What needs doing");
+        ui.add_space(space::MD);
+        w::field_multiline(
+            ui,
+            "Description",
+            body,
+            6,
+            "Context, constraints, what done looks like\u{2026}",
         );
-        if let Some((copy, next)) = action {
-            ui.add_space(space::MD);
-            if w::primary(ui, copy, !busy).clicked() {
-                go = Some(next);
+        ui.add_space(space::MD);
+        let mut save = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            let ready = !title.trim().is_empty() && !busy;
+            let label = if local.saving_text { "Saving\u{2026}" } else { "Save" };
+            let response = w::primary(ui, label, ready);
+            if title.trim().is_empty() {
+                response.clone().on_disabled_hover_text("A task needs a title.");
             }
+            save = response.clicked();
+            ui.add_space(space::XS);
+            cancel = w::ghost(ui, "Cancel").clicked();
+        });
+        if save {
+            let body = json!({ "title": title.trim(), "body": body.trim() });
+            save_details(net, task_id, body, true, local);
         }
-        if busy {
-            ui.add_space(space::SM);
-            ui.add(egui::Spinner::new().size(text::BODY));
+        if cancel {
+            draft = None;
         }
+    } else {
+        let mut edit = false;
+        // Right to left, so the controls take their width first and the title
+        // truncates into what is left — and sits flush left, which a sized
+        // label centred in its box did not.
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if let Some((copy, next)) = action {
+                    if w::primary(ui, copy, !busy).clicked() {
+                        go = Some(next);
+                    }
+                }
+                if can_write && w::ghost(ui, "Edit").clicked() {
+                    edit = true;
+                }
+                if busy {
+                    ui.add(egui::Spinner::new().size(text::BODY));
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(str_of(task, "title").unwrap_or("Untitled"))
+                                .size(text::TITLE)
+                                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                .color(colour::TEXT),
+                        )
+                        .truncate(),
+                    );
+                });
+            });
+        });
+        if edit {
+            draft = Some((
+                str_of(task, "title").unwrap_or_default().to_owned(),
+                str_of(task, "body").unwrap_or_default().to_owned(),
+            ));
+        }
+    }
+    let editing = draft.is_some();
+    ui.data_mut(|d| match draft {
+        Some(draft) => {
+            d.insert_temp(draft_id, draft);
+        }
+        None => d.remove::<(String, String)>(draft_id),
     });
 
     if let Some(next) = go {
@@ -448,6 +555,7 @@ fn headline(
             w::caption(ui, message);
         }
     }
+    editing
 }
 
 /// The task's own words, at a prose measure. Paragraphs split on a blank line,
@@ -490,63 +598,160 @@ fn manual_reason(ui: &mut egui::Ui, task: &Value) {
 
 // ---------------------------------------------------------------- the rail
 
-/// Everything a task *is*, as a column of labelled facts.
+/// What the rail asked for. It cannot hold `net`, so it says what it wants and
+/// `render` sends it once the closures are gone.
+enum Ask {
+    Move(&'static str),
+    Details(Value),
+}
+
+/// What the rail needs to know about the viewer and the page.
+struct Rail<'a> {
+    task_id: &'a str,
+    status: &'a str,
+    track: Track,
+    can_act: bool,
+    can_write: bool,
+    busy: bool,
+    people: &'a [Value],
+}
+
+/// Everything a task *is*, as a column of labelled facts — and, for anyone
+/// with write, the three of them that can be changed.
 ///
 /// These were a single wrapped line under the title, which put six glanceable
 /// values in the middle of the reading column and made them the hardest thing
-/// on the page to find. Returns the status the viewer asked to move to.
+/// on the page to find.
 fn rail(
     ui: &mut egui::Ui,
     task: &Value,
-    status: &str,
-    track: Track,
-    can_act: bool,
-    busy: bool,
+    r: &Rail,
     open_project: &mut Option<String>,
-) -> Option<&'static str> {
-    let mut go = None;
+) -> Option<Ask> {
+    let mut ask = None;
+    let status = r.status;
 
     shell::property(ui, "Status", |ui| {
-        if !can_act || busy {
+        if !r.can_act || r.busy {
             // A viewer with no moves gets the fact, not a control that 403s.
-            c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
+            c::chip(ui, status_label(status), c::status_tone(status), true);
             return;
         }
         // Every legal state on this track in one menu, the current one resting
         // at the top: the whole vocabulary, instead of the two or three moves a
         // button row had room to offer.
-        let options: Vec<(String, String)> = track
+        let options: Vec<(String, String)> = r
+            .track
             .states()
             .iter()
             .filter(|s| **s != status)
-            .map(|s| ((*s).to_owned(), sentence(status_label(s))))
+            .map(|s| ((*s).to_owned(), status_label(s).to_owned()))
             .collect();
         let mut slot: Option<String> = None;
-        viz::select(ui, &sentence(status_label(status)), &options, &mut slot);
+        viz::select(ui, status_label(status), &options, &mut slot);
         if let Some(next) = slot.as_deref() {
-            go = track.states().iter().copied().find(|s| *s == next);
+            ask = r.track.states().iter().copied().find(|s| *s == next).map(Ask::Move);
         }
     });
 
-    shell::property(ui, "Priority", |ui| match task.get("priority").and_then(Value::as_i64) {
-        Some(p) => {
-            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+    let priority = task.get("priority").and_then(Value::as_i64);
+    shell::property(ui, "Priority", |ui| {
+        if !r.can_write || r.busy {
+            match priority {
+                Some(p) => {
+                    c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+                }
+                None => faint(ui, "\u{2014}"),
+            }
+            return;
         }
-        None => faint(ui, "\u{2014}"),
+        let options: Vec<(String, String)> = (0..=4)
+            .filter(|p| Some(*p) != priority)
+            .map(|p| (p.to_string(), format!("P{p}")))
+            .collect();
+        let mut slot: Option<String> = None;
+        let current = priority.map_or_else(|| "No priority".to_owned(), |p| format!("P{p}"));
+        viz::select(ui, &current, &options, &mut slot);
+        if let Some(p) = slot.and_then(|s| s.parse::<i64>().ok()) {
+            ask = Some(Ask::Details(json!({ "priority": p })));
+        }
     });
 
-    shell::property(ui, "Assignee", |ui| match str_of(task, "assigneeName") {
-        Some(name) if !name.is_empty() => {
-            let seed = str_of(task, "assigneeEmail").unwrap_or(name);
-            avatar::small(ui, seed, AVATAR);
-            value(ui, name);
+    // A reassignment that would drag the task across tracks waits here for a
+    // yes. Kept in the temp store so the rail, which holds nothing, can
+    // remember it between frames: (who, the question to ask).
+    let confirm_id = egui::Id::new(("task:reassign", r.task_id));
+    let current = str_of(task, "assigneePersonId");
+    shell::property(ui, "Assignee", |ui| {
+        let name = str_of(task, "assigneeName").filter(|n| !n.is_empty());
+        if let Some(name) = name {
+            avatar::small(ui, str_of(task, "assigneeEmail").unwrap_or(name), AVATAR);
         }
-        _ => faint(ui, "Unassigned"),
+        if !r.can_write || r.busy {
+            match name {
+                Some(name) => {
+                    value(ui, name);
+                }
+                None => faint(ui, "Unassigned"),
+            }
+            return;
+        }
+        let mut options: Vec<(String, String)> = Vec::new();
+        if current.is_some() {
+            options.push((UNASSIGN.to_owned(), "Unassigned".to_owned()));
+        }
+        options.extend(
+            r.people.iter().map(person_option).filter(|(id, _)| Some(id.as_str()) != current),
+        );
+        let mut slot: Option<String> = None;
+        viz::select(ui, name.unwrap_or("Unassigned"), &options, &mut slot);
+        let Some(picked) = slot else { return };
+
+        let person = r.people.iter().find(|p| str_of(p, "id") == Some(picked.as_str()));
+        let id = person.map(|_| picked.clone());
+        let to = Track::of(person.and_then(|p| str_of(p, "department")));
+        if to != r.track && !to.states().contains(&status) {
+            let question = match person.and_then(|p| str_of(p, "name")) {
+                Some(who) => format!(
+                    "Reassign to {who}? This moves the task to the {} track and back to Open.",
+                    to.word()
+                ),
+                None => "Unassign this task? It goes back to Open.".to_owned(),
+            };
+            ui.data_mut(|d| d.insert_temp(confirm_id, (id, question)));
+        } else {
+            ask = Some(Ask::Details(json!({ "assigneeId": id })));
+        }
     });
+
+    if let Some((id, question)) = ui.data(|d| d.get_temp::<(Option<String>, String)>(confirm_id)) {
+        let mut done = false;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.label(RichText::new(question).size(text::SMALL).color(colour::TEXT_2));
+            ui.horizontal(|ui| {
+                if w::secondary(ui, "Reassign", !r.busy).clicked() {
+                    ask = Some(Ask::Details(json!({ "assigneeId": id })));
+                    done = true;
+                }
+                if w::ghost(ui, "Keep").clicked() {
+                    done = true;
+                }
+            });
+        });
+        ui.add_space(space::SM);
+        if done {
+            ui.data_mut(|d| d.remove::<(Option<String>, String)>(confirm_id));
+        }
+    }
 
     shell::property(ui, "Department", |ui| {
         match str_of(task, "discipline").filter(|d| !d.is_empty()) {
-            Some(d) => w::discipline(ui, d),
+            // The same chip a department wears in every table, not the
+            // monospace tag it used to be here alone.
+            Some(d) => {
+                c::chip(ui, d, c::discipline_tone(d), false);
+            }
             None => faint(ui, "\u{2014}"),
         }
     });
@@ -575,7 +780,7 @@ fn rail(
         });
     }
 
-    if !can_act {
+    if !r.can_act {
         ui.add_space(space::SM);
         match str_of(task, "assigneeName").filter(|n| !n.is_empty()) {
             Some(name) => w::caption(ui, &format!("Only {name} can move this task.")),
@@ -583,8 +788,11 @@ fn rail(
         }
     }
 
-    go
+    ask
 }
+
+/// The assignee menu's "nobody" row. Not a uuid, so it cannot collide with one.
+const UNASSIGN: &str = "none";
 
 /// P0 shouts and P4 whispers, in the same chip vocabulary as status — the rail
 /// should read as one column of tokens, not two competing systems.
@@ -637,6 +845,14 @@ impl Track {
         match self {
             Track::Eng => &["open", "in_progress", "blocked", "completed", "shipped", "dropped"],
             Track::Design => &["open", "in_progress", "blocked", "handoff", "completed", "dropped"],
+        }
+    }
+
+    /// The track's name in a sentence.
+    fn word(self) -> &'static str {
+        match self {
+            Track::Eng => "engineering",
+            Track::Design => "design",
         }
     }
 
@@ -726,7 +942,7 @@ fn settle_move(net: &mut crate::desktop::net::Net, local: &mut Local) {
         ),
         Ok(v) => (
             match str_of(v, "status") {
-                Some(next) => format!("Moved to {}.", sentence(status_label(next))),
+                Some(next) => format!("Moved to {}.", status_label(next)),
                 None => "Moved.".to_string(),
             },
             false,
@@ -772,6 +988,54 @@ fn patch_status(
     // Drop the previous attempt's reply so the notice belongs to this one.
     net.invalidate(PATCH_KEY);
     net.patch(PATCH_KEY, &format!("/api/user/tasks/{task_id}"), body);
+}
+
+/// Send a details edit. `text` marks the title-and-description draft, which
+/// is kept until the save lands so a failed one loses nothing.
+fn save_details(
+    net: &mut crate::desktop::net::Net,
+    task_id: &str,
+    body: Value,
+    text: bool,
+    local: &mut Local,
+) {
+    local.notice = None;
+    net.invalidate(DETAILS_KEY);
+    net.patch(DETAILS_KEY, &format!("/api/user/tasks/{task_id}/details"), body);
+    local.saving = true;
+    local.saving_text = text;
+}
+
+/// Fold in the reply to a details edit.
+fn settle_details(
+    ctx: &egui::Context,
+    net: &mut crate::desktop::net::Net,
+    task_id: &str,
+    local: &mut Local,
+) {
+    if !local.saving || net.is_loading(DETAILS_KEY) {
+        return;
+    }
+    let (notice, ok) = match net.peek(DETAILS_KEY) {
+        Some(Ok(v)) if str_of(v, "status") == Some("proposed") => (
+            "Awaiting approval: you do not hold write on this project, so the \
+             edit was recorded as a proposed change."
+                .to_string(),
+            true,
+        ),
+        Some(Ok(_)) => ("Saved.".to_string(), true),
+        Some(Err(e)) => (e.to_string(), false),
+        None => (String::new(), false),
+    };
+    if !notice.is_empty() {
+        local.notice = Some((notice, !ok));
+    }
+    if ok && local.saving_text {
+        ctx.data_mut(|d| d.remove::<(String, String)>(egui::Id::new(("task:draft", task_id))));
+    }
+    local.saving = false;
+    local.saving_text = false;
+    invalidate_after_move(net);
 }
 
 /// This task, the board, the dashboard and the personal list all show the
@@ -934,13 +1198,24 @@ fn prompt_panel(
 /// is "where is the work", not "what kind of link is it".
 fn resources(
     ui: &mut egui::Ui,
-    net: &crate::desktop::net::Net,
+    net: &mut crate::desktop::net::Net,
     track: Track,
+    can_write: bool,
     local: &mut Local,
 ) {
-    let rows = net.data(ARTIFACTS_KEY).and_then(Value::as_array);
+    // Fold in a remove. Either way the list is refetched: a 404 means someone
+    // else already removed it, and the list should say so by not having it.
+    if local.removing && !net.is_loading(REMOVE_KEY) {
+        if let Some(Err(e)) = net.peek(REMOVE_KEY) {
+            local.resource_error = Some(e.to_string());
+        }
+        local.removing = false;
+        net.invalidate(ARTIFACTS_KEY);
+    }
+
+    let rows: Option<Vec<Value>> = net.data(ARTIFACTS_KEY).and_then(Value::as_array).cloned();
     let mut add = false;
-    shell::section_count_with(ui, "Resources", rows.map_or(0, Vec::len), |ui| {
+    shell::section_count_with(ui, "Resources", rows.as_ref().map_or(0, Vec::len), |ui| {
         if w::ghost(ui, "+ Add").clicked() {
             add = true;
         }
@@ -957,6 +1232,10 @@ fn resources(
         local.prompt = Some(Prompt::new(None, kinds));
     }
 
+    if let Some(err) = &local.resource_error {
+        w::error(ui, err);
+        ui.add_space(space::SM);
+    }
     if let Some(err) = net.error(ARTIFACTS_KEY) {
         failed(ui, "Could not load resources", err);
         return;
@@ -966,47 +1245,115 @@ fn resources(
         return;
     };
     if rows.is_empty() {
-        w::empty(ui, "Nothing attached yet.", "PRs, commits, Figma files and docs live here.");
+        w::empty(ui, "No resources yet \u{2014} PRs, docs and Figma files live here.", "");
         return;
     }
 
-    w::card(ui, |ui| {
+    let mut remove: Option<String> = None;
+    w::card_list(ui, |ui| {
         ui.set_width(ui.available_width());
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(space::SM);
+        for row in &rows {
+            if let Some(id) = resource_row(ui, row, can_write, local) {
+                remove = Some(id);
             }
-            ui.horizontal(|ui| {
-                let kind = str_of(row, "kind").unwrap_or("link");
-                c::chip(ui, kind_label(kind), kind_tone(kind), false);
-                ui.add_space(space::SM);
-                let url = str_of(row, "url").unwrap_or_default();
-                let title = str_of(row, "title").map(str::trim).filter(|t| !t.is_empty());
+        }
+    });
+    if let Some(id) = remove {
+        local.confirm_remove = None;
+        local.resource_error = None;
+        net.invalidate(REMOVE_KEY);
+        net.send(REMOVE_KEY, reqwest::Method::DELETE, &format!("/api/user/artifacts/{id}"), Value::Null);
+        local.removing = true;
+    }
+}
 
-                // A commit has no URL to open — it is a hash. Drawing it as a
-                // link would promise a destination that does not exist, so it
-                // is set in mono and the title carries the meaning.
+/// One resource: kind, what it is, where it goes. Returns the id to remove
+/// once "Remove" has been confirmed.
+///
+/// The whole row opens the link, because a title-sized hit target on a
+/// full-width row made the rest of the row look dead. A commit is a hash with
+/// nowhere to open, so its row is not clickable and its hash stays mono.
+fn resource_row(
+    ui: &mut egui::Ui,
+    row: &Value,
+    can_write: bool,
+    local: &mut Local,
+) -> Option<String> {
+    let id = str_of(row, "id").unwrap_or_default().to_owned();
+    let kind = str_of(row, "kind").unwrap_or("link");
+    let url = str_of(row, "url").unwrap_or_default();
+    let title = str_of(row, "title").map(str::trim).filter(|t| !t.is_empty());
+    let confirming = local.confirm_remove.as_deref() == Some(id.as_str());
+    let mut removed = None;
+
+    let mut body = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The right edge first, so what it takes is known before the
+            // title and address are cut to fit what is left.
+            if confirming {
+                if w::danger(ui, "Remove", !local.removing).clicked() {
+                    removed = Some(id.clone());
+                }
+                if w::ghost(ui, "Keep").clicked() {
+                    local.confirm_remove = None;
+                }
+                faint(ui, "Remove this link?");
+            } else if can_write && w::ghost(ui, "Remove").clicked() {
+                // Always drawn, never hover-only: a control that appears
+                // under the pointer is one the keyboard can never reach, and
+                // the project page's resources show it the same way.
+                local.confirm_remove = Some(id.clone());
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                c::chip(ui, kind_label(kind), kind_tone(kind), false);
                 if kind == "commit" {
                     w::mono_caption(ui, url);
                     if let Some(title) = title {
-                        ui.add_space(space::SM);
-                        let fitted = elide(ui, title, ui.available_width() - space::SM);
-                        ui.label(
-                            RichText::new(fitted).size(text::SMALL).color(colour::TEXT_2),
-                        );
+                        let fitted = elide(ui, title, ui.available_width());
+                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT));
                     }
                     return;
                 }
-
-                // `w::link` lays its label out no-wrap, so a long title — or the
-                // raw URL standing in for a missing one — would run past the card.
-                let fitted = elide(ui, title.unwrap_or(url), ui.available_width() - space::SM);
-                if w::link(ui, &fitted).on_hover_text(url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                let place = host_path(url);
+                let name = elide(ui, title.unwrap_or(place), ui.available_width());
+                ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT));
+                // An untitled link already shows its address as its name.
+                if title.is_some() {
+                    let fitted = elide(ui, place, ui.available_width());
+                    ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED));
                 }
             });
+        });
+    };
+
+    if kind == "commit" || url.is_empty() {
+        let w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(w, size::ROW),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(egui::vec2(w, size::ROW));
+                ui.add_space(space::SM);
+                body(ui);
+            },
+        );
+    } else {
+        // Remove sits on top of the row, so a click on it lands on it and not
+        // on the row: egui gives the later widget the pointer.
+        let response = w::row(ui, body).on_hover_text(url);
+        if response.clicked() && removed.is_none() && !confirming {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
-    });
+    }
+    removed
+}
+
+/// "github.com/airtribe/mycohort-api/pull/4821" from the full URL: where a
+/// link goes, without the scheme nobody reads.
+fn host_path(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.strip_prefix("www.").unwrap_or(rest).trim_end_matches('/')
 }
 
 // --------------------------------------------------------------------- notes
@@ -1041,7 +1388,7 @@ fn notes(
     if let Some(err) = net.error(NOTES_KEY) {
         failed(ui, "Could not load notes", err);
     } else if rows.is_empty() {
-        w::caption(ui, "No notes yet.");
+        w::caption(ui, "No notes yet \u{2014} questions, decisions and heads-ups for the team go here.");
     } else {
         ui.scope(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
@@ -1051,10 +1398,9 @@ fn notes(
                 }
                 let author = str_of(row, "authorName").unwrap_or("Someone");
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::SM;
                     avatar::small(ui, author, AVATAR);
-                    ui.add_space(space::XS);
                     value(ui, author);
-                    ui.add_space(space::SM);
                     if let Some(at) = str_of(row, "createdAt") {
                         ui.label(
                             RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_MUTED),
@@ -1075,18 +1421,38 @@ fn notes(
     let mut send = false;
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        w::field_multiline(ui, "", &mut local.note, 2, "Leave a note for the team\u{2026}");
+        let box_ = w::field_multiline(
+            ui,
+            "",
+            &mut local.note,
+            2,
+            "Leave a note for the team\u{2026} Cmd+Enter to post",
+        );
+        let ready = !local.note.trim().is_empty() && !local.posting_note;
+        if ready
+            && box_.has_focus()
+            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+        {
+            send = true;
+        }
         if let Some(err) = &local.note_error {
             ui.add_space(space::XS);
             w::error(ui, err);
         }
         ui.add_space(space::SM);
-        let ready = !local.note.trim().is_empty() && !local.posting_note;
-        if w::primary(ui, if local.posting_note { "Posting\u{2026}" } else { "Post" }, ready)
-            .clicked()
-        {
-            send = true;
-        }
+        // Flush with the box's right edge, where a comment box keeps its send:
+        // a disabled button has no fill, so on the left its label floated a
+        // padding's width in from the box's edge.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let label = if local.posting_note { "Posting\u{2026}" } else { "Post" };
+            let response = w::primary(ui, label, ready);
+            if local.note.trim().is_empty() {
+                response.clone().on_disabled_hover_text("Write a note first.");
+            }
+            if response.clicked() {
+                send = true;
+            }
+        });
     });
     if send {
         local.note_error = None;
@@ -1107,9 +1473,11 @@ fn run_log(
     net: &mut crate::desktop::net::Net,
     task_id: &str,
     status: &str,
+    agent: bool,
     local: &mut Local,
 ) {
-    let live = status == "in_progress";
+    // Only an agent's run streams, so only an agent's task polls.
+    let live = agent && status == "in_progress";
 
     // 1. Fold in whatever came back, appending to the transcript we hold.
     if local.pending && !net.is_loading(LOG_KEY) {
@@ -1157,6 +1525,13 @@ fn run_log(
         local.pending = true;
         local.fired_at = Instant::now();
     }
+
+    // Fetched once for every task, drawn only where there is something to
+    // show: an agent's task, or a human one that somehow has lines.
+    if !agent && local.lines.is_empty() {
+        return;
+    }
+    shell::divider(ui);
 
     // The heading carries a live pill, which is what `section_with`'s trailing
     // slot is for — it was hand-painted here before that existed.
@@ -1286,15 +1661,5 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
-    }
-}
-
-/// "In review" from "in review". The vocabulary still comes from
-/// `status_label`; this only decides where the sentence starts.
-fn sentence(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }

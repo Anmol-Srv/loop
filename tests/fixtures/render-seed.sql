@@ -48,7 +48,7 @@ BEGIN
      'active', 0, current_date - 30, current_date - 5, now() - interval '30 days'),
     (lms, 'lms-video-player', 'LMS video player',
      'Replace the embedded player with HLS streaming, resume-from-timestamp and captions.',
-     'active', 2, current_date - 3, current_date + 40, now() - interval '3 days'),
+     'active', 2, current_date - 3, current_date + 5, now() - interval '3 days'),
     (adm, 'admin-permissions-audit', 'Admin permissions audit',
      'Every admin route mapped to the permission that guards it.',
      'paused', 3, NULL, NULL, now() - interval '21 days'),
@@ -137,7 +137,12 @@ BEGIN
     ('task', t_ship, 'pr', 'https://github.com/airtribe/mycohort-api/pull/4812', 'Drop GPT role bucket for weighted-rubric leads', dhaval, now() - interval '3 days'),
     ('task', t_ship, 'commit', '9f3c2ab', 'Remove getRoleBucket prompt field', dhaval, now() - interval '2 days'),
     ('task', t_ship, 'doc', 'https://www.notion.so/airtribe/Lead-rating-rubric', 'Rating rubric', anmol, now() - interval '9 days'),
-    ('task', t_des, 'figma', 'https://www.figma.com/file/cK2q/Checkout', 'Checkout flows', pratik, now() - interval '10 days');
+    ('task', t_des, 'figma', 'https://www.figma.com/file/cK2q/Checkout', 'Checkout flows', pratik, now() - interval '10 days'),
+    -- Project-level resources, so the project page's Resources section is
+    -- seen with something in it.
+    ('project', lr, 'doc', 'https://www.notion.so/airtribe/Lead-rating-v2-spec', 'Lead rating v2 spec', anmol, now() - interval '10 days'),
+    ('project', lr, 'figma', 'https://www.figma.com/file/aR7x/Lead-rating', 'Lead rating screens', evana, now() - interval '7 days'),
+    ('project', co, 'link', 'https://airtribe.slack.com/archives/C0CHECKOUT', 'Checkout channel', dhaval, now() - interval '28 days');
 
   INSERT INTO note (task_id, author_id, body, created_at) VALUES
     (t_eng, dhaval, 'Is the retry budget per attempt or for the whole call?', now() - interval '2 days'),

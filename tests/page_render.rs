@@ -39,7 +39,24 @@ const SHOTS: &[Shot] = &[
     Shot { name: "task-shipped", tab: Tab::Home, project: None, task: Some(TASK_SHIPPED), signed_in: true },
     Shot { name: "task-handoff", tab: Tab::Home, project: None, task: Some(TASK_HANDOFF), signed_in: true },
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
+    Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
+    Shot { name: "login-error", tab: Tab::Home, project: None, task: None, signed_in: false },
 ];
+
+/// States a `Shot` has no field for, set on the app before its first frame.
+fn stage(shot: &Shot, app: &mut App) {
+    match shot.name {
+        // A query typed in, so the grouped results show rather than the
+        // empty-query page list.
+        "palette" => {
+            app.palette.open = true;
+            app.palette.query = "cart".into();
+        }
+        // The server's own wording for a bad password.
+        "login-error" => app.login.error = Some("email or password is incorrect".into()),
+        _ => {}
+    }
+}
 
 /// Laptop, a narrower laptop window, and past the sidebar's collapse point.
 const WIDTHS: [(f32, &str); 3] = [(1440.0, "wide"), (1100.0, "mid"), (820.0, "narrow")];
@@ -50,7 +67,11 @@ const HEIGHT: f32 = 1300.0;
 fn pages() {
     let url = std::env::var("ACP_RENDER_URL").expect("ACP_RENDER_URL");
     let token = std::env::var("ACP_RENDER_TOKEN").expect("ACP_RENDER_TOKEN");
-    let only: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
+    let only: Vec<String> = std::env::var("RENDER_SHOTS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
 
     for shot in SHOTS {
         if !only.is_empty() && !only.iter().any(|o| shot.name.starts_with(o.as_str())) {
@@ -89,6 +110,7 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
                     board: views::board::State::default(),
                     palette: views::palette::State::default(),
                 });
+                stage(shot, slot.as_mut().unwrap());
                 return;
             }
             slot.as_mut().unwrap().frame(ui);

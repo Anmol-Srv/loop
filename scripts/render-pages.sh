@@ -37,5 +37,8 @@ psql "$URL" -q -v ON_ERROR_STOP=1 -f tests/fixtures/render-seed.sql
 TOKEN=$(DATABASE_URL=$URL ./target/release/acp-admin session anmol.srivastava@airtribe.live | tail -1)
 
 mkdir -p docs/design-mocks/render/pages
-ACP_RENDER_URL="http://localhost:$PORT" ACP_RENDER_TOKEN="$TOKEN" \
-  cargo test --quiet --features app --test page_render -- --ignored --nocapture "$@"
+# Shot names go through the environment, not the test's argv: libtest reads
+# every positional argument as a test-name filter, so `render-pages.sh task`
+# used to filter out the one test and draw nothing.
+ACP_RENDER_URL="http://localhost:$PORT" ACP_RENDER_TOKEN="$TOKEN" RENDER_SHOTS="$*" \
+  cargo test --quiet --features app --test page_render -- --ignored --nocapture

@@ -17,8 +17,10 @@
 //! One fetch, filtered in memory, keeps the menus honest and the clicks free.
 //! Move to query params the day the workspace outgrows a single response.
 //!
-//! All four cards now sit on the whole workspace: Status and Completed count
-//! the task list, By discipline sums the server's per-project rollup, Team
+//! Every number here counts the same population, the non-dropped tasks, so
+//! the subtitle, the donut and the table heading agree. All four cards sit on
+//! the whole workspace: Status and Completed count
+//! the task list, By department sums the server's per-project rollup, Team
 //! load is `team[]` from one grouped query.
 //!
 //! Approvals are gone from this page: the inbox owns them, and the table's
@@ -28,16 +30,17 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Datelike, Local, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use egui::{Align, Color32, Layout, RichText};
 use serde_json::Value;
 
+use super::projects::PRIORITIES;
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, theme,
-    tokens, viz, widgets as w,
+    avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, tokens,
+    viz, widgets as w,
 };
-use crate::desktop::App;
+use crate::desktop::{App, Tab};
 
 const HOME: &str = "home";
 /// The table's rows: the whole workspace, unfiltered.
@@ -48,6 +51,8 @@ const TASKS: &str = "home:tasks";
 const FILTERS: &str = "home:filters";
 /// The table's id: its scroll salt, and the slot its hover is tracked in.
 const TABLE: &str = "home:table";
+/// The attention list's table id. Its own, so its hover never lights a task row.
+const ATTENTION: &str = "home:attention";
 
 /// Last frame's tallest figure, so all four cards agree on a height.
 const VIZ_H: &str = "home:viz-h";
@@ -55,50 +60,75 @@ const VIZ_H: &str = "home:viz-h";
 /// Days in the completed chart. Seven, because the label says week.
 const WEEK: usize = 7;
 
+/// A project due within this many days with under half its work done is at
+/// risk. A week is one planning cycle: still enough time to cut scope.
+const AT_RISK_DAYS: i64 = 7;
+/// In progress with no update for longer than this reads as stalled. A working
+/// week — shorter flags anyone who took a long weekend.
+const STALLED_DAYS: i64 = 5;
+/// The attention list is the top of the pile, not the pile: past six rows it
+/// pushes the figures below the fold, and the table has the rest.
+const ATTENTION_MAX: usize = 6;
+
 /// The status vocabulary, in the order it reads in the filter menu: the two
 /// tracks' happy paths first, then the two states either track can land in.
 /// `status_label` turns each one into words.
 const STATUSES: [&str; 7] =
     ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
 
+/// The statuses at which a task stops holding up the tasks that wait on it.
+/// Mirrors the server's `BLOCKER_RESOLVED`: a design handoff unblocks the
+/// engineer, it does not have to ship first.
+const BLOCKER_RESOLVED: [&str; 4] = ["handoff", "completed", "shipped", "dropped"];
+
 /// The donut's slices, finished-first so the ring fills clockwise from the
-/// outcome you want. `dropped` is absent on purpose: abandoned work is not
-/// work, and counting it made the centre percentage a share of a total nobody
-/// intends to finish.
+/// outcome you want. `dropped` is absent because the whole page excludes it.
 const DONUT: [&str; 6] = ["shipped", "completed", "in_progress", "handoff", "blocked", "open"];
 
 /// Table geometry. Fixed so the columns line up with the header and with each
 /// other; the task column takes whatever is left. Alignment is declared here
 /// too, so "Updated" and the age beneath it cannot disagree.
 const COL_DOT: f32 = 22.0;
-const COL_DISCIPLINE: f32 = 88.0;
+/// "P0" plus chip padding, the same width the task tables use.
+const COL_PRIORITY: f32 = 52.0;
+const COL_DEPARTMENT: f32 = 88.0;
 const COL_STATUS: f32 = 104.0;
 const COL_PROJECT: f32 = 150.0;
-const COL_PHASE: f32 = 120.0;
-const COL_OWNER: f32 = 70.0;
+/// An avatar and a first name.
+const COL_OWNER: f32 = 110.0;
 const COL_UPDATED: f32 = 78.0;
 
 const COLS: [Col; 8] = [
     Col::left("", COL_DOT),
     Col::fill("Task", COL_PROJECT),
-    Col::left("Discipline", COL_DISCIPLINE).rank(2),
+    Col::left("Priority", COL_PRIORITY).rank(1),
+    Col::left("Department", COL_DEPARTMENT).rank(2),
     Col::left("Status", COL_STATUS),
     Col::left("Project", COL_PROJECT),
-    // Phase goes first: it is one server-managed value on every row today.
-    Col::left("Phase", COL_PHASE).rank(4),
     Col::left("Owner", COL_OWNER),
     Col::right("Updated", COL_UPDATED).rank(3),
+];
+
+/// The attention list: what kind of trouble, what is in it, and why. Two fill
+/// columns so a long project name and a long reason share the slack.
+const COL_SIGNAL: f32 = 84.0;
+const ATTENTION_COLS: [Col; 3] = [
+    Col::left("", COL_SIGNAL),
+    Col::fill("What", 140.0),
+    Col::fill("Why", 180.0),
 ];
 
 /// What the table is filtered to. Every field is "no filter" when unset, so
 /// `Default` is the unfiltered view.
 #[derive(Clone, Default, PartialEq)]
 pub struct State {
-    /// Free text, matched against title, project and phase.
+    /// Free text, matched against title, project and owner.
     pub query: String,
     /// Only tasks assigned to me.
     pub mine: bool,
-    pub discipline: Option<String>,
+    pub department: Option<String>,
+    /// "0"–"4", as `PRIORITIES` spells them.
+    pub priority: Option<String>,
     pub status: Option<String>,
     /// A project id, not a name.
     pub project: Option<String>,
@@ -123,48 +153,45 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let projects = list(&home, "projects");
     let team = list(&home, "team");
 
-    // Every task in the workspace, in the order the server sorted them.
-    // Newest first. The server's order is its own business; the list should
-    // not reshuffle when a filter narrows it.
-    let mut rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    rows.sort_by(|a, b| {
+    // Every task in the workspace, newest first. The list should not reshuffle
+    // when a filter narrows it.
+    let mut all: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    all.sort_by(|a, b| {
         str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default())
     });
+    // Dropped work is not work: every number on this page counts the rest,
+    // so the subtitle, the donut and the table heading cannot disagree. The
+    // table still reaches dropped tasks through its status filter.
+    let live: Vec<&Value> = all.iter().copied().filter(|t| bucket(t) != "dropped").collect();
+    let dropped = all.len() - live.len();
 
-    // With the whole workspace here, a blocker's title resolves whenever the
-    // blocking task still exists.
-    let known: HashMap<&str, &str> = rows
-        .iter()
-        .filter_map(|t| Some((str_at(t, "id")?, str_at(t, "title")?)))
-        .collect();
-    let owners: HashMap<&str, &str> = team
-        .iter()
-        .filter_map(|p| Some((str_at(p, "personId")?, str_at(p, "email")?)))
-        .collect();
+    // Blockers resolve against the whole list, dropped included — a dropped
+    // blocker is a resolved one, and it still has a title.
+    let by_id: HashMap<&str, &Value> =
+        all.iter().filter_map(|t| Some((str_at(t, "id")?, *t))).collect();
 
-    // The subtitle counts the same list the donut and the table count, so the
-    // three numbers cannot drift apart. The projects rollup carries its own
-    // `total`, but it is a second measurement of the same thing and only the
-    // list can be clicked into.
-    shell::page_title(
-        ui,
-        "Overview",
-        &format!(
-            "{} across {}",
-            plural(rows.len(), "task"),
-            plural(projects.len(), "project")
-        ),
-        |_| {},
-    );
-
+    let mut subtitle =
+        format!("{} across {}", plural(live.len(), "task"), plural(projects.len(), "project"));
+    if dropped > 0 {
+        subtitle += &format!(" · {dropped} dropped, not counted");
+    }
+    shell::page_title(ui, "Overview", &subtitle, |_| {});
 
     if let Some(err) = &error {
         w::error(ui, &format!("{err} Use Refresh in the sidebar to try again."));
         return;
     }
-    if loading && rows.is_empty() {
+    if loading && all.is_empty() {
         w::loading(ui, "Loading your dashboard");
         return;
+    }
+
+    // ---- what a lead opens this page for: the list of things going wrong
+    let alerts = attention(&projects, &live, &by_id);
+    let mut go: Option<Target> = None;
+    if !alerts.is_empty() {
+        attention_list(ui, &alerts, &mut go);
+        ui.add_space(space::XL);
     }
 
     // ---- the four figures, all the same height
@@ -172,39 +199,184 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         ui,
         egui::Id::new(VIZ_H),
         &mut [
-            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &rows),
-            &mut |ui: &mut egui::Ui, h| discipline_card(ui, h, &projects),
-            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &rows),
+            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &live),
+            &mut |ui: &mut egui::Ui, h| department_card(ui, h, &projects),
+            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &live),
             &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
         ],
     );
-    ui.add_space(space::XL);
 
     // The count is drawn from last frame's filter state; a click repaints, so
     // the lag is never seen.
-    let shown: Vec<&Value> = rows
-        .iter()
-        .copied()
-        .filter(|t| keep(t, &state, &my_person_id))
-        .collect();
-    filter_bar(ui, &mut state, &rows, &projects, shown.len());
+    let shown: Vec<&Value> =
+        all.iter().copied().filter(|t| keep(t, &state, &my_person_id)).collect();
+    let filtered = state != State::default();
+    shell::section_count_with(ui, "Tasks", shown.len(), |ui| {
+        if filtered {
+            w::caption(ui, &format!("filtered from {}", live.len()));
+        }
+    });
+    filter_bar(ui, &mut state, &live, &projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
-    let mut open_task: Option<String> = None;
-
     if shown.is_empty() {
-        w::empty(
-            ui,
-            "Nothing matches those filters.",
-            "Clear one of them to see more.",
-        );
-    } else {
-        table(ui, &shown, &known, &owners, &mut open_task);
+        w::empty(ui, "Nothing matches those filters.", "Clear one of them to see more.");
+    } else if let Some(i) =
+        table::show(ui, TABLE, &COLS, shown.len(), |row, i| task_row(row, shown[i], &by_id))
+    {
+        go = str_at(shown[i], "id").map(|id| Target::Task(id.to_owned()));
     }
     ui.add_space(space::XXL);
 
-    if let Some(id) = open_task {
-        app.task = Some(id);
+    match go {
+        Some(Target::Task(id)) => app.task = Some(id),
+        Some(Target::Project(id)) => {
+            app.tab = Tab::Projects;
+            app.project = Some(id);
+        }
+        None => {}
+    }
+}
+
+// ----------------------------------------------------------- needs attention
+
+#[derive(Clone)]
+enum Target {
+    Project(String),
+    Task(String),
+}
+
+/// One row of the attention list. `rank` is the kind of trouble, most severe
+/// first; `weight` orders rows of the same kind, larger first.
+struct Alert {
+    rank: u8,
+    weight: i64,
+    tone: c::Tone,
+    signal: &'static str,
+    subject: String,
+    reason: String,
+    target: Target,
+}
+
+/// Everything worth a lead's attention, most severe first, capped.
+///
+/// Five kinds, in order: a project past its date, a task waiting on another,
+/// a project that will miss its date at this pace, work nobody has touched,
+/// and urgent work nobody holds. Past-due outranks blocked because a date is
+/// a promise to someone outside the team; a blocked task is still internal.
+fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>) -> Vec<Alert> {
+    let today = Local::now().date_naive();
+    let mut out = Vec::new();
+
+    for p in projects {
+        let status = str_at(p, "status").unwrap_or_default();
+        let Some(target) = str_at(p, "targetDate").and_then(|d| d.parse::<NaiveDate>().ok())
+        else {
+            continue;
+        };
+        let (done, total) = (num(p, "done"), num(p, "total"));
+        let progress = format!("{done} of {total} done");
+        let days = (target - today).num_days();
+        let subject = str_at(p, "name").unwrap_or_default().to_owned();
+        let id = str_at(p, "id").unwrap_or_default().to_owned();
+
+        if days < 0 && (status == "active" || status == "paused") {
+            out.push(Alert {
+                rank: 0,
+                weight: -days,
+                tone: c::Tone::Blocked,
+                signal: "Overdue",
+                subject,
+                reason: format!("{} past target · {progress}", plural(-days as usize, "day")),
+                target: Target::Project(id),
+            });
+        } else if status == "active" && days <= AT_RISK_DAYS && done * 2 < total {
+            let due = match days {
+                0 => "due today".to_owned(),
+                d => format!("due in {}", plural(d as usize, "day")),
+            };
+            out.push(Alert {
+                rank: 2,
+                weight: -days,
+                tone: c::Tone::Running,
+                signal: "At risk",
+                subject,
+                reason: format!("{due} · {progress}"),
+                target: Target::Project(id),
+            });
+        }
+    }
+
+    for t in live {
+        if finished(t) {
+            continue;
+        }
+        let id = str_at(t, "id").unwrap_or_default().to_owned();
+        let subject = str_at(t, "title").unwrap_or_default().to_owned();
+        let priority = num(t, "priority");
+
+        if outstanding(t) > 0 {
+            out.push(Alert {
+                rank: 1,
+                weight: -priority,
+                tone: c::Tone::Blocked,
+                signal: "Blocked",
+                subject,
+                reason: format!("waiting on {}", blocker(t, by_id)),
+                target: Target::Task(id),
+            });
+            continue;
+        }
+
+        let idle = days_since(str_at(t, "updatedAt").unwrap_or_default());
+        if str_at(t, "status") == Some("in_progress") && idle > STALLED_DAYS {
+            let who = str_at(t, "assigneeName").map(first_name).unwrap_or("nobody");
+            out.push(Alert {
+                rank: 3,
+                weight: idle,
+                tone: c::Tone::Running,
+                signal: "Stalled",
+                subject,
+                reason: format!("no update in {} · {who}", plural(idle as usize, "day")),
+                target: Target::Task(id),
+            });
+        } else if priority <= 1 && str_at(t, "assigneeName").is_none() {
+            out.push(Alert {
+                rank: 4,
+                weight: -priority,
+                tone: c::Tone::Quiet,
+                signal: "Unassigned",
+                subject,
+                reason: format!("P{priority} · nobody holds it"),
+                target: Target::Task(id),
+            });
+        }
+    }
+
+    out.sort_by_key(|a| (a.rank, -a.weight));
+    out
+}
+
+/// The attention list, as a table: one surface, row rules, hover and keyboard
+/// reach for free. A card per alert was the other option, and six cards is
+/// the column-of-cards this page stopped being.
+fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) {
+    let shown = &alerts[..alerts.len().min(ATTENTION_MAX)];
+    shell::section_count_with(ui, "Needs attention", alerts.len(), |ui| {
+        if alerts.len() > shown.len() {
+            w::caption(ui, &format!("the {} most severe", shown.len()));
+        }
+    });
+    let clicked = table::show(ui, ATTENTION, &ATTENTION_COLS, shown.len(), |row, i| {
+        let a = &shown[i];
+        row.at(0, |ui| {
+            c::chip(ui, a.signal, a.tone, false);
+        });
+        row.strong(1, &a.subject, colour::TEXT);
+        row.muted(2, &a.reason);
+    });
+    if let Some(i) = clicked {
+        *go = Some(shown[i].target.clone());
     }
 }
 
@@ -230,7 +402,7 @@ fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
             .map(|(status, label)| viz::Slice {
                 label,
                 count: count(status),
-                colour: donut_tint(status),
+                colour: status_colour(status),
             })
             .collect();
         viz::donut(ui, &slices, &format!("{pct}%"), "DONE");
@@ -242,9 +414,9 @@ fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
 const LABELS: [&str; 6] =
     ["Shipped", "Completed", "In progress", "Handoff", "Blocked", "Open"];
 
-/// Progress per discipline, from the server's per-project rollup — the one
+/// Progress per department, from the server's per-project rollup — the one
 /// number on this page that covers every task, not just the ones on screen.
-fn discipline_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32 {
+fn department_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32 {
     // Sum the rollups across projects, keeping first-seen order so the list
     // does not reshuffle between refreshes.
     let mut order: Vec<String> = Vec::new();
@@ -265,16 +437,17 @@ fn discipline_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
         }
     }
 
-    // Whatever the disciplines do not account for is unlabelled work. It is
-    // real, so it gets a row rather than quietly vanishing from the total.
+    // Whatever the departments do not account for is unassigned work — a task
+    // with no assignee has no department yet. It is real, so it gets a row
+    // rather than quietly vanishing from the total.
     let labelled: i64 = order.iter().filter_map(|d| tally.get(d)).map(|(_, t)| t).sum();
     let labelled_done: i64 = order.iter().filter_map(|d| tally.get(d)).map(|(d, _)| d).sum();
     if all_total > labelled {
-        order.push("none".to_owned());
-        tally.insert("none".to_owned(), (all_done - labelled_done, all_total - labelled));
+        order.push("Unassigned".to_owned());
+        tally.insert("Unassigned".to_owned(), (all_done - labelled_done, all_total - labelled));
     }
 
-    viz::card(ui, "By discipline", "done / total", min_body, |ui| {
+    viz::card(ui, "By department", "done / total", min_body, |ui| {
         for name in order.iter().take(viz::MAX_BARS) {
             let (done, total) = tally.get(name).copied().unwrap_or((0, 0));
             let fill = if total == 0 { 0.0 } else { done as f32 / total as f32 };
@@ -342,43 +515,66 @@ fn initial(day: chrono::Weekday) -> &'static str {
     ["M", "T", "W", "T", "F", "S", "S"][day.num_days_from_monday() as usize]
 }
 
-/// Who is carrying what. These are real counts from the server's grouped
-/// query, including `blocking` — the number that says who to go and unblock.
+/// Who is carrying what. The bar is `open` — work the person can act on
+/// now. What is theirs but out of their hands (`review`) and what they are
+/// holding up for others (`blocking`) ride underneath in words, because a
+/// third bar colour would need a legend and nobody reads a legend.
 fn team_card(ui: &mut egui::Ui, min_body: f32, team: &[&Value]) -> f32 {
     let peak = team.iter().map(|p| num(p, "open")).max().unwrap_or(0);
 
-    viz::card(ui, "Team load", "open", min_body, |ui| {
-        for p in team.iter().take(viz::MAX_BARS) {
-            let open = num(p, "open");
-            let blocking = num(p, "blocking");
-            let fill = if peak == 0 { 0.0 } else { open as f32 / peak as f32 };
-            viz::bar_row(
-                ui,
-                first_name(str_at(p, "name").unwrap_or_default()),
-                fill,
-                if blocking > 0 { colour::DANGER } else { colour::ACCENT },
-                &open.to_string(),
-                tokens::DISCIPLINE_W,
+    viz::card(ui, "Team load", "open tasks", min_body, |ui| {
+        // `ui.columns` hands each card a justified layout, and a justified
+        // label that wraps spreads its letters across the line. Nothing here
+        // wants justifying.
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            for p in team.iter().take(viz::MAX_BARS) {
+                let open = num(p, "open");
+                let fill = if peak == 0 { 0.0 } else { open as f32 / peak as f32 };
+                viz::bar_row(
+                    ui,
+                    first_name(str_at(p, "name").unwrap_or_default()),
+                    fill,
+                    colour::ACCENT,
+                    &open.to_string(),
+                    tokens::DISCIPLINE_W,
+                );
+                load_note(ui, num(p, "blocking"), num(p, "review"));
+            }
+            overflow(ui, team.len());
+        });
+    })
+}
+
+/// "blocks 2 tasks · 1 in review" under a person's bar, lined up with the bar
+/// rather than the name. Silent when both are zero. Blocking is in the danger
+/// ink: it is the one number here that says who to go and talk to.
+fn load_note(ui: &mut egui::Ui, blocking: i64, review: i64) {
+    if blocking == 0 && review == 0 {
+        return;
+    }
+    // Tucked up under its own bar, so it reads as that person's and not the
+    // next one's. `interact_size` would otherwise make this a control-height
+    // row and push the card taller than every figure beside it.
+    let indent = tokens::DISCIPLINE_W + ui.spacing().item_spacing.x;
+    ui.add_space(-space::SM);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = 0.0;
+        ui.spacing_mut().item_spacing.x = space::XS;
+        ui.add_space(indent - space::XS);
+        if blocking > 0 {
+            ui.label(
+                RichText::new(format!("blocks {}", plural(blocking as usize, "task")))
+                    .size(text::CAPTION)
+                    .color(colour::DANGER),
             );
         }
-
-        overflow(ui, team.len());
-
-        let note: Vec<String> = team
-            .iter()
-            .filter(|p| num(p, "blocking") > 0)
-            .map(|p| {
-                format!(
-                    "{} is blocking {}",
-                    first_name(str_at(p, "name").unwrap_or_default()),
-                    plural(num(p, "blocking") as usize, "task")
-                )
-            })
-            .collect();
-        if !note.is_empty() {
-            w::caption(ui, &note.join(", "));
+        if blocking > 0 && review > 0 {
+            w::caption(ui, "·");
         }
-    })
+        if review > 0 {
+            w::caption(ui, &format!("{review} in review"));
+        }
+    });
 }
 
 /// "+N more" under a capped bar list. Silent when nothing was cut, so the
@@ -391,38 +587,33 @@ fn overflow(ui: &mut egui::Ui, total: usize) {
 
 // ---------------------------------------------------------------- filter bar
 
-fn filter_bar(
-    ui: &mut egui::Ui,
-    state: &mut State,
-    rows: &[&Value],
-    projects: &[&Value],
-    shown: usize,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        viz::search(ui, "Search tasks, projects, phases…", &mut state.query);
+fn filter_bar(ui: &mut egui::Ui, state: &mut State, rows: &[&Value], projects: &[&Value]) {
+    viz::toolbar(ui, |ui| {
+        viz::search(ui, "Search tasks, projects, people…", &mut state.query);
 
         if viz::filter(ui, "Mine", state.mine, false).clicked() {
             state.mine = !state.mine;
         }
 
-        // Only disciplines that actually appear: a menu of empty filters is a
+        // Only departments that actually appear: a menu of empty filters is a
         // menu of ways to get an empty table.
-        let mut disciplines: Vec<&str> = rows
+        let mut departments: Vec<&str> = rows
             .iter()
             .filter_map(|t| str_at(t, "discipline"))
             .filter(|d| !d.is_empty())
             .collect();
-        disciplines.sort_unstable();
-        disciplines.dedup();
+        departments.sort_unstable();
+        departments.dedup();
         let options: Vec<(String, String)> =
-            disciplines.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
-        viz::select(ui, "All disciplines", &options, &mut state.discipline);
+            departments.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
+        viz::select(ui, "All departments", &options, &mut state.department);
 
-        let options: Vec<(String, String)> = STATUSES
-            .iter()
-            .map(|s| ((*s).to_owned(), sentence(status_label(s))))
-            .collect();
+        let options: Vec<(String, String)> =
+            PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
+        viz::select(ui, "Any priority", &options, &mut state.priority);
+
+        let options: Vec<(String, String)> =
+            STATUSES.iter().map(|s| ((*s).to_owned(), status_label(s).to_owned())).collect();
         viz::select(ui, "Any status", &options, &mut state.status);
 
         let names: Vec<(String, String)> = projects
@@ -434,37 +625,27 @@ fn filter_bar(
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
         }
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // The count is the number the bar exists to move, so it is the one
-            // thing on this strip in full-strength ink.
-            ui.label(
-                RichText::new(format!("of {}", rows.len()))
-                    .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
-            );
-            ui.add_space(space::XXS);
-            ui.label(
-                RichText::new(shown.to_string())
-                    .size(text::SMALL)
-                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
-            );
-        });
     });
-    ui.add_space(space::MD);
 }
 
 fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
+    // Dropped tasks are out of every count, so they are out of the table too —
+    // unless dropped is exactly what was asked for.
+    if bucket(t) == "dropped" && state.status.as_deref() != Some("dropped") {
+        return false;
+    }
     if state.mine
-        && !(str_at(t, "assigneeKind") == Some("person")
-            && str_at(t, "assigneePersonId") == Some(my_person_id)
-            && !my_person_id.is_empty())
+        && (my_person_id.is_empty() || str_at(t, "assigneePersonId") != Some(my_person_id))
     {
         return false;
     }
-    if let Some(d) = &state.discipline {
+    if let Some(d) = &state.department {
         if str_at(t, "discipline") != Some(d.as_str()) {
+            return false;
+        }
+    }
+    if let Some(p) = &state.priority {
+        if num(t, "priority").to_string() != *p {
             return false;
         }
     }
@@ -478,102 +659,95 @@ fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
             return false;
         }
     }
-    // Title, project and phase: the three things you would think to type.
+    // Title, project and owner: the three things you would think to type.
     // Not the status — that is what the menu beside the box is for.
     viz::matches(
         &state.query,
         &[
             str_at(t, "title").unwrap_or_default(),
             str_at(t, "projectName").unwrap_or_default(),
-            str_at(t, "phaseName").unwrap_or_default(),
+            str_at(t, "assigneeName").unwrap_or_default(),
         ],
     )
 }
 
 // --------------------------------------------------------------------- table
 
-#[allow(clippy::too_many_arguments)]
-fn table(
-    ui: &mut egui::Ui,
-    rows: &[&Value],
-    known: &HashMap<&str, &str>,
-    owners: &HashMap<&str, &str>,
-    open_task: &mut Option<String>,
-) {
-    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        task_row(row, rows[i], known, owners);
-    });
-    if let Some(i) = clicked {
-        *open_task = str_at(rows[i], "id").map(str::to_owned);
-    }
-}
-
-fn task_row(
-    row: &mut table::Cells<'_, '_, '_>,
-    t: &Value,
-    known: &HashMap<&str, &str>,
-    owners: &HashMap<&str, &str>,
-) {
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, by_id: &HashMap<&str, &Value>) {
     let status = bucket(t);
-    let discipline = str_at(t, "discipline").unwrap_or_default();
+    let department = str_at(t, "discipline").unwrap_or_default();
 
     row.at(0, |ui| w::dot(ui, status_colour(status)));
 
     row.at(1, |ui| {
         table::strong_label(ui, str_at(t, "title").unwrap_or_default(), colour::TEXT);
         // The blocker rides behind the title rather than in its own column:
-        // it is a footnote on the task, not a property every row has.
-        if status == "blocked" {
+        // it is a footnote on the task, not a property every row has. Keyed
+        // on the counts, not the status — a blocker can resolve while the
+        // status still says blocked.
+        if outstanding(t) > 0 {
             ui.add_space(space::XS);
-            w::caption(ui, &format!("\u{21b3} waiting on {}", blocker(t, known)));
+            w::caption(ui, &format!("waiting on {}", blocker(t, by_id)));
         }
     });
 
     row.at(2, |ui| {
-        if !discipline.is_empty() {
-            c::chip(ui, discipline, c::discipline_tone(discipline), false);
-        }
+        let p = num(t, "priority").clamp(0, 4);
+        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
     });
     row.at(3, |ui| {
-        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), status != "blocked");
-    });
-    row.muted(4, str_at(t, "projectName").unwrap_or_default());
-    row.muted(5, str_at(t, "phaseName").unwrap_or_default());
-
-    row.at(6, |ui| match owner(t, owners) {
-        Some(seed) => {
-            avatar::small(ui, &seed, size::AVATAR_SM);
+        if !department.is_empty() {
+            c::chip(ui, department, c::discipline_tone(department), false);
         }
-        None => w::caption(ui, "\u{2014}"),
+    });
+    row.at(4, |ui| {
+        c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+    });
+    row.muted(5, str_at(t, "projectName").unwrap_or_default());
+
+    row.at(6, |ui| match str_at(t, "assigneeName") {
+        Some(name) => {
+            avatar::small(ui, str_at(t, "assigneeEmail").unwrap_or(name), size::AVATAR_SM);
+            ui.add_space(space::XS);
+            ui.label(RichText::new(first_name(name)).size(text::SMALL).color(colour::TEXT_2));
+        }
+        None => {
+            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+        }
     });
 
     row.muted(7, &age(str_at(t, "updatedAt").unwrap_or_default()));
 }
 
-/// The avatar seed for whoever holds the task: a teammate's email, or the
-/// agent's own name. `None` means nobody has it.
-fn owner(t: &Value, owners: &HashMap<&str, &str>) -> Option<String> {
-    match str_at(t, "assigneeKind") {
-        Some("person") => owners
-            .get(str_at(t, "assigneePersonId")?)
-            .map(|email| (*email).to_owned()),
-        Some("agent") => Some(str_at(t, "claimedBy").unwrap_or("agent").to_owned()),
-        _ => None,
+/// How loud a priority is allowed to be — the task tables' scale, so P1 is
+/// the same amber on every page. P0 and P1 are the only ones worth colour.
+fn priority_tone(priority: i64) -> c::Tone {
+    match priority {
+        0 => c::Tone::Blocked,
+        1 => c::Tone::Running,
+        2 => c::Tone::Neutral,
+        _ => c::Tone::Quiet,
     }
 }
 
-/// The blocker's title when it is in this payload, otherwise an honest count.
-fn blocker(t: &Value, known: &HashMap<&str, &str>) -> String {
+/// The first unresolved blocker, as "Cart totals API (Anmol)". Falls back to
+/// an honest count when the blocker is not in this payload.
+fn blocker(t: &Value, by_id: &HashMap<&str, &Value>) -> String {
     let named = t
         .get("blockedBy")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .find_map(|id| known.get(id).copied());
-    match named {
-        Some(title) => title.to_owned(),
-        None => plural(outstanding(t) as usize, "other task"),
+        .filter_map(|id| by_id.get(id).copied())
+        .find(|b| !BLOCKER_RESOLVED.contains(&str_at(b, "status").unwrap_or_default()));
+    let Some(b) = named else {
+        return plural(outstanding(t) as usize, "other task");
+    };
+    let title = str_at(b, "title").unwrap_or_default();
+    match str_at(b, "assigneeName") {
+        Some(name) => format!("{title} ({})", first_name(name)),
+        None => title.to_owned(),
     }
 }
 
@@ -583,6 +757,10 @@ fn blocker(t: &Value, known: &HashMap<&str, &str>) -> String {
 /// a task marked `in_progress` that is waiting on someone else is not in
 /// progress, and filing it as though it were hides the thing to go and unblock.
 fn bucket(t: &Value) -> &'static str {
+    // Dropped beats blocked: nobody is waiting to unblock abandoned work.
+    if str_at(t, "status") == Some("dropped") {
+        return "dropped";
+    }
     if outstanding(t) > 0 {
         return "blocked";
     }
@@ -602,37 +780,14 @@ fn finished(t: &Value) -> bool {
     t.get("doneAt").is_some_and(|v| !v.is_null())
 }
 
-/// The donut's hue per status. Deliberately not `status_colour`: a ring needs
-/// its unfinished remainder to read as the track, so "open" is a line colour.
-/// The rest match the chips, so a slice and a row agree on what green means.
-fn donut_tint(status: &str) -> Color32 {
-    match status {
-        "shipped" => colour::OK,
-        "completed" => colour::INFO,
-        "in_progress" => colour::ACCENT,
-        "handoff" => colour::AGENT,
-        "blocked" => colour::DANGER,
-        _ => colour::LINE_STRONG,
-    }
-}
 
-/// A discipline's bar colour, matching the chip it wears everywhere else.
+/// A department's bar colour, matching the chip it wears everywhere else.
 fn discipline_tint(discipline: &str) -> Color32 {
     match c::discipline_tone(discipline) {
         c::Tone::Agent => colour::AGENT,
         c::Tone::Info => colour::INFO,
         c::Tone::Ok => colour::OK,
         _ => colour::LINE_STRONG,
-    }
-}
-
-/// "In progress" from "in progress". The vocabulary still comes from
-/// `status_label`; this only decides where the sentence starts.
-fn sentence(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }
 
@@ -660,6 +815,14 @@ fn age(raw: &str) -> String {
         s if s < 86_400 => format!("{}h", s / 3600),
         s => format!("{}d", s / 86_400),
     }
+}
+
+/// Whole days since an RFC 3339 stamp; zero when it does not parse, so a
+/// missing stamp never reads as stale.
+fn days_since(raw: &str) -> i64 {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|then| (Utc::now() - then.with_timezone(&Utc)).num_days().max(0))
+        .unwrap_or(0)
 }
 
 fn me_str(app: &App, key: &str) -> String {

@@ -10,12 +10,11 @@
 //! composes with the others.
 
 use chrono::{DateTime, Utc};
-use egui::{Align, Layout};
 use serde_json::Value;
 
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, shell, space, status_label, text, theme, viz, widgets as w,
+    cards as c, colour, shell, space, status_label, viz, widgets as w,
 };
 use crate::desktop::App;
 
@@ -121,8 +120,19 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let shown: Vec<&Value> = rows.iter().copied().filter(|t| keep(t, &state)).collect();
-    filter_bar(ui, &mut state, &projects, shown.len(), rows.len());
+    filter_bar(ui, &mut state, &projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
+
+    // The count heads the table rather than ending the toolbar, where it ran
+    // into the last filter once the bar wrapped. A plain caption, not a
+    // section heading: the page title already names what this is.
+    let count = if shown.len() < rows.len() {
+        format!("{} of {} tasks", shown.len(), rows.len())
+    } else {
+        plural(rows.len(), "task")
+    };
+    w::caption(ui, &count);
+    ui.add_space(space::SM);
 
     let mut open_task: Option<String> = None;
     if shown.is_empty() {
@@ -142,22 +152,14 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-/// Search, then the three menus, then how much of the list is left.
-fn filter_bar(
-    ui: &mut egui::Ui,
-    state: &mut State,
-    projects: &[&str],
-    shown: usize,
-    total: usize,
-) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
+/// Search, then the three menus. The count is not here: it rides on the
+/// table's heading, where a wrapped toolbar cannot run into it.
+fn filter_bar(ui: &mut egui::Ui, state: &mut State, projects: &[&str]) {
+    viz::toolbar(ui, |ui| {
         viz::search(ui, "Search tasks, descriptions, projects…", &mut state.query);
 
-        let statuses: Vec<(String, String)> = STATUSES
-            .iter()
-            .map(|s| ((*s).to_owned(), sentence(status_label(s))))
-            .collect();
+        let statuses: Vec<(String, String)> =
+            STATUSES.iter().map(|s| ((*s).to_owned(), status_label(s).to_owned())).collect();
         viz::select(ui, "Any status", &statuses, &mut state.status);
 
         let names: Vec<(String, String)> =
@@ -171,21 +173,7 @@ fn filter_bar(
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
         }
-
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(format!("of {total}")).size(text::SMALL).color(colour::TEXT_MUTED),
-            );
-            ui.add_space(space::XXS);
-            ui.label(
-                egui::RichText::new(shown.to_string())
-                    .size(text::SMALL)
-                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
-            );
-        });
     });
-    ui.add_space(space::MD);
 }
 
 /// Every filter is an AND, and an unset one passes everything.
@@ -232,7 +220,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         // the status is still true, the blocker is why it is not moving.
         if blocked(t) {
             ui.add_space(space::XS);
-            c::chip(ui, "blocked", c::Tone::Blocked, false);
+            c::chip(ui, "Blocked", c::Tone::Blocked, false);
         }
     });
 
@@ -247,7 +235,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     });
 
     row.at(3, |ui| {
-        c::chip(ui, &sentence(status_label(status)), c::status_tone(status), true);
+        c::chip(ui, status_label(status), c::status_tone(status), true);
     });
 
     row.muted(4, project_of(t));
@@ -306,16 +294,6 @@ fn plural(n: usize, word: &str) -> String {
         format!("1 {word}")
     } else {
         format!("{n} {word}s")
-    }
-}
-
-/// "In progress" from "in progress". The vocabulary still comes from
-/// `status_label`; this only decides where the sentence starts.
-fn sentence(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }
 

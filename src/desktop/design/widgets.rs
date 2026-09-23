@@ -374,7 +374,9 @@ fn button_with(
 
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT);
     let icon_w = if icon.is_some() { size::ICON_COL } else { 0.0 };
-    let (px, _) = if small { (space::XS, 0.0) } else { pad::BUTTON };
+    // A link has no box, so it has no padding to sit inside: any inset here
+    // pushes its text off the column every neighbouring value starts on.
+    let (px, _) = if small { (0.0, 0.0) } else { pad::BUTTON };
     let height = if small { size::CONTROL - space::SM } else { size::CONTROL };
     let width = galley.size().x + icon_w + px * 2.0;
 
