@@ -26,6 +26,8 @@ pub struct Job {
     pub path: String,
     pub body: Value,
     seq: u64,
+    /// The tag of the copy already held, sent as `If-None-Match`.
+    etag: Option<String>,
 }
 
 pub struct Reply {
@@ -34,6 +36,7 @@ pub struct Reply {
     /// The HTTP status, 0 when there was no response at all.
     status: u16,
     seq: u64,
+    etag: Option<String>,
 }
 
 pub struct Net {
@@ -41,8 +44,9 @@ pub struct Net {
     pub base_url: String,
     jobs: UnboundedSender<Job>,
     replies: Receiver<Reply>,
-    /// Latest result per key, drained from the channel each frame.
-    pub results: HashMap<String, Result<Value, String>>,
+    /// Latest result per key, drained from the channel each frame. Shared,
+    /// so a view can hold a payload across frames without copying it.
+    pub results: HashMap<String, Result<Arc<Value>, String>>,
     /// Keys with a request currently in flight, so a view can show a spinner
     /// and avoid firing the same request every frame.
     pub inflight: HashMap<String, bool>,
@@ -62,6 +66,12 @@ pub struct Net {
     refreshing: HashSet<String>,
     focused: Option<bool>,
     refreshed_at: Instant,
+    /// The server's `ETag` for each key's current payload, so a refetch of
+    /// something unchanged costs a `304` and no parse.
+    etags: HashMap<String, String>,
+    /// Which reply each key's payload came from: a view that derives rows
+    /// from a payload redoes the work only when this moves. A `304` leaves it.
+    gens: HashMap<String, u64>,
 }
 
 impl Net {
@@ -81,6 +91,7 @@ impl Net {
                         result: Err(format!("could not start the network runtime: {e}")),
                         status: 0,
                         seq: 0,
+                        etag: None,
                     });
                     return;
                 }
@@ -94,8 +105,9 @@ impl Net {
                 while let Some(job) = job_rx.recv().await {
                     let (client, reply_tx, repaint) = (client.clone(), reply_tx.clone(), repaint.clone());
                     tokio::spawn(async move {
-                        let (status, result) = client.request(job.method, &job.path, job.body).await;
-                        let _ = reply_tx.send(Reply { key: job.key, result, status, seq: job.seq });
+                        let (status, result, etag) =
+                            client.request_cached(job.method, &job.path, job.body, job.etag.as_deref()).await;
+                        let _ = reply_tx.send(Reply { key: job.key, result, status, seq: job.seq, etag });
                         // Wake the GUI thread; otherwise the reply sits until
                         // the next unrelated repaint.
                         repaint.request_repaint();
@@ -118,12 +130,17 @@ impl Net {
             refreshing: HashSet::new(),
             focused: None,
             refreshed_at: Instant::now(),
+            etags: HashMap::new(),
+            gens: HashMap::new(),
         }
     }
 
     pub fn get(&mut self, key: &str, path: &str) {
         self.paths.insert(key.to_string(), path.to_string());
-        self.send(key, reqwest::Method::GET, path, Value::Null);
+        // Only a copy still on hand can be revalidated; without one a `304`
+        // would leave nothing to show.
+        let etag = self.data(key).and(self.etags.get(key)).cloned();
+        self.dispatch(key, reqwest::Method::GET, path, Value::Null, etag);
     }
 
     pub fn post(&mut self, key: &str, path: &str, body: Value) {
@@ -135,6 +152,10 @@ impl Net {
     }
 
     pub fn send(&mut self, key: &str, method: reqwest::Method, path: &str, body: Value) {
+        self.dispatch(key, method, path, body, None);
+    }
+
+    fn dispatch(&mut self, key: &str, method: reqwest::Method, path: &str, body: Value, etag: Option<String>) {
         self.seq += 1;
         self.latest.insert(key.to_string(), self.seq);
         self.refreshing.remove(key);
@@ -145,6 +166,7 @@ impl Net {
             path: path.to_string(),
             body,
             seq: self.seq,
+            etag,
         });
     }
 
@@ -173,11 +195,27 @@ impl Net {
             }
             self.refreshing.remove(&reply.key);
             self.inflight.insert(reply.key.clone(), false);
-            self.results.insert(reply.key, reply.result);
+            if reply.status == 304 {
+                // Unchanged: keep what is held. If it was invalidated while the
+                // request was out there is nothing to keep, so ask in full.
+                if self.data(&reply.key).is_none() {
+                    self.etags.remove(&reply.key);
+                    if let Some(path) = self.paths.get(&reply.key).cloned() {
+                        self.get(&reply.key, &path);
+                    }
+                }
+                continue;
+            }
+            match reply.etag {
+                Some(tag) => self.etags.insert(reply.key.clone(), tag),
+                None => self.etags.remove(&reply.key),
+            };
+            self.gens.insert(reply.key.clone(), reply.seq);
+            self.results.insert(reply.key, reply.result.map(Arc::new));
         }
     }
 
-    pub fn peek(&self, key: &str) -> Option<&Result<Value, String>> {
+    pub fn peek(&self, key: &str) -> Option<&Result<Arc<Value>, String>> {
         self.results.get(key)
     }
 
@@ -187,6 +225,24 @@ impl Net {
             Some(Ok(v)) => Some(v),
             _ => None,
         }
+    }
+
+    /// The payload itself, to hold past this borrow of `net` without copying.
+    pub fn shared(&self, key: &str) -> Option<Arc<Value>> {
+        match self.results.get(key) {
+            Some(Ok(v)) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Moves each time a new payload lands for `key`, and not on a `304`; 0
+    /// while there is none. What a view derives from `key` is good for as long
+    /// as this stays put.
+    pub fn generation(&self, key: &str) -> u64 {
+        if self.data(key).is_none() {
+            return 0;
+        }
+        self.gens.get(key).copied().unwrap_or(0)
     }
 
     pub fn error(&self, key: &str) -> Option<&str> {
@@ -250,4 +306,23 @@ impl Net {
         }
         ctx.request_repaint_after(REFRESH.saturating_sub(self.refreshed_at.elapsed()));
     }
+}
+
+/// Work a view derives from its payloads, done once rather than every frame:
+/// `f` runs again only when `stamp` changes — the generations it read, and
+/// whatever else it depends on. Held in egui's temp store under `id`, beside
+/// the views' filters.
+pub fn memo<S, T>(ctx: &egui::Context, id: egui::Id, stamp: S, f: impl FnOnce() -> T) -> Arc<T>
+where
+    S: PartialEq + Clone + Send + Sync + 'static,
+    T: Send + Sync + 'static,
+{
+    if let Some((held, value)) = ctx.data(|d| d.get_temp::<(S, Arc<T>)>(id)) {
+        if held == stamp {
+            return value;
+        }
+    }
+    let value = Arc::new(f());
+    ctx.data_mut(|d| d.insert_temp(id, (stamp, value.clone())));
+    value
 }

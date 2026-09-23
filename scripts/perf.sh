@@ -26,6 +26,7 @@ P1=33333333-0000-0000-0000-000000000001
 T1=44444444-0000-0000-0000-000000000001
 ENDPOINTS=(
   /api/user/me
+  /api/user/counts
   /api/user/home
   /api/user/tasks
   /api/user/tasks/mine

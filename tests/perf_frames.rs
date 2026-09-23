@@ -163,8 +163,9 @@ fn measure(page: &(&str, Tab, Option<&str>, Option<&str>), url: &str, token: &st
     }
 }
 
-/// Where Home's frame goes: the per-frame work `views/home.rs` and
-/// `views/chrome.rs` do before drawing anything, timed on the real payloads.
+/// Where Home's frame goes: the work `views/home.rs` does before drawing
+/// anything, timed on the real payloads. Per frame it only takes the shared
+/// payloads; the sort and the index run once per new reply (`derive`).
 #[test]
 #[ignore = "needs a seeded server: FRAMES=1 scripts/perf.sh"]
 fn home_breakdown() {
@@ -190,22 +191,19 @@ fn home_breakdown() {
     };
     let n = tasks.as_array().map_or(0, Vec::len);
     eprintln!("\nhome per-frame work, median of 30, {n} tasks:");
-    time("net.data(TASKS).cloned()        home.rs:151", &mut || drop(std::hint::black_box(tasks.clone())));
-    time("net.data(HOME).cloned()         home.rs:150", &mut || drop(std::hint::black_box(home.clone())));
-    time("list(myTasks)+list(projects) cloned  chrome.rs:31", &mut || {
-        for k in ["myTasks", "projects"] {
-            drop(std::hint::black_box(home.get(k).and_then(Value::as_array).cloned()));
-        }
+    let (tasks_arc, home_arc) = (std::sync::Arc::new(tasks.clone()), std::sync::Arc::new(home.clone()));
+    time("net.shared(TASKS)+shared(HOME)  home.rs (per frame)", &mut || {
+        drop(std::hint::black_box((tasks_arc.clone(), home_arc.clone())));
     });
     fn str_at<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
         v.get(k).and_then(Value::as_str)
     }
-    time("sort all by createdAt           home.rs:159", &mut || {
+    time("sort all by createdAt           home.rs derive (once)", &mut || {
         let mut all: Vec<&Value> = tasks.as_array().unwrap().iter().collect();
         all.sort_by(|a, b| str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default()));
         std::hint::black_box(all);
     });
-    time("by_id HashMap                   home.rs:170", &mut || {
+    time("by_id HashMap                   home.rs derive (once)", &mut || {
         let m: std::collections::HashMap<&str, &Value> = tasks
             .as_array()
             .unwrap()

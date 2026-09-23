@@ -12,6 +12,10 @@ use crate::desktop::{views, App, Tab};
 /// Destinations, in sidebar order. The index is the routing contract.
 const DESTINATIONS: [Tab; 3] = [Tab::Home, Tab::MyTasks, Tab::Projects];
 
+/// The sidebar's badges. Not under `__`: the 30 s refresh keeps them current.
+/// Anything that changes a task or a project drops it alongside `home`.
+pub const COUNTS: &str = "sidebar:counts";
+
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // ⌘K from anywhere, before any view reads the keyboard this frame.
     if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
@@ -22,27 +26,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
-    // Fetched here, not only by Home: the counts ride on every tab. The key is
-    // Home's own, so on Home this is the same request, not a second one.
+    // The counts ride on every tab, so they are their own small fetch rather
+    // than a read of Home's payload, which every other tab would then wait on.
+    // Open means still yours to act on: not finished on either track, and not
+    // dropped — the server counts it that way.
     let net = app.net.as_mut().expect("chrome runs signed in");
-    net.get_once("home", "/api/user/home");
-    let home = net.data("home");
-    let list = |key: &str| {
-        home.and_then(|h| h.get(key)).and_then(Value::as_array).cloned().unwrap_or_default()
+    net.get_once(COUNTS, "/api/user/counts");
+    let count = |k: &str| {
+        net.data(COUNTS).and_then(|c| c.get(k)).and_then(Value::as_i64).unwrap_or(0)
     };
-    // Open means still yours to act on: not finished on either track, and
-    // not dropped. `doneAt` is the one finish line both tracks share.
-    let mine_open = list("myTasks")
-        .iter()
-        .filter(|t| {
-            t.get("doneAt").is_none_or(Value::is_null)
-                && t.get("status").and_then(Value::as_str) != Some("dropped")
-        })
-        .count();
-    let projects_active = list("projects")
-        .iter()
-        .filter(|p| p.get("status").and_then(Value::as_str) == Some("active"))
-        .count();
+    let mine_open = count("myOpen");
+    let projects_active = count("activeProjects");
 
     let me = net.data("__me");
     let field = |k: &str| {

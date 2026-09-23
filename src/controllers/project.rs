@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::json;
 use uuid::Uuid;
 
@@ -287,8 +289,19 @@ async fn insert_task(
     Ok(task)
 }
 
-pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
-    let mut projects: Vec<Project> = sqlx::query_as(
+/// A list row: the project plus the done/total the flow strip shows, so the
+/// Projects screen draws its progress bars from one request rather than one
+/// `/flow` per project.
+#[derive(Debug, serde::Serialize)]
+pub struct ProjectRow {
+    #[serde(flatten)]
+    pub project: Project,
+    pub done: i64,
+    pub total: i64,
+}
+
+pub async fn list(state: &AppState) -> AppResult<Vec<ProjectRow>> {
+    let projects: Vec<Project> = sqlx::query_as(
         "SELECT id, key, name, description, status, priority, start_date, target_date, created_at, updated_at\n         FROM project ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
@@ -296,12 +309,32 @@ pub async fn list(state: &AppState) -> AppResult<Vec<Project>> {
 
     // One query for every project's labels, then folded in — a join would
     // repeat the project row per label and make the caller de-duplicate.
-    let labelled = super::label::by_project(state).await?;
-    for p in &mut projects {
-        p.labels = labelled.iter().filter(|(id, _)| *id == p.id).map(|(_, l)| l.clone()).collect();
-    }
+    let mut labelled = super::label::by_project(state, None).await?;
 
-    Ok(projects)
+    // The same two counts `progress` makes, without its per-discipline split:
+    // the list only draws the overall bar. Kept as `progress`'s filters so a
+    // row and its project's `/flow` can never disagree.
+    let counts: HashMap<Uuid, (i64, i64)> = sqlx::query_as::<_, (Uuid, i64, i64)>(
+        "SELECT ph.project_id,
+                count(*) FILTER (WHERE t.done_at IS NOT NULL) AS done,
+                count(*) FILTER (WHERE t.status <> 'dropped') AS total
+           FROM phase ph JOIN task t ON t.phase_id = ph.id
+          GROUP BY ph.project_id",
+    )
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .map(|(id, done, total)| (id, (done, total)))
+    .collect();
+
+    Ok(projects
+        .into_iter()
+        .map(|mut project| {
+            project.labels = labelled.remove(&project.id).unwrap_or_default();
+            let (done, total) = counts.get(&project.id).copied().unwrap_or((0, 0));
+            ProjectRow { project, done, total }
+        })
+        .collect())
 }
 
 /// One project with its roster, for the detail screen.
@@ -314,12 +347,10 @@ pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
     .await?
     .ok_or_else(|| AppError::NotFound("project not found".into()))?;
 
-    project.labels = super::label::by_project(state)
+    project.labels = super::label::by_project(state, Some(id))
         .await?
-        .into_iter()
-        .filter(|(p, _)| *p == id)
-        .map(|(_, l)| l)
-        .collect();
+        .remove(&id)
+        .unwrap_or_default();
     Ok(project)
 }
 
@@ -366,7 +397,7 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     // Active phase and headcount come from one extra grouped query rather than
     // being folded into the discipline rollup: mixing them would need a second
     // level of DISTINCT and the join would double-count.
-    let extra: Vec<(Uuid, Option<String>, i64)> = sqlx::query_as(
+    let mut extra: HashMap<Uuid, (Option<String>, i64)> = sqlx::query_as::<_, (Uuid, Option<String>, i64)>(
         "SELECT pr.id,
                 min(ph.name) FILTER (WHERE ph.status = 'active') AS active_phase,
                 count(DISTINCT t.assignee_person_id)
@@ -379,7 +410,10 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
     )
     .bind(only)
     .fetch_all(&state.db)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|(id, phase, people)| (id, (phase, people)))
+    .collect();
 
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
@@ -403,20 +437,19 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
            LEFT JOIN person own ON own.id = t.assignee_person_id
           WHERE ($1::uuid IS NULL OR pr.id = $1)
           GROUP BY pr.id, pr.key, pr.name, pr.status, pr.priority, pr.target_date, own.department
-          ORDER BY pr.name, pr.id",
+          ORDER BY pr.name, pr.id, own.department",
     )
     .bind(only)
     .fetch_all(&state.db)
     .await?;
 
+    // Disciplines are in the ORDER BY so the same data is the same bytes:
+    // without it Postgres returns them in whatever order the hash aggregate
+    // left them, and a body that shuffles on every call can never be a 304.
     let mut out: Vec<ProjectProgress> = Vec::new();
     for (id, key, name, status, priority, target_date, discipline, total, done) in rows {
         if out.last().map(|p| p.id) != Some(id) {
-            let (active_phase, active_people) = extra
-                .iter()
-                .find(|(pid, _, _)| *pid == id)
-                .map(|(_, phase, people)| (phase.clone(), *people))
-                .unwrap_or((None, 0));
+            let (active_phase, active_people) = extra.remove(&id).unwrap_or((None, 0));
             out.push(ProjectProgress {
                 id, key, name, status, priority, target_date, done: 0, total: 0,
                 disciplines: Vec::new(), active_phase, active_people,

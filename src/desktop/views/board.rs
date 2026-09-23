@@ -32,7 +32,7 @@ use crate::desktop::design::{
     avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
     viz, widgets as w,
 };
-use crate::desktop::net::Net;
+use crate::desktop::net::{memo, Net};
 use crate::desktop::App;
 
 /// The usual order of the flow. Anything the server reports that is not in
@@ -268,6 +268,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     if net.data(ADD_KEY).is_some() {
         net.invalidate_prefix("board:");
         net.invalidate("home");
+        net.invalidate(super::chrome::COUNTS);
         net.invalidate_prefix("task:");
         net.invalidate_prefix("mytasks");
         app.board.adding = None;
@@ -283,10 +284,17 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     net.get_once(PEOPLE_KEY, "/api/user/people");
     net.get_once(LABELS_KEY, "/api/user/labels");
 
-    let detail = net.data(&keys.detail).cloned();
-    let flow = net.data(&keys.flow).cloned();
+    let detail = net.shared(&keys.detail);
+    let flow = net.shared(&keys.flow);
     let flow_error = net.error(&keys.flow).map(str::to_string);
-    let mut tasks = array(net.data(&keys.tasks));
+    // Sorted once per reply rather than copied and sorted every frame.
+    let tasks_generation = net.generation(&keys.tasks);
+    let reply = net.shared(&keys.tasks);
+    let tasks = memo(ui.ctx(), egui::Id::new(&keys.tasks), tasks_generation, || {
+        let mut tasks = array(reply.as_deref());
+        sort_tasks(&mut tasks);
+        tasks
+    });
     let tasks_loading = net.is_loading(&keys.tasks);
     let tasks_error = net.error(&keys.tasks).map(str::to_string);
     let add_error = net.error(ADD_KEY).map(str::to_string);
@@ -294,7 +302,8 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let patching = net.is_loading(&keys.patch);
     let patch_error = net.error(&keys.patch).map(str::to_string);
     let refreshing = net.is_loading(&keys.detail);
-    let artifacts = net.data(&keys.artifacts).and_then(Value::as_array).cloned();
+    let artifacts = net.shared(&keys.artifacts);
+    let artifacts = artifacts.as_deref().and_then(Value::as_array);
     let artifacts_error = net.error(&keys.artifacts).map(str::to_string);
     let attaching = net.is_loading(&keys.attach);
     let attach_error = net.error(&keys.attach).map(str::to_string);
@@ -305,8 +314,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut members: Vec<(String, String)> =
         array(net.data(PEOPLE_KEY)).iter().map(super::projects::person_option).collect();
     members.sort_by(|a, b| a.1.cmp(&b.1));
-
-    sort_tasks(&mut tasks);
 
     // The picked label set is only worth holding while the server has not yet
     // caught up with it.
@@ -323,7 +330,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     }
 
     let fallback = Value::Null;
-    let head = detail.as_ref().or(flow.as_ref()).unwrap_or(&fallback);
+    let head = detail.as_deref().or(flow.as_deref()).unwrap_or(&fallback);
     let (done, total) = flow
         .as_ref()
         .map(|f| (num_at(f, "done"), num_at(f, "total")))
@@ -373,7 +380,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             resources(
                 ui,
                 project_id,
-                artifacts.as_deref(),
+                artifacts.map(Vec::as_slice),
                 artifacts_error.as_deref(),
                 page,
                 can_write,
@@ -412,14 +419,13 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 ui.add_space(space::LG);
             }
 
-            let shown: Vec<Value> = tasks
+            let shown: Vec<&Value> = tasks
                 .iter()
                 .filter(|t| match page.tab {
                     0 => !is_finished(t),
                     1 => is_finished(t),
                     _ => true,
                 })
-                .cloned()
                 .collect();
             if let Some(err) = &tasks_error {
                 w::error(ui, err);
@@ -533,6 +539,7 @@ fn settle(net: &mut Net, keys: &Keys, page: &mut Page) {
                 // The list's rows and Home's projects carry these same fields.
                 net.invalidate(PROJECTS_KEY);
                 net.invalidate("home");
+                net.invalidate(super::chrome::COUNTS);
                 page.editing = None;
                 page.notice = Some(if str_at(&reply, "status") == "proposed" {
                     "Sent for approval \u{2014} it changes once someone signs off.".to_owned()
@@ -1219,12 +1226,12 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
 
 /// The project's tasks, on the shared table — so a task row is the same row
 /// the projects list draws, down to the alignment of its dates.
-fn table(ui: &mut egui::Ui, rows: &[Value], open: &mut Option<String>) {
+fn table(ui: &mut egui::Ui, rows: &[&Value], open: &mut Option<String>) {
     let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        task_row(row, &rows[i]);
+        task_row(row, rows[i]);
     });
     if let Some(i) = clicked {
-        *open = Some(str_at(&rows[i], "id").to_owned());
+        *open = Some(str_at(rows[i], "id").to_owned());
     }
 }
 

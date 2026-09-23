@@ -5,6 +5,8 @@
 //! One row per label means a rename is one write and a colour means the same
 //! thing everywhere it appears.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -88,17 +90,25 @@ pub async fn set_on_project(
     Ok(())
 }
 
-/// Every project's labels, for folding into a list response.
-pub async fn by_project(state: &AppState) -> AppResult<Vec<(Uuid, Label)>> {
+/// Labels keyed by project, for folding into a response — every project's for
+/// the list, one project's for the detail screen, which has no reason to read
+/// the whole table to keep a handful of rows.
+pub async fn by_project(
+    state: &AppState,
+    only: Option<Uuid>,
+) -> AppResult<HashMap<Uuid, Vec<Label>>> {
     let rows: Vec<(Uuid, Uuid, String, String)> = sqlx::query_as(
         "SELECT pl.project_id, l.id, l.name, l.colour
            FROM project_label pl JOIN label l ON l.id = pl.label_id
+          WHERE ($1::uuid IS NULL OR pl.project_id = $1)
           ORDER BY l.name",
     )
+    .bind(only)
     .fetch_all(&state.db)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(project_id, id, name, colour)| (project_id, Label { id, name, colour }))
-        .collect())
+    let mut out: HashMap<Uuid, Vec<Label>> = HashMap::new();
+    for (project_id, id, name, colour) in rows {
+        out.entry(project_id).or_default().push(Label { id, name, colour });
+    }
+    Ok(out)
 }

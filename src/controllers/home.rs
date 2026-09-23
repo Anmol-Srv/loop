@@ -52,8 +52,17 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
     // `open` is what someone is carrying: work they can act on, including
     // work that is stuck. `review` is theirs but waiting on someone else — a
     // handoff, or engineering work completed and not yet shipped.
+    //
+    // The waiting set is computed once. Asking `EXISTS … = ANY(blocked_by)`
+    // per task scanned every task for every task — a second at 7,500 — while
+    // the set of ids anything live waits on is one pass and a hash lookup.
     let rows = sqlx::query_as::<_, Capacity>(&format!(
-        "SELECT p.id  AS person_id,
+        "WITH waiting AS (
+           SELECT DISTINCT unnest(blocked_by) AS id
+             FROM task
+            WHERE done_at IS NULL AND status <> 'dropped'
+         )
+         SELECT p.id  AS person_id,
                 p.email,
                 p.name,
                 p.department,
@@ -64,12 +73,7 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
                                       AND t.done_at IS NULL) AS review,
                 count(t.id) FILTER (
                   WHERE t.status NOT IN {resolved}
-                    AND EXISTS (
-                      SELECT 1 FROM task blocked
-                       WHERE t.id = ANY(blocked.blocked_by)
-                         AND blocked.done_at IS NULL
-                         AND blocked.status <> 'dropped'
-                    )
+                    AND t.id IN (SELECT id FROM waiting)
                 ) AS blocking
            FROM person p
            LEFT JOIN task t
@@ -83,6 +87,32 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
     .await?;
 
     Ok(rows)
+}
+
+/// The sidebar's two numbers.
+///
+/// Every page draws the sidebar, and it used to get these by fetching all of
+/// `/home` — the team rollup included — just to count two lists. Two counts
+/// are cheap; the whole home screen is not.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    pub my_open: i64,
+    pub active_projects: i64,
+}
+
+pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
+    let my_open = sqlx::query_scalar(
+        "SELECT count(*) FROM task
+          WHERE assignee_person_id = $1 AND done_at IS NULL AND status <> 'dropped'",
+    )
+    .bind(person_id)
+    .fetch_one(&state.db)
+    .await?;
+    let active_projects = sqlx::query_scalar("SELECT count(*) FROM project WHERE status = 'active'")
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Counts { my_open, active_projects })
 }
 
 pub async fn home(state: &AppState, person_id: Uuid) -> AppResult<Home> {

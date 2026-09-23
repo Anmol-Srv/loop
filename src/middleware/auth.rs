@@ -75,6 +75,31 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
     // day rather than one per poll from the Mac app. Agent credentials are
     // minted with a deliberate lifetime and never slide. The slide stops at
     // the 90-day cap, so the expiry an admin sees is the real one.
+    //
+    // Even the touch is a write per request, and the app makes several per
+    // screen, so it waits five minutes between them: "last used" to the
+    // minute is all an admin reads it for, and the slide lagging five minutes
+    // behind a 30-day window changes nothing. The cap is on `created_at`, so
+    // skipping a touch cannot extend anything.
+    let fresh = row
+        .last_used_at
+        .is_some_and(|at| at > chrono::Utc::now() - chrono::Duration::minutes(5));
+    if !fresh {
+        touch(db, &row).await?;
+    }
+
+    Ok(Caller {
+        actor: Actor {
+            label: row.label,
+            person_id: Some(row.owner_id),
+            can_apply,
+        },
+        scopes: row.scopes,
+        kind: row.kind,
+    })
+}
+
+async fn touch(db: &PgPool, row: &token::TokenRow) -> AppResult<()> {
     sqlx::query(
         "UPDATE credential
             SET last_used_at = now(),
@@ -89,16 +114,7 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
     .bind(SESSION_MAX_DAYS.to_string())
     .execute(db)
     .await?;
-
-    Ok(Caller {
-        actor: Actor {
-            label: row.label,
-            person_id: Some(row.owner_id),
-            can_apply,
-        },
-        scopes: row.scopes,
-        kind: row.kind,
-    })
+    Ok(())
 }
 
 impl FromRequestParts<AppState> for Caller {

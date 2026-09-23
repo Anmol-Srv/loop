@@ -9,7 +9,7 @@ use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::middleware::auth::Caller;
 use crate::models::change::Outcome;
-use crate::controllers::project::{NewTask, ProjectProgress};
+use crate::controllers::project::{NewTask, ProjectProgress, ProjectRow};
 use crate::models::task::Task;
 use crate::models::project::Project;
 use crate::response::ApiResponse;
@@ -73,7 +73,7 @@ async fn create(
     Ok(ApiResponse::ok(project))
 }
 
-async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Project>>> {
+async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<ProjectRow>>> {
     caller.require("read")?;
     let projects = controllers::project::list(&state).await?;
     Ok(ApiResponse::ok(projects))

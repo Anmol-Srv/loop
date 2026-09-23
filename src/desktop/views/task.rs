@@ -312,11 +312,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     );
     net.get_once(NOTES_KEY, &format!("/api/user/tasks/{task_id}/notes"));
     net.get_once(TRACKS_KEY, "/api/user/tracks");
-    if can_write {
-        net.get_once(PEOPLE_KEY, "/api/user/people");
-    }
+    // Asked for on the first frame with the rest, not once `__me` has landed
+    // and said whether you may write: waiting on it made this a second wave.
+    net.get_once(PEOPLE_KEY, "/api/user/people");
 
-    let task = net.data(TASK_KEY).cloned();
+    let task = net.shared(TASK_KEY);
 
     // A breadcrumb, not an id: "22222222" told nobody anything, the project
     // name tells you where you are and is the likeliest place to go next.
@@ -384,11 +384,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // what was asked for and the request is made once both closures are gone.
     let mut from_rail: Option<Ask> = None;
     let busy = local.patching || local.attaching || local.saving;
-    let people: Vec<Value> = if can_write {
-        net.data(PEOPLE_KEY).and_then(Value::as_array).cloned().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let people = net.shared(PEOPLE_KEY).filter(|_| can_write);
+    let people: &[Value] = people.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
     // Agents are the next phase: a human task has no run log to watch, and
     // "Waiting for the agent's first line" on every one of them was a promise
     // nobody was going to keep.
@@ -427,7 +424,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 can_act,
                 can_write,
                 busy,
-                people: &people,
+                people,
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -1151,6 +1148,7 @@ fn invalidate_after_move(net: &mut crate::desktop::net::Net) {
     net.invalidate_prefix("board:");
     net.invalidate_prefix("mytasks");
     net.invalidate("home");
+    net.invalidate(super::chrome::COUNTS);
 }
 
 /// The evidence prompt, and the two-step it runs.
@@ -1319,9 +1317,10 @@ fn resources(
         net.invalidate(ARTIFACTS_KEY);
     }
 
-    let rows: Option<Vec<Value>> = net.data(ARTIFACTS_KEY).and_then(Value::as_array).cloned();
+    let rows = net.shared(ARTIFACTS_KEY);
+    let rows: Option<&Vec<Value>> = rows.as_deref().and_then(Value::as_array);
     let mut add = false;
-    shell::section_count_with(ui, "Resources", rows.as_ref().map_or(0, Vec::len), |ui| {
+    shell::section_count_with(ui, "Resources", rows.map_or(0, Vec::len), |ui| {
         if w::ghost(ui, "+ Add").clicked() {
             add = true;
         }
@@ -1358,7 +1357,7 @@ fn resources(
     let mut remove: Option<String> = None;
     w::card_list(ui, |ui| {
         ui.set_width(ui.available_width());
-        for row in &rows {
+        for row in rows {
             if let Some(id) = resource_row(ui, row, can_write, local) {
                 remove = Some(id);
             }
@@ -1487,8 +1486,8 @@ fn notes(
         }
     }
 
-    let rows: Vec<Value> =
-        net.data(NOTES_KEY).and_then(Value::as_array).cloned().unwrap_or_default();
+    let rows = net.shared(NOTES_KEY);
+    let rows: &[Value] = rows.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
     shell::section_count(ui, "Notes", rows.len());
 
     if let Some(err) = net.error(NOTES_KEY) {

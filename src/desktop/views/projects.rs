@@ -15,6 +15,7 @@
 //! empty board.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use egui::RichText;
@@ -25,6 +26,7 @@ use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
+use crate::desktop::net::memo;
 use crate::desktop::App;
 
 pub(super) const PROJECTS_KEY: &str = "board:projects";
@@ -33,6 +35,8 @@ pub(super) const PEOPLE_KEY: &str = "board:people";
 const CREATE_KEY: &str = "board:create";
 /// The table's id: its scroll salt, and the slot its hover is tracked in.
 const TABLE: &str = "projects:table";
+/// The filtered, sorted rows, held in egui's temp store between frames.
+const SHOWN: &str = "projects:shown";
 /// The shared label vocabulary. Not under `board:` — it outlives any one
 /// project, so a create's invalidation sweep has no business dropping it.
 pub(super) const LABELS_KEY: &str = "projects:labels";
@@ -212,6 +216,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         net.invalidate(CREATE_KEY);
         net.invalidate(PROJECTS_KEY);
         net.invalidate("home");
+        net.invalidate(super::chrome::COUNTS);
         net.invalidate_prefix("task:");
         // The form hands out tasks too, so an assignee's personal list is stale
         // the moment this succeeds.
@@ -246,7 +251,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // nothing in the table needs its own.
     net.get_once(LABELS_KEY, "/api/user/labels");
 
-    let list = array(net.data(PROJECTS_KEY));
+    let generation = net.generation(PROJECTS_KEY);
+    let list = net.shared(PROJECTS_KEY);
+    let list: &[Value] = list.as_deref().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let people = array(net.data(PEOPLE_KEY));
     let labels = array(net.data(LABELS_KEY));
     let loading = net.is_loading(PROJECTS_KEY);
@@ -257,20 +264,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let label_error = net.error(NEW_LABEL_KEY).map(str::to_string);
     let creating = net.is_loading(CREATE_KEY);
 
-    // One `/flow` per project — cached, so once per project per session. A
-    // project with no tasks still answers, with zeroes.
-    let mut flows: HashMap<String, Value> = HashMap::new();
-    for p in &list {
-        let id = str_at(p, "id");
-        if id.is_empty() {
-            continue;
-        }
-        let key = format!("board:flow:{id}");
-        net.get_once(&key, &format!("/api/user/projects/{id}/flow"));
-        if let Some(flow) = net.data(&key) {
-            flows.insert(id.to_string(), flow.clone());
-        }
-    }
+    // Each row carries its own `done`/`total`, the numbers `/flow` gives, so
+    // the list no longer asks for a `/flow` per project.
+    let flows: HashMap<String, Value> = HashMap::new();
 
     let mut start_create = false;
     shell::page_title(ui, "Projects", "", |ui| {
@@ -296,11 +292,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let mut open: Option<String> = None;
-    let mut shown: Vec<Value> = Vec::new();
+    let mut shown: Arc<Vec<Value>> = Arc::default();
     if !list.is_empty() {
         toolbar(ui, &mut app.board.filters, &labels);
-        shown = list.iter().filter(|p| app.board.filters.keeps(p)).cloned().collect();
-        sort_projects(&mut shown, &flows);
+        // Filtered and sorted once per reply or filter change, not per frame.
+        let f = &app.board.filters;
+        let stamp = (generation, f.search.clone(), f.status.clone(), f.label.clone(), f.priority.clone());
+        shown = memo(ui.ctx(), egui::Id::new(SHOWN), stamp, || {
+            let mut rows: Vec<Value> = list.iter().filter(|p| f.keeps(p)).cloned().collect();
+            sort_projects(&mut rows, &flows);
+            rows
+        });
         ui.label(
             RichText::new(count_line(shown.len(), list.len()))
                 .size(text::SMALL)
@@ -419,9 +421,8 @@ fn sort_projects(rows: &mut [Value], flows: &HashMap<String, Value>) {
         PROJECT_STATUSES.iter().position(|(s, _)| *s == str_at(p, "status")).unwrap_or(4)
     };
     let key = |p: &Value| {
-        let flow = flows.get(str_at(p, "id"));
-        let (done, total) =
-            flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
+        let flow = flows.get(str_at(p, "id")).unwrap_or(p);
+        let (done, total) = (num_at(flow, "done"), num_at(flow, "total"));
         let overdue = matches!(health(p, done, total), Some((_, Health::Overdue)));
         let target = parse_date(str_at(p, "targetDate"));
         (status_rank(p), !overdue, num_at(p, "priority"), target.is_none(), target)
@@ -450,8 +451,11 @@ pub fn table(
     }
 }
 
+/// `flow` overrides the row's own `done`/`total` when given; the list passes
+/// none, since `/projects` rows carry both.
 fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) {
-    let (done, total) = flow.map(|f| (num_at(f, "done"), num_at(f, "total"))).unwrap_or((0, 0));
+    let flow = flow.unwrap_or(p);
+    let (done, total) = (num_at(flow, "done"), num_at(flow, "total"));
     let status = str_at(p, "status");
 
     // The name, then its labels. The name is what gives ground when there are

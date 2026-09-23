@@ -9,6 +9,8 @@
 //! had to remember to leave; a status filter says the same thing out loud and
 //! composes with the others.
 
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
@@ -16,6 +18,7 @@ use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     cards as c, colour, shell, space, status_label, viz, widgets as w,
 };
+use crate::desktop::net::memo;
 use crate::desktop::App;
 
 /// The personal list. Prefixed `mytasks` so any view that moves a task can drop
@@ -25,6 +28,10 @@ const MINE: &str = "mytasks:mine";
 /// egui's temp store rather than growing `App`.
 const FILTERS: &str = "mytasks:filters";
 const TABLE: &str = "mytasks:table";
+/// The sorted list and the filtered one, redone only when the reply or the
+/// filters change — not every frame.
+const SORTED: &str = "mytasks:sorted";
+const SHOWN: &str = "mytasks:shown";
 
 /// What the list is narrowed to. Every field unset is the whole list, so
 /// `Default` is "everything".
@@ -78,19 +85,30 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let loading = net.is_loading(MINE);
     let error = net.error(MINE).map(str::to_owned);
-    let tasks = net.data(MINE).cloned().unwrap_or(Value::Null);
+    let generation = net.generation(MINE);
+    let tasks = net.shared(MINE).unwrap_or_else(|| Arc::new(Value::Null));
 
     // Newest first, whatever order the server sent. One sort, here, so the
     // filters below never reshuffle the list as they narrow it.
-    let mut rows: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    rows.sort_by(|a, b| {
-        str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default())
+    let sorted = memo(ui.ctx(), egui::Id::new(SORTED), generation, || {
+        let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
+        let mut order: Vec<usize> = (0..all.len()).collect();
+        order.sort_by(|&a, &b| {
+            str_at(&all[b], "createdAt")
+                .unwrap_or_default()
+                .cmp(str_at(&all[a], "createdAt").unwrap_or_default())
+        });
+        let mut projects: Vec<String> = all.iter().map(|t| project_of(t).to_owned()).collect();
+        projects.sort_unstable();
+        projects.dedup();
+        (tasks.clone(), order, projects)
     });
+    let (tasks, order, projects) = &*sorted;
+    let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
+    let rows: Vec<&Value> = order.iter().map(|&i| &all[i]).collect();
+    let projects: Vec<&str> = projects.iter().map(String::as_str).collect();
 
     let open = rows.iter().filter(|t| !finished(t)).count();
-    let mut projects: Vec<&str> = rows.iter().map(|t| project_of(t)).collect();
-    projects.sort_unstable();
-    projects.dedup();
 
     shell::page_title(
         ui,
@@ -119,7 +137,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    let shown: Vec<&Value> = rows.iter().copied().filter(|t| keep(t, &state)).collect();
+    let picked = memo(ui.ctx(), egui::Id::new(SHOWN), (generation, state.clone()), || {
+        (0..rows.len()).filter(|&i| keep(rows[i], &state)).collect::<Vec<usize>>()
+    });
+    let shown: Vec<&Value> = picked.iter().map(|&i| rows[i]).collect();
     filter_bar(ui, &mut state, &projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 

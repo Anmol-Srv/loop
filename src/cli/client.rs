@@ -46,6 +46,21 @@ impl Client {
     /// request never got a response), so a UI can tell an ended session from
     /// any other failure.
     pub async fn request(&self, method: reqwest::Method, path: &str, body: Value) -> (u16, Result<Value, String>) {
+        let (status, result, _) = self.request_cached(method, path, body, None).await;
+        (status, result)
+    }
+
+    /// Like `request`, for a caller that keeps what it fetched: `etag` is the
+    /// tag of the copy it holds, sent as `If-None-Match`, and the response's
+    /// own `ETag` comes back third. A `304` has no body; it comes back as
+    /// `(304, Ok(Null), _)` and means "what you hold is still current".
+    pub async fn request_cached(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Value,
+        etag: Option<&str>,
+    ) -> (u16, Result<Value, String>, Option<String>) {
         let mut request = self
             .http
             .request(method, format!("{}{}", self.base_url, path))
@@ -54,17 +69,28 @@ impl Client {
         if !body.is_null() {
             request = request.json(&body);
         }
+        if let Some(tag) = etag {
+            request = request.header(reqwest::header::IF_NONE_MATCH, tag);
+        }
 
         let response = match request.send().await {
             Ok(r) => r,
-            Err(e) => return (0, Err(format!("request failed: {e}"))),
+            Err(e) => return (0, Err(format!("request failed: {e}")), None),
         };
         let status = response.status().as_u16();
+        let tag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        if status == 304 {
+            return (status, Ok(Value::Null), tag);
+        }
         let result = match response.json::<Value>().await {
             Ok(json) => unwrap_envelope(json),
             Err(e) => Err(format!("bad response body: {e}")),
         };
-        (status, result)
+        (status, result, tag)
     }
 
     /// Send and return the raw body, without unwrapping any envelope. The MCP

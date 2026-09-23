@@ -5,10 +5,15 @@
 //! cards. This is the shape the owner asked for: four visualisations that read
 //! at a glance, a filter bar, and a table.
 //!
-//! Two fetches. `GET /api/user/home` carries the projects rollup, the team
-//! band and the sidebar badges — chrome.rs reads that payload under the key
-//! `"home"`, so the name is load-bearing. `GET /api/user/tasks` carries the
-//! table: the whole workspace, one row per task.
+//! Two fetches. `GET /api/user/home` carries the projects rollup and the team
+//! band; other views drop it under the key `"home"` when they change a task,
+//! so the name is load-bearing. `GET /api/user/tasks` carries the table: the
+//! whole workspace, one row per task.
+//!
+//! At a few thousand rows, sorting, indexing and tallying that list every
+//! frame was most of the frame. So all of it is derived once per payload —
+//! `Derived`, redone when either reply's generation moves — and a frame only
+//! filters and draws.
 //!
 //! The endpoint takes server-side filters, and the table ignores them. At
 //! twenty rows a round trip per filter click buys nothing and costs a cache
@@ -29,6 +34,7 @@
 //! only one who can move it.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
 use egui::{Align, Color32, Layout, RichText};
@@ -40,6 +46,7 @@ use crate::desktop::design::{
     avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, tokens,
     viz, widgets as w,
 };
+use crate::desktop::net::memo;
 use crate::desktop::{App, Tab};
 
 const HOME: &str = "home";
@@ -147,31 +154,20 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let loading = net.is_loading(HOME) || net.is_loading(TASKS);
     let error = net.error(HOME).or_else(|| net.error(TASKS)).map(str::to_owned);
-    let home = net.data(HOME).cloned().unwrap_or(Value::Null);
-    let tasks = net.data(TASKS).cloned().unwrap_or(Value::Null);
+    // The alerts and the week chart read the clock, so a new hour counts as
+    // a change too.
+    // ponytail: hourly, so "stalled" can trail the real moment by up to an hour.
+    let stamp = (net.generation(HOME), net.generation(TASKS), Utc::now().timestamp() / 3600);
+    let (home, tasks) = (net.shared(HOME), net.shared(TASKS));
+    let d = memo(ui.ctx(), egui::Id::new(DERIVED), stamp, || derive(home, tasks));
+    let rows = d.rows();
 
-    let projects = list(&home, "projects");
-    let team = list(&home, "team");
-
-    // Every task in the workspace, newest first. The list should not reshuffle
-    // when a filter narrows it.
-    let mut all: Vec<&Value> = tasks.as_array().map(|a| a.iter().collect()).unwrap_or_default();
-    all.sort_by(|a, b| {
-        str_at(b, "createdAt").unwrap_or_default().cmp(str_at(a, "createdAt").unwrap_or_default())
-    });
-    // Dropped work is not work: every number on this page counts the rest,
-    // so the subtitle, the donut and the table heading cannot disagree. The
-    // table still reaches dropped tasks through its status filter.
-    let live: Vec<&Value> = all.iter().copied().filter(|t| bucket(t) != "dropped").collect();
-    let dropped = all.len() - live.len();
-
-    // Blockers resolve against the whole list, dropped included — a dropped
-    // blocker is a resolved one, and it still has a title.
-    let by_id: HashMap<&str, &Value> =
-        all.iter().filter_map(|t| Some((str_at(t, "id")?, *t))).collect();
-
-    let mut subtitle =
-        format!("{} across {}", plural(live.len(), "task"), plural(projects.len(), "project"));
+    let mut subtitle = format!(
+        "{} across {}",
+        plural(d.live, "task"),
+        plural(d.project_count, "project")
+    );
+    let dropped = d.all.len() - d.live;
     if dropped > 0 {
         subtitle += &format!(" · {dropped} dropped, not counted");
     }
@@ -181,50 +177,60 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         w::error(ui, &format!("{err} Use Refresh in the sidebar to try again."));
         return;
     }
-    if loading && all.is_empty() {
+    if loading && d.all.is_empty() {
         w::loading(ui, "Loading your dashboard");
         return;
     }
 
     // ---- what a lead opens this page for: the list of things going wrong
-    let alerts = attention(&projects, &live, &by_id);
     let mut go: Option<Target> = None;
-    if !alerts.is_empty() {
-        attention_list(ui, &alerts, &mut go);
+    if !d.alerts.is_empty() {
+        attention_list(ui, &d.alerts, &mut go);
         ui.add_space(space::XL);
     }
 
     // ---- the four figures, all the same height
+    let team = list(d.home.as_ref(), "team");
     viz::row(
         ui,
         egui::Id::new(VIZ_H),
         &mut [
-            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &live),
-            &mut |ui: &mut egui::Ui, h| department_card(ui, h, &projects),
-            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &live),
+            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &d.status),
+            &mut |ui: &mut egui::Ui, h| department_card(ui, h, &d.departments),
+            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &d.completed),
             &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
         ],
     );
 
     // The count is drawn from last frame's filter state; a click repaints, so
-    // the lag is never seen.
-    let shown: Vec<&Value> =
-        all.iter().copied().filter(|t| keep(t, &state, &my_person_id)).collect();
+    // the lag is never seen. Refiltered only when the filters or the rows move.
+    let shown = memo(
+        ui.ctx(),
+        egui::Id::new(SHOWN),
+        (stamp, state.clone(), my_person_id.clone()),
+        || {
+            let needle = state.query.trim().to_lowercase();
+            (0..d.all.len())
+                .filter(|&i| keep(&d.all[i], &rows[d.all[i].at], &state, &my_person_id, &needle))
+                .collect::<Vec<usize>>()
+        },
+    );
     let filtered = state != State::default();
     shell::section_count_with(ui, "Tasks", shown.len(), |ui| {
         if filtered {
-            w::caption(ui, &format!("filtered from {}", live.len()));
+            w::caption(ui, &format!("filtered from {}", d.live));
         }
     });
-    filter_bar(ui, &mut state, &live, &projects);
+    filter_bar(ui, &mut state, &d.filter_departments, &d.filter_projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
     if shown.is_empty() {
         w::empty(ui, "Nothing matches those filters.", "Clear one of them to see more.");
-    } else if let Some(i) =
-        table::show(ui, TABLE, &COLS, shown.len(), |row, i| task_row(row, shown[i], &by_id))
-    {
-        go = str_at(shown[i], "id").map(|id| Target::Task(id.to_owned()));
+    } else if let Some(i) = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
+        let r = &d.all[shown[i]];
+        task_row(row, &rows[r.at], r);
+    }) {
+        go = str_at(&rows[d.all[shown[i]].at], "id").map(|id| Target::Task(id.to_owned()));
     }
     ui.add_space(space::XXL);
 
@@ -235,6 +241,115 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             app.project = Some(id);
         }
         None => {}
+    }
+}
+
+// ------------------------------------------------------------ derived, once
+
+/// Where the derived page lives in egui's temp store, and the filtered rows.
+const DERIVED: &str = "home:derived";
+const SHOWN: &str = "home:shown";
+
+/// Everything this page works out from its two payloads. Rows point back into
+/// `tasks` by index rather than copying it.
+struct Derived {
+    home: Arc<Value>,
+    tasks: Arc<Value>,
+    /// Every task, newest first, dropped included.
+    all: Vec<Row>,
+    /// How many of `all` are not dropped.
+    live: usize,
+    project_count: usize,
+    alerts: Vec<Alert>,
+    status: StatusFigures,
+    departments: Vec<(String, i64, i64)>,
+    completed: CompletedFigures,
+    filter_departments: Vec<(String, String)>,
+    filter_projects: Vec<(String, String)>,
+}
+
+/// One task as the table and the filters need it.
+struct Row {
+    /// Index into the `/tasks` array.
+    at: usize,
+    bucket: &'static str,
+    /// Title, project and owner, lowercased once, for the search box.
+    search: [String; 3],
+    /// "waiting on …", when something unresolved holds it up.
+    waiting: Option<String>,
+}
+
+impl Derived {
+    fn rows(&self) -> &[Value] {
+        self.tasks.as_array().map(Vec::as_slice).unwrap_or_default()
+    }
+}
+
+fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
+    let home = home.unwrap_or_else(|| Arc::new(Value::Null));
+    let tasks = tasks.unwrap_or_else(|| Arc::new(Value::Null));
+    let rows: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
+    let projects = list(&home, "projects");
+
+    // Every task in the workspace, newest first. The list should not reshuffle
+    // when a filter narrows it.
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by(|&a, &b| {
+        str_at(&rows[b], "createdAt")
+            .unwrap_or_default()
+            .cmp(str_at(&rows[a], "createdAt").unwrap_or_default())
+    });
+
+    // Blockers resolve against the whole list, dropped included — a dropped
+    // blocker is a resolved one, and it still has a title.
+    let by_id: HashMap<&str, &Value> =
+        order.iter().filter_map(|&i| Some((str_at(&rows[i], "id")?, &rows[i]))).collect();
+
+    let all: Vec<Row> = order
+        .iter()
+        .map(|&i| {
+            let t = &rows[i];
+            let lower = |k: &str| str_at(t, k).unwrap_or_default().to_lowercase();
+            Row {
+                at: i,
+                bucket: bucket(t),
+                search: [lower("title"), lower("projectName"), lower("assigneeName")],
+                waiting: (outstanding(t) > 0).then(|| format!("waiting on {}", blocker(t, &by_id))),
+            }
+        })
+        .collect();
+
+    // Dropped work is not work: every number on this page counts the rest,
+    // so the subtitle, the donut and the table heading cannot disagree. The
+    // table still reaches dropped tasks through its status filter.
+    let live: Vec<&Value> =
+        all.iter().filter(|r| r.bucket != "dropped").map(|r| &rows[r.at]).collect();
+
+    // Only departments that actually appear: a menu of empty filters is a
+    // menu of ways to get an empty table.
+    let mut departments: Vec<&str> = live
+        .iter()
+        .filter_map(|t| str_at(t, "discipline"))
+        .filter(|d| !d.is_empty())
+        .collect();
+    departments.sort_unstable();
+    departments.dedup();
+
+    Derived {
+        live: live.len(),
+        project_count: projects.len(),
+        alerts: attention(&projects, &live, &by_id),
+        status: status_figures(&live),
+        departments: department_rollup(&projects),
+        completed: completed_figures(&live),
+        filter_departments: departments.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect(),
+        filter_projects: projects
+            .iter()
+            .filter_map(|p| Some((str_at(p, "id")?.to_owned(), str_at(p, "name")?.to_owned())))
+            .collect(),
+        all,
+        home: home.clone(),
+        tasks: tasks.clone(),
     }
 }
 
@@ -382,30 +497,46 @@ fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) 
 
 // ------------------------------------------------------------------- figures
 
-/// Status as a ring. The centre carries the only number worth reading from
-/// across the room: how much of this is finished.
-fn status_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
+/// The ring's numbers: a count per `DONUT` slice, the whole, and the share done.
+struct StatusFigures {
+    counts: [usize; 6],
+    total: usize,
+    pct: usize,
+}
+
+fn status_figures(rows: &[&Value]) -> StatusFigures {
     // Dropped work is off the board, so it is off the ring and out of the
     // denominator too — otherwise the percentage measures the wrong pile.
     let live: Vec<&&Value> = rows.iter().filter(|t| bucket(t) != "dropped").collect();
-    let count = |s: &str| live.iter().filter(|t| bucket(t) == s).count();
+    let mut counts = [0; 6];
+    for t in &live {
+        if let Some(i) = DONUT.iter().position(|s| *s == bucket(t)) {
+            counts[i] += 1;
+        }
+    }
     let total = live.len();
     // `doneAt` is the server's one answer for both tracks: design ends at
     // completed, engineering at shipped, and only the terminal state stamps it.
     let done = live.iter().filter(|t| finished(t)).count();
     let pct = if total == 0 { 0 } else { done * 100 / total };
+    StatusFigures { counts, total, pct }
+}
 
-    viz::card(ui, "Status", &plural(total, "task"), min_body, |ui| {
+/// Status as a ring. The centre carries the only number worth reading from
+/// across the room: how much of this is finished.
+fn status_card(ui: &mut egui::Ui, min_body: f32, f: &StatusFigures) -> f32 {
+    viz::card(ui, "Status", &plural(f.total, "task"), min_body, |ui| {
         let slices: Vec<viz::Slice<'_>> = DONUT
             .iter()
             .zip(LABELS)
-            .map(|(status, label)| viz::Slice {
+            .zip(f.counts)
+            .map(|((status, label), count)| viz::Slice {
                 label,
-                count: count(status),
+                count,
                 colour: status_colour(status),
             })
             .collect();
-        viz::donut(ui, &slices, &format!("{pct}%"), "DONE");
+        viz::donut(ui, &slices, &format!("{}%", f.pct), "DONE");
     })
 }
 
@@ -416,7 +547,7 @@ const LABELS: [&str; 6] =
 
 /// Progress per department, from the server's per-project rollup — the one
 /// number on this page that covers every task, not just the ones on screen.
-fn department_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32 {
+fn department_rollup(projects: &[&Value]) -> Vec<(String, i64, i64)> {
     // Sum the rollups across projects, keeping first-seen order so the list
     // does not reshuffle between refreshes.
     let mut order: Vec<String> = Vec::new();
@@ -447,9 +578,19 @@ fn department_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
         tally.insert("Unassigned".to_owned(), (all_done - labelled_done, all_total - labelled));
     }
 
+    order
+        .into_iter()
+        .map(|name| {
+            let (done, total) = tally.get(&name).copied().unwrap_or((0, 0));
+            (name, done, total)
+        })
+        .collect()
+}
+
+fn department_card(ui: &mut egui::Ui, min_body: f32, rollup: &[(String, i64, i64)]) -> f32 {
     viz::card(ui, "By department", "done / total", min_body, |ui| {
-        for name in order.iter().take(viz::MAX_BARS) {
-            let (done, total) = tally.get(name).copied().unwrap_or((0, 0));
+        for (name, done, total) in rollup.iter().take(viz::MAX_BARS) {
+            let (done, total) = (*done, *total);
             let fill = if total == 0 { 0.0 } else { done as f32 / total as f32 };
             viz::bar_row(
                 ui,
@@ -460,7 +601,7 @@ fn department_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
                 tokens::DISCIPLINE_W,
             );
         }
-        overflow(ui, order.len());
+        overflow(ui, rollup.len());
     })
 }
 
@@ -468,7 +609,15 @@ fn department_card(ui: &mut egui::Ui, min_body: f32, projects: &[&Value]) -> f32
 /// the task reached the end of its track, not the last time anyone touched it.
 /// Design ends at completed and engineering at shipped; the stamp knows. The delta
 /// compares the same measure over the previous week.
-fn completed_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
+struct CompletedFigures {
+    buckets: Vec<f32>,
+    total: usize,
+    delta: String,
+    /// Day initials, oldest bucket first, so the last column is today.
+    names: Vec<String>,
+}
+
+fn completed_figures(rows: &[&Value]) -> CompletedFigures {
     let today = Local::now().date_naive();
     let mut buckets = vec![0.0_f32; WEEK];
     let mut previous = 0usize;
@@ -495,19 +644,21 @@ fn completed_card(ui: &mut egui::Ui, min_body: f32, rows: &[&Value]) -> f32 {
         d => format!("{d} vs prev"),
     };
 
-    // Day initials, oldest bucket first, so the last column is today.
     let names: Vec<String> = (0..WEEK)
         .map(|i| {
             let day = today - chrono::Duration::days((WEEK - 1 - i) as i64);
             initial(day.weekday()).to_owned()
         })
         .collect();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    CompletedFigures { buckets, total, delta, names }
+}
 
+fn completed_card(ui: &mut egui::Ui, min_body: f32, f: &CompletedFigures) -> f32 {
+    let names: Vec<&str> = f.names.iter().map(String::as_str).collect();
     viz::card(ui, "Completed", "last 7 days", min_body, |ui| {
-        viz::headline(ui, &total.to_string(), &delta);
+        viz::headline(ui, &f.total.to_string(), &f.delta);
         ui.add_space(space::MD);
-        viz::columns(ui, &buckets, &names, colour::ACCENT);
+        viz::columns(ui, &f.buckets, &names, colour::ACCENT);
     })
 }
 
@@ -587,7 +738,12 @@ fn overflow(ui: &mut egui::Ui, total: usize) {
 
 // ---------------------------------------------------------------- filter bar
 
-fn filter_bar(ui: &mut egui::Ui, state: &mut State, rows: &[&Value], projects: &[&Value]) {
+fn filter_bar(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    departments: &[(String, String)],
+    projects: &[(String, String)],
+) {
     viz::toolbar(ui, |ui| {
         viz::search(ui, "Search tasks, projects, people…", &mut state.query);
 
@@ -595,18 +751,7 @@ fn filter_bar(ui: &mut egui::Ui, state: &mut State, rows: &[&Value], projects: &
             state.mine = !state.mine;
         }
 
-        // Only departments that actually appear: a menu of empty filters is a
-        // menu of ways to get an empty table.
-        let mut departments: Vec<&str> = rows
-            .iter()
-            .filter_map(|t| str_at(t, "discipline"))
-            .filter(|d| !d.is_empty())
-            .collect();
-        departments.sort_unstable();
-        departments.dedup();
-        let options: Vec<(String, String)> =
-            departments.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect();
-        viz::select(ui, "All departments", &options, &mut state.department);
+        viz::select(ui, "All departments", departments, &mut state.department);
 
         let options: Vec<(String, String)> =
             PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
@@ -616,11 +761,7 @@ fn filter_bar(ui: &mut egui::Ui, state: &mut State, rows: &[&Value], projects: &
             STATUSES.iter().map(|s| ((*s).to_owned(), status_label(s).to_owned())).collect();
         viz::select(ui, "Any status", &options, &mut state.status);
 
-        let names: Vec<(String, String)> = projects
-            .iter()
-            .filter_map(|p| Some((str_at(p, "id")?.to_owned(), str_at(p, "name")?.to_owned())))
-            .collect();
-        viz::select(ui, "All projects", &names, &mut state.project);
+        viz::select(ui, "All projects", projects, &mut state.project);
 
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
@@ -628,10 +769,11 @@ fn filter_bar(ui: &mut egui::Ui, state: &mut State, rows: &[&Value], projects: &
     });
 }
 
-fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
+/// `needle` is the search box, trimmed and lowercased once for every row.
+fn keep(r: &Row, t: &Value, state: &State, my_person_id: &str, needle: &str) -> bool {
     // Dropped tasks are out of every count, so they are out of the table too —
     // unless dropped is exactly what was asked for.
-    if bucket(t) == "dropped" && state.status.as_deref() != Some("dropped") {
+    if r.bucket == "dropped" && state.status.as_deref() != Some("dropped") {
         return false;
     }
     if state.mine
@@ -650,7 +792,7 @@ fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
         }
     }
     if let Some(s) = &state.status {
-        if bucket(t) != s.as_str() {
+        if r.bucket != s.as_str() {
             return false;
         }
     }
@@ -661,20 +803,13 @@ fn keep(t: &Value, state: &State, my_person_id: &str) -> bool {
     }
     // Title, project and owner: the three things you would think to type.
     // Not the status — that is what the menu beside the box is for.
-    viz::matches(
-        &state.query,
-        &[
-            str_at(t, "title").unwrap_or_default(),
-            str_at(t, "projectName").unwrap_or_default(),
-            str_at(t, "assigneeName").unwrap_or_default(),
-        ],
-    )
+    needle.is_empty() || r.search.iter().any(|h| h.contains(needle))
 }
 
 // --------------------------------------------------------------------- table
 
-fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, by_id: &HashMap<&str, &Value>) {
-    let status = bucket(t);
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
+    let status = r.bucket;
     let department = str_at(t, "discipline").unwrap_or_default();
 
     row.at(0, |ui| w::dot(ui, status_colour(status)));
@@ -685,9 +820,9 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, by_id: &HashMap<&str,
         // it is a footnote on the task, not a property every row has. Keyed
         // on the counts, not the status — a blocker can resolve while the
         // status still says blocked.
-        if outstanding(t) > 0 {
+        if let Some(waiting) = &r.waiting {
             ui.add_space(space::XS);
-            w::caption(ui, &format!("waiting on {}", blocker(t, by_id)));
+            w::caption(ui, waiting);
         }
     });
 

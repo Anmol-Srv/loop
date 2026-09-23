@@ -22,5 +22,6 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::user::work::routes())
         .merge(routes::user::run_log::routes())
         .merge(routes::services::mcp::routes())
+        .layer(axum::middleware::from_fn(crate::middleware::etag::etag))
         .with_state(state)
 }
