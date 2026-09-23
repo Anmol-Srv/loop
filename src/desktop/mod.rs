@@ -28,6 +28,7 @@ pub struct App {
     pub scopes: Vec<String>,
     pub login: views::login::State,
     pub board: views::board::State,
+    pub palette: views::palette::State,
 }
 
 impl App {
@@ -46,6 +47,7 @@ impl App {
             scopes: Vec::new(),
             login: views::login::State::default(),
             board: views::board::State::default(),
+            palette: views::palette::State::default(),
         };
 
         if let Some(token) = creds::load() {

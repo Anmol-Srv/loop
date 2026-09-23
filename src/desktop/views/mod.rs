@@ -5,3 +5,4 @@ pub mod login;
 pub mod task;
 pub mod home;
 pub mod mytasks;
+pub mod palette;

@@ -87,6 +87,7 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
                     scopes: Vec::new(),
                     login: views::login::State::default(),
                     board: views::board::State::default(),
+                    palette: views::palette::State::default(),
                 });
                 return;
             }
