@@ -1,31 +1,48 @@
 //! Agents: the programs on your own machine that take the tasks you hand off.
 //!
 //! An agent is a row with its own token, not a token with a label. This page
-//! lists yours, connects a new one, rotates a token and revokes. Connecting
-//! and rotating both end the same way: the server returns a one-time setup
-//! prompt, with the token inside it, and this is the only time it is shown.
-//! It lives in this view's local state — never in the net cache — and is
-//! forgotten the moment the dialog closes.
+//! shows yours as cards — who it is, what it is doing, whether its setup took
+//! — connects a new one, rotates a token and revokes.
+//!
+//! Connecting is one dialog in three steps: name it, paste the prompt, wait
+//! for it to say hello. The server returns the prompt once, with the token
+//! inside it; it lives in this view's local state — never in the net cache —
+//! and is forgotten when the dialog moves on. The last step can be left and
+//! picked up again from the agent's card.
 
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 use egui::RichText;
 use serde_json::{json, Value};
 
-use crate::desktop::design::table::{self, Col};
-use crate::desktop::design::{cards as c, colour, pad, radius, shell, size, space, text, theme, viz, widgets as w};
-use crate::desktop::App;
+use crate::desktop::design::agent::{self as face, Presence, Step};
+use crate::desktop::design::{
+    cards as c, colour, glyph, motion, pad, radius, shell, size, space, text, theme, viz, widgets as w,
+};
+use crate::desktop::net::Net;
+use crate::desktop::{App, Tab};
 
 /// My agents. Other views read it too: the task page, to offer a hand-off.
 pub const AGENTS_KEY: &str = "agents:mine";
 /// Every create, rotate and revoke goes out under this one key: only one can be
 /// in flight, because each one is started from a dialog.
 const ACTION_KEY: &str = "agents:action";
-const TABLE: &str = "agents:table";
 
-/// The runtimes the server knows, wire value first.
+/// The runtimes the server knows, wire value first, then how the connect
+/// flow describes each in a line.
 pub const RUNTIMES: [(&str, &str); 4] =
     [("hermes", "Hermes"), ("claude-code", "Claude Code"), ("codex", "Codex"), ("other", "Other")];
+
+const RUNTIME_LINES: [&str; 4] = [
+    "Wakes by itself when a task needs it.",
+    "Anthropic\u{2019}s coding agent, in your terminal.",
+    "OpenAI\u{2019}s coding agent, in your terminal.",
+    "Anything that can call an HTTP API.",
+];
+
+/// How often the last step asks whether the agent has said hello.
+const HELLO_POLL: Duration = Duration::from_secs(2);
 
 pub fn runtime_label(runtime: &str) -> &str {
     RUNTIMES.iter().find(|(v, _)| *v == runtime).map_or(runtime, |(_, l)| l)
@@ -89,11 +106,15 @@ impl Default for Draft {
     }
 }
 
-/// The one-time prompt, and who it is for.
-struct Reveal {
-    name: String,
-    prompt: String,
-    copied: bool,
+/// Where the connect dialog is.
+enum Connect {
+    /// 1: name, handle, runtime.
+    Details(Draft),
+    /// 2: the one-time prompt.
+    Prompt { id: String, name: String, prompt: String, copied: bool },
+    /// 3: waiting for the agent's hello; `heard` is when it arrived (egui
+    /// time), which the checklist's entrance is timed from.
+    Hello { id: String, name: String, polled: Option<Instant>, heard: Option<f64> },
 }
 
 #[derive(Clone)]
@@ -112,12 +133,12 @@ enum Pending {
 
 #[derive(Default)]
 struct Local {
-    connect: Option<Draft>,
-    reveal: Option<Reveal>,
+    connect: Option<Connect>,
     confirm: Option<Confirm>,
     pending: Option<Pending>,
     /// The last action's failure, in the server's words.
     error: Option<String>,
+    revoked_open: bool,
 }
 
 thread_local! {
@@ -130,36 +151,35 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     LOCAL.with(|cell| render(app, ui, &mut cell.borrow_mut()));
 }
 
-const COLS: [Col; 6] = [
-    Col::fill("Agent", 180.0),
-    Col::left("Runtime", 96.0).rank(2),
-    Col::left("Status", 168.0),
-    Col::right("Last seen", 104.0).rank(1),
-    Col::right("Active tasks", 84.0).rank(3),
-    Col::right("", 176.0),
-];
+/// What a card asked for.
+enum CardAct {
+    Confirm(Confirm),
+    Continue(String, String),
+    Open(String),
+}
 
 fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
+    let me = app.net.as_ref().and_then(|n| n.data("__me")).cloned().unwrap_or(Value::Null);
+    let my_seed = str_of(&me, "email").or_else(|| str_of(&me, "name")).unwrap_or("me").to_owned();
+    let my_first = str_of(&me, "name").and_then(|n| n.split_whitespace().next()).unwrap_or("Your").to_owned();
+
     let net = app.net.as_mut().expect("chrome runs signed in");
     net.get_once(AGENTS_KEY, "/api/user/agents");
     settle(net, local);
 
     let list = net.shared(AGENTS_KEY);
-    let rows: &[Value] = list.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let all: &[Value] = list.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let live: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") != Some("revoked")).collect();
+    let revoked: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") == Some("revoked")).collect();
     let mut connect = false;
 
-    shell::page_title(
-        ui,
-        "Agents",
-        "Programs on your own machine that take the tasks you hand them.",
-        |ui| {
-            if !rows.is_empty() && w::primary(ui, "Connect an agent", true).clicked() {
-                connect = true;
-            }
-        },
-    );
+    shell::page_title(ui, "Agents", "Programs on your own machine that take the tasks you hand them.", |ui| {
+        if !live.is_empty() && w::primary(ui, "Connect an agent", true).clicked() {
+            connect = true;
+        }
+    });
 
-    // Failures of the row actions. A failed create stays in its dialog.
+    // Failures of the card actions. A failed create stays in its dialog.
     if local.connect.is_none() {
         if let Some(err) = &local.error {
             w::error(ui, err);
@@ -167,44 +187,66 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         }
     }
 
+    let mut act: Option<CardAct> = None;
     if let Some(err) = net.error(AGENTS_KEY) {
         w::error(ui, &format!("Could not load your agents. {err}"));
     } else if list.is_none() {
-        w::loading(ui, "Loading your agents");
-    } else if rows.is_empty() {
-        connect |= empty_state(ui);
+        skeleton_cards(ui);
+    } else if live.is_empty() {
+        connect |= empty_state(ui, &my_seed);
     } else {
-        let mut ask: Option<Confirm> = None;
-        table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-            if let Some(c) = agent_row(row, &rows[i]) {
-                ask = Some(c);
-            }
-        });
-        if ask.is_some() {
-            local.error = None;
-            local.confirm = ask;
+        act = grid(ui, &live, &my_seed);
+    }
+
+    if !revoked.is_empty() {
+        ui.add_space(space::XL);
+        face::disclosure(ui, egui::Id::new("agents:revoked"), "Revoked", Some(revoked.len()), &mut local.revoked_open);
+        if local.revoked_open {
+            ui.add_space(space::XS);
+            w::card_list(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for a in &revoked {
+                    revoked_row(ui, a, &my_seed);
+                }
+            });
         }
     }
     ui.add_space(space::XXL);
 
+    match act {
+        Some(CardAct::Confirm(ask)) => {
+            local.error = None;
+            local.confirm = Some(ask);
+        }
+        Some(CardAct::Continue(id, name)) => {
+            local.error = None;
+            local.connect = Some(Connect::Hello { id, name, polled: None, heard: None });
+        }
+        Some(CardAct::Open(task)) => {
+            app.task = Some(task);
+            app.tab = Tab::Agents;
+        }
+        None => {}
+    }
     if connect {
         local.error = None;
-        local.connect = Some(Draft::default());
+        local.connect = Some(Connect::Details(Draft::default()));
     }
 
     let ctx = ui.ctx().clone();
-    connect_dialog(&ctx, net, local);
+    let net = app.net.as_mut().expect("chrome runs signed in");
+    connect_dialog(&ctx, net, local, &my_seed, &my_first);
     confirm_dialog(&ctx, net, local);
 }
 
 /// No agents yet: what one is, in a sentence, and the way to connect one.
-fn empty_state(ui: &mut egui::Ui) -> bool {
+fn empty_state(ui: &mut egui::Ui, seed: &str) -> bool {
     let mut clicked = false;
     c::surface(ui, false, |ui| {
         ui.set_width(ui.available_width());
         ui.add_space(space::XL);
         ui.vertical_centered(|ui| {
-            w::agent_mark(ui, size::AVATAR_LG);
+            face::avatar(ui, seed, face::LG, Presence::Idle, "Your agent");
             ui.add_space(space::MD);
             ui.label(
                 RichText::new("No agents yet")
@@ -229,60 +271,252 @@ fn empty_state(ui: &mut egui::Ui) -> bool {
     clicked
 }
 
-/// One agent. Returns a confirmation to ask for when an action was clicked.
-fn agent_row(row: &mut table::Cells<'_, '_, '_>, a: &Value) -> Option<Confirm> {
-    let status = str_of(a, "status").unwrap_or("waiting");
-    let revoked = status == "revoked";
-    let name = str_of(a, "name").unwrap_or("Agent");
-    let mut ask = None;
+/// Where the cards will be, while they load.
+fn skeleton_cards(ui: &mut egui::Ui) {
+    let per_row = per_row(ui.available_width());
+    ui.columns(per_row, |cols| {
+        for col in cols {
+            c::surface(col, false, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    face::skeleton(ui, face::LG, face::LG);
+                    ui.vertical(|ui| {
+                        face::skeleton(ui, 120.0, text::BODY);
+                        face::skeleton(ui, 80.0, text::SMALL);
+                    });
+                });
+                ui.add_space(space::LG);
+                face::skeleton(ui, 180.0, text::SMALL);
+                ui.add_space(space::SM);
+                face::skeleton(ui, 140.0, text::SMALL);
+            });
+        }
+    });
+}
 
-    row.at(0, |ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        w::agent_mark(ui, size::AVATAR_SM - space::XS);
-        // The handle is the agent's identity, so the name gives way first.
-        let handle = str_of(a, "handle").unwrap_or_default();
-        let handle_w = ui
-            .painter()
-            .layout_no_wrap(handle.to_owned(), egui::FontId::monospace(text::CAPTION), colour::TEXT_FAINT)
-            .size()
-            .x;
-        let room = (ui.available_width() - handle_w - space::XL).max(0.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(room, table::ROW_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| table::strong_label(ui, name, if revoked { colour::TEXT_MUTED } else { colour::TEXT }),
-        );
-        w::mono_caption(ui, handle);
-    });
-    row.muted(1, runtime_label(str_of(a, "runtime").unwrap_or("other")));
-    row.at(2, |ui| {
-        let (words, tone) = status_words(status);
-        c::chip(ui, words, tone, true);
-    });
-    let seen = str_of(a, "lastSeenAt").map(super::task::ago).unwrap_or_default();
-    row.muted(3, &seen);
-    let active = a.get("activeTasks").and_then(Value::as_i64).unwrap_or(0);
-    row.text(4, &active.to_string(), if active > 0 { colour::TEXT } else { colour::TEXT_FAINT });
-    row.at(5, |ui| {
-        if revoked {
-            return;
+fn per_row(width: f32) -> usize {
+    if width >= 900.0 {
+        3
+    } else if width >= 560.0 {
+        2
+    } else {
+        1
+    }
+}
+
+/// The cards, a few to a row, each row one height: a row of cards of four
+/// different heights reads as four unrelated things. Last frame's tallest is
+/// the floor, as `viz::row` does it.
+fn grid(ui: &mut egui::Ui, agents: &[&Value], my_seed: &str) -> Option<CardAct> {
+    let n = per_row(ui.available_width());
+    let mut act = None;
+    for (r, chunk) in agents.chunks(n).enumerate() {
+        let id = egui::Id::new(("agents:row-h", n, r));
+        let floor: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+        let mut tallest = 0.0_f32;
+        ui.columns(n, |cols| {
+            for (col, a) in cols.iter_mut().zip(chunk) {
+                let (h, asked) = card(col, a, my_seed, floor);
+                tallest = tallest.max(h);
+                act = act.take().or(asked);
+            }
+        });
+        if (tallest - floor).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(id, tallest));
+            ui.ctx().request_repaint();
         }
-        ui.spacing_mut().item_spacing.x = space::XS;
-        let id = str_of(a, "id").unwrap_or_default().to_owned();
-        if w::ghost(ui, "Revoke").clicked() {
-            ask = Some(Confirm { id: id.clone(), name: name.to_owned(), revoke: true });
-        }
-        if w::ghost(ui, "Rotate token").clicked() {
-            ask = Some(Confirm { id, name: name.to_owned(), revoke: false });
-        }
+        ui.add_space(space::MD);
+    }
+    act
+}
+
+/// One agent: face and name, what it is on, and whether it is set up.
+fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option<CardAct>) {
+    let id = str_of(a, "id").unwrap_or_default().to_owned();
+    let name = str_of(a, "name").unwrap_or("Agent").to_owned();
+    let status = str_of(a, "status").unwrap_or("waiting");
+    let waiting = status != "connected";
+    let current = a.get("currentTask").filter(|t| t.is_object());
+    let task_state = current.and_then(|t| str_of(t, "state")).unwrap_or("idle");
+    let presence = Presence::of(task_state, str_of(a, "lastSeenAt"));
+    let mut act = None;
+    let mut used = 0.0;
+
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        // Every card in a row as tall as the tallest.
+        ui.set_min_height(floor);
+        used = ui
+            // Top-down and left-aligned: `ui.columns` hands out a justified
+            // layout, which spread a wrapped sentence across its line.
+            .with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = space::SM;
+                // ---- face, name, menu
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::MD;
+                    if waiting {
+                        face::avatar_still(ui, my_seed, face::LG, Presence::Waiting, &name);
+                    } else {
+                        face::avatar(ui, my_seed, face::LG, presence, &name);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        viz::more(ui, |ui| {
+                            if waiting && viz::menu_item(ui, "Continue setup", false, None) {
+                                act = Some(CardAct::Continue(id.clone(), name.clone()));
+                            }
+                            if viz::menu_item(ui, "Copy handle", false, None) {
+                                ui.ctx().copy_text(str_of(a, "handle").unwrap_or_default().to_owned());
+                                w::toast(ui.ctx(), "Copied.", false);
+                            }
+                            if viz::menu_item(ui, "Rotate token\u{2026}", false, None) {
+                                act = Some(CardAct::Confirm(Confirm { id: id.clone(), name: name.clone(), revoke: false }));
+                            }
+                            viz::menu_rule(ui);
+                            if viz::menu_item(ui, "Revoke\u{2026}", true, None) {
+                                act = Some(CardAct::Confirm(Confirm { id: id.clone(), name: name.clone(), revoke: true }));
+                            }
+                        });
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = space::XXS;
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&name)
+                                        .size(text::BODY)
+                                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                        .color(colour::TEXT),
+                                )
+                                .truncate(),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = space::XS;
+                                w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());
+                                w::caption(ui, &format!("\u{00B7} {}", runtime_label(str_of(a, "runtime").unwrap_or("other"))));
+                            });
+                        });
+                    });
+                });
+
+                // ---- status and last contact
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::SM;
+                    let (words, tone) = status_words(status);
+                    c::chip(ui, words, tone, true);
+                    if let Some(at) = str_of(a, "lastSeenAt") {
+                        ui.label(RichText::new(format!("seen {}", super::task::ago(at))).size(text::SMALL).color(colour::TEXT_MUTED))
+                            .on_hover_text(super::task::exact(at));
+                    }
+                });
+
+                // ---- what it is on
+                ui.add_space(space::XS);
+                if waiting {
+                    w::muted(ui, "It has not said hello yet. Paste its setup prompt, or pick up where you left off.");
+                    if w::secondary(ui, "Continue setup", true).clicked() {
+                        act = Some(CardAct::Continue(id.clone(), name.clone()));
+                    }
+                } else if let Some(t) = current {
+                    w::caption(ui, &state_words(task_state).to_string());
+                    let title = str_of(t, "title").unwrap_or("Untitled");
+                    let open = ui
+                        .add(
+                            egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT))
+                                .truncate()
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Open the task");
+                    if open.clicked() {
+                        act = str_of(t, "id").map(|i| CardAct::Open(i.to_owned()));
+                    }
+                    if let Some(now) = str_of(t, "now").map(str::trim).filter(|n| !n.is_empty()) {
+                        ui.add(egui::Label::new(RichText::new(now).size(text::SMALL).color(colour::TEXT_MUTED)).truncate());
+                    }
+                } else {
+                    w::caption(ui, "No task right now");
+                    ui.label(RichText::new("Hand it one from the task\u{2019}s page.").size(text::SMALL).color(colour::TEXT_MUTED));
+                }
+
+                // ---- activity and setup
+                let days: Vec<f32> = a
+                    .get("activity")
+                    .and_then(Value::as_array)
+                    .map(|d| d.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+                    .unwrap_or_default();
+                let setup = a.get("setup").filter(|s| s.is_object());
+                if !days.is_empty() || setup.is_some() {
+                    ui.add_space(space::XS);
+                    let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+                    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+                }
+                if !days.is_empty() {
+                    ui.horizontal(|ui| {
+                        w::caption(ui, &format!("Last {} days", days.len()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            face::activity(ui, &days);
+                        });
+                    });
+                }
+                if let Some(s) = setup {
+                    setup_checks(ui, s, true);
+                }
+            })
+            .response
+            .rect
+            .height();
     });
-    ask
+    (used, act)
+}
+
+/// The three things a good setup reports, as ticks, crosses and dashes.
+/// `wrap` lays them out in a line for a card; otherwise one per row.
+fn setup_checks(ui: &mut egui::Ui, setup: &Value, wrap: bool) {
+    let skill = setup.get("skill").and_then(Value::as_str);
+    let flag = |k: &str| setup.get(k).and_then(Value::as_bool);
+    let items = [
+        ("Skill", skill.map(|_| true), skill.map(|v| format!("v{}", v.trim_start_matches('v'))).unwrap_or_default()),
+        ("MCP", flag("mcp"), String::new()),
+        ("Watcher", flag("watcher"), String::new()),
+    ];
+    if wrap {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = space::MD;
+            for (label, ok, detail) in &items {
+                face::check(ui, label, *ok, detail);
+            }
+        });
+    } else {
+        for (label, ok, detail) in &items {
+            face::check(ui, label, *ok, detail);
+        }
+    }
+}
+
+fn revoked_row(ui: &mut egui::Ui, a: &Value, seed: &str) {
+    let name = str_of(a, "name").unwrap_or("Agent");
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), size::ROW),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(size::ROW);
+            ui.spacing_mut().item_spacing.x = space::SM;
+            ui.add_space(space::SM);
+            face::avatar_still(ui, seed, face::XS, Presence::Offline, name);
+            ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT_MUTED));
+            w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());
+            if let Some(at) = str_of(a, "lastSeenAt") {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(space::SM);
+                    w::caption(ui, &format!("last seen {}", super::task::ago(at)));
+                });
+            }
+        },
+    );
 }
 
 // ---------------------------------------------------------------- actions
 
 /// Fold in the reply to the action started on an earlier frame.
-fn settle(net: &mut crate::desktop::net::Net, local: &mut Local) {
+fn settle(net: &mut Net, local: &mut Local) {
     let Some(pending) = local.pending else { return };
     if net.is_loading(ACTION_KEY) {
         return;
@@ -291,10 +525,13 @@ fn settle(net: &mut crate::desktop::net::Net, local: &mut Local) {
         Some(Ok(v)) => {
             local.error = None;
             if pending != Pending::Revoke {
-                let prompt = str_of(v, "prompt").unwrap_or_default().to_owned();
-                let name = v.get("agent").and_then(|a| str_of(a, "name")).unwrap_or("your agent").to_owned();
-                local.connect = None;
-                local.reveal = Some(Reveal { name, prompt, copied: false });
+                let agent = v.get("agent").cloned().unwrap_or(Value::Null);
+                local.connect = Some(Connect::Prompt {
+                    id: str_of(&agent, "id").unwrap_or_default().to_owned(),
+                    name: str_of(&agent, "name").unwrap_or("your agent").to_owned(),
+                    prompt: str_of(v, "prompt").unwrap_or_default().to_owned(),
+                    copied: false,
+                });
             }
         }
         Some(Err(e)) => local.error = Some(e.to_string()),
@@ -303,13 +540,15 @@ fn settle(net: &mut crate::desktop::net::Net, local: &mut Local) {
     local.pending = None;
     // The reply holds the token; it is not kept anywhere but the dialog.
     net.invalidate(ACTION_KEY);
-    net.invalidate(AGENTS_KEY);
+    // In place, so the cards stay put under the dialog while it lands.
+    net.get(AGENTS_KEY, "/api/user/agents");
     if pending == Pending::Revoke {
         // Revoking takes back every task the agent held.
         net.invalidate_prefix("task:");
         net.invalidate_prefix("board:");
         net.invalidate_prefix("mytasks");
         net.invalidate("home");
+        net.invalidate(super::agent_session::ACTIVE_KEY);
         net.invalidate(super::chrome::COUNTS);
     }
 }
@@ -341,144 +580,323 @@ pub(super) fn heading(ui: &mut egui::Ui, s: &str) {
 }
 
 pub(super) const DIALOG_W: f32 = 460.0;
+/// The connect flow is wider: its first step lays the runtimes out two by two.
+const CONNECT_W: f32 = 520.0;
 
-/// Connect an agent, then — on the reply — its one-time prompt. Rotate lands
-/// in the second half too.
-fn connect_dialog(ctx: &egui::Context, net: &mut crate::desktop::net::Net, local: &mut Local) {
-    if let Some(reveal) = local.reveal.as_mut() {
-        let mut done = false;
-        // No backdrop dismissal here: a stray click would lose the only copy.
-        dialog(ctx, "agents:reveal", DIALOG_W, |ui| {
-            heading(ui, &format!("Paste this into {}", reveal.name));
+fn short(name: &str) -> &str {
+    name.split(" (").next().unwrap_or(name).trim()
+}
+
+/// The three steps, for the dialog's indicator.
+fn connect_steps(at: usize, done: bool) -> impl FnOnce(&mut egui::Ui) {
+    move |ui| {
+        let steps = ["Name it", "Paste the prompt", "First contact"].map(|l| Step { label: l.into(), when: None });
+        face::stepper(ui, &steps, at, done, colour::INFO);
+    }
+}
+
+/// The connect flow. Escape and Cancel are safe at every step: nothing is
+/// created until step 1's Continue, and an agent left at step 2 or 3 waits on
+/// its card with "Continue setup".
+fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed: &str, my_first: &str) {
+    let busy = local.pending.is_some();
+    let mut next: Option<Option<Connect>> = None;
+    let mut rotate: Option<Confirm> = None;
+
+    // Step 3 asks, every two seconds, whether the agent has said hello —
+    // refetched in place, so the card behind the dialog does not blink.
+    if let Some(Connect::Hello { polled, heard, .. }) = local.connect.as_mut() {
+        if heard.is_none() {
+            ctx.request_repaint_after(HELLO_POLL);
+            if polled.is_none_or(|t| t.elapsed() >= HELLO_POLL - Duration::from_millis(100)) && !net.is_loading(AGENTS_KEY) {
+                net.get(AGENTS_KEY, "/api/user/agents");
+                *polled = Some(Instant::now());
+            }
+        }
+    }
+    let agents = net.shared(AGENTS_KEY);
+
+    let Some(step) = local.connect.as_mut() else { return };
+    let modal = match step {
+        Connect::Details(draft) => dialog(ctx, "agents:connect", CONNECT_W, |ui| {
+            heading(ui, "Connect an agent");
             ui.add_space(space::XS);
-            ui.label(
-                RichText::new("Shown only once \u{2014} it contains the agent\u{2019}s secret token.")
-                    .size(text::SMALL)
-                    .color(colour::WARN),
-            );
+            w::muted(ui, "It gets its own token and sees only the tasks you hand it.");
+            ui.add_space(space::LG);
+            connect_steps(0, false)(ui);
+            ui.add_space(space::LG);
+
+            w::caption(ui, "Runtime");
+            ui.add_space(space::XXS);
+            runtime_cards(ui, &mut draft.runtime);
             ui.add_space(space::MD);
+
+            let label = runtime_label(&draft.runtime).to_owned();
+            let name_field = w::field(ui, "Display name", &mut draft.name, false, &format!("{label} ({my_first}\u{2019}s Mac)"));
+            ui.add_space(space::MD);
+            let typed = draft.handle.trim().to_owned();
+            let bad = !typed.is_empty() && !valid_handle(&typed);
+            let hint = if draft.runtime == "other" { "my-agent" } else { draft.runtime.as_str() };
+            let entry = w::field(ui, "Handle", &mut draft.handle, false, hint);
+            if bad {
+                ui.painter().rect_stroke(entry.rect, radius::SM as f32, egui::Stroke::new(1.0, colour::DANGER), egui::StrokeKind::Inside);
+                ui.add_space(space::XXS);
+                w::caption(ui, "Lowercase letters, digits and dashes \u{2014} like hermes or claude-mac.");
+            } else {
+                ui.add_space(space::XXS);
+                w::caption(ui, "How the agent is named in the API and its logs.");
+            }
+
+            if let Some(err) = &local.error {
+                ui.add_space(space::MD);
+                w::error(ui, err);
+            }
+            ui.add_space(space::XL);
+            let ready = valid_handle(&typed) && !draft.name.trim().is_empty() && !busy;
+            // Enter from either field submits: egui drops a single-line field's
+            // focus on Enter, which is how it can be told from Enter on a button.
+            let entered = (name_field.lost_focus() || entry.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let mut create = ready && entered;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                let response = w::primary(ui, if busy { "Creating\u{2026}" } else { "Continue" }, ready);
+                if !busy && !ready {
+                    response.clone().on_disabled_hover_text("Needs a name and a valid handle.");
+                }
+                create |= response.clicked();
+                if w::ghost(ui, "Cancel").clicked() && !busy {
+                    next = Some(None);
+                }
+            });
+            if create {
+                local.error = None;
+                net.invalidate(ACTION_KEY);
+                net.post(
+                    ACTION_KEY,
+                    "/api/user/agents",
+                    json!({ "handle": typed, "name": draft.name.trim(), "runtime": draft.runtime }),
+                );
+                local.pending = Some(Pending::Create);
+            }
+        }),
+
+        Connect::Prompt { id, name, prompt, copied } => dialog(ctx, "agents:connect", CONNECT_W, |ui| {
+            heading(ui, &format!("Paste this into {}", short(name)));
+            ui.add_space(space::LG);
+            connect_steps(1, false)(ui);
+            ui.add_space(space::LG);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(text::SMALL + 1.0), egui::Sense::hover());
+                glyph::lock(ui.painter(), r.center(), r.width(), colour::WARN);
+                ui.label(RichText::new("Shown only once \u{2014} it contains the agent\u{2019}s secret token.").size(text::SMALL).color(colour::WARN));
+            });
+            ui.add_space(space::SM);
             egui::Frame::new()
                 .fill(colour::LOG_BG)
                 .stroke(egui::Stroke::new(1.0, colour::LINE))
                 .corner_radius(radius::MD)
                 .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
                 .show(ui, |ui| {
-                    let mut shown: &str = &reveal.prompt;
-                    ui.add(
-                        egui::TextEdit::multiline(&mut shown)
-                            .id(egui::Id::new("agents:prompt"))
-                            .frame(egui::Frame::NONE)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(4)
-                            .font(egui::FontId::monospace(text::SMALL))
-                            .text_color(colour::LOG_TEXT),
-                    );
+                    let mut shown: &str = prompt;
+                    egui::ScrollArea::vertical().max_height(size::ROW * 6.0).show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut shown)
+                                .id(egui::Id::new("agents:prompt"))
+                                .frame(egui::Frame::NONE)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(4)
+                                .font(egui::FontId::monospace(text::SMALL))
+                                .text_color(colour::LOG_TEXT),
+                        );
+                    });
                 });
-            ui.add_space(space::LG);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                let copy = if reveal.copied { "Copied" } else { "Copy" };
-                if w::primary(ui, copy, true).clicked() {
-                    ui.ctx().copy_text(reveal.prompt.clone());
-                    reveal.copied = true;
+            ui.add_space(space::SM);
+            w::muted(ui, &format!("Paste it into {} on your Mac. It sets itself up and says hello here.", short(name)));
+            ui.add_space(space::XL);
+            let mut closed = false;
+            button_row(ui, |ui| {
+                // One filled button: Copy until it is copied, then the way on.
+                let pasted = if *copied { w::primary(ui, "I\u{2019}ve pasted it", true) } else { w::secondary(ui, "I\u{2019}ve pasted it", true) };
+                if pasted.clicked() {
+                    next = Some(Some(Connect::Hello { id: id.clone(), name: name.clone(), polled: None, heard: None }));
                 }
-                if w::ghost(ui, "Done").clicked() {
-                    done = true;
+                let copy = if *copied { w::secondary(ui, "Copied", true) } else { w::primary(ui, "Copy", true) };
+                if copy.clicked() {
+                    ui.ctx().copy_text(prompt.clone());
+                    *copied = true;
                 }
+            }, |ui| {
+                closed = w::ghost(ui, "Close").clicked();
             });
-        });
-        if done {
-            local.reveal = None;
+            if closed {
+                next = Some(None);
+            }
+        }),
+
+        Connect::Hello { id, name, heard, .. } => {
+            let agent = agents.as_deref().and_then(Value::as_array).and_then(|a| a.iter().find(|a| str_of(a, "id") == Some(id.as_str())));
+            let connected = agent.is_some_and(|a| str_of(a, "status") == Some("connected"));
+            let now = ctx.input(|i| i.time);
+            if connected && heard.is_none() {
+                *heard = Some(now);
+            }
+            dialog(ctx, "agents:connect", CONNECT_W, |ui| {
+                let s = short(name);
+                heading(ui, &if connected { format!("{s} is connected") } else { format!("Waiting for {s} to say hello\u{2026}") });
+                ui.add_space(space::LG);
+                connect_steps(2, connected)(ui);
+                ui.add_space(space::XL);
+                ui.vertical_centered(|ui| {
+                    let presence = if connected { Presence::Idle } else { Presence::Waiting };
+                    face::avatar(ui, my_seed, face::LG, presence, name);
+                    ui.add_space(space::MD);
+                    if connected {
+                        w::muted(ui, "Said hello just now. Hand it a task from any task\u{2019}s page.");
+                    } else {
+                        w::muted(ui, "This page updates by itself, usually within a minute of pasting.");
+                    }
+                });
+                if let (true, Some(at)) = (connected, *heard) {
+                    ui.add_space(space::MD);
+                    let setup = agent.and_then(|a| a.get("setup")).filter(|s| s.is_object()).cloned().unwrap_or(json!({}));
+                    checklist(ui, &setup, now - at);
+                }
+                ui.add_space(space::XL);
+                button_row(ui, |ui| {
+                    if connected {
+                        if w::primary(ui, "Done", true).clicked() {
+                            next = Some(None);
+                        }
+                    } else if w::ghost(ui, "Close").clicked() {
+                        next = Some(None);
+                    }
+                }, |ui| {
+                    if !connected && w::link(ui, "Lost the prompt? Get a new one").clicked() {
+                        rotate = Some(Confirm { id: id.clone(), name: name.clone(), revoke: false });
+                    }
+                });
+            })
         }
-        return;
+    };
+
+    if modal.should_close() && !busy {
+        next = Some(None);
     }
+    if let Some(n) = next {
+        local.connect = n;
+        local.error = None;
+    }
+    if let Some(r) = rotate {
+        local.connect = None;
+        local.confirm = Some(r);
+    }
+}
 
-    let Some(draft) = local.connect.as_mut() else { return };
-    let busy = local.pending.is_some();
-    let mut create = false;
-    let mut close = false;
-
-    let modal = dialog(ctx, "agents:connect", DIALOG_W, |ui| {
-        heading(ui, "Connect an agent");
-        ui.add_space(space::XS);
-        w::muted(ui, "It gets its own token and sees only the tasks you hand it.");
-        ui.add_space(space::LG);
-
-        let typed = draft.handle.trim().to_owned();
-        let bad = !typed.is_empty() && !valid_handle(&typed);
-        let entry = w::field(ui, "Handle", &mut draft.handle, false, "hermes");
-        if bad {
-            ui.painter().rect_stroke(
-                entry.rect,
-                radius::SM as f32,
-                egui::Stroke::new(1.0, colour::DANGER),
-                egui::StrokeKind::Inside,
-            );
-            ui.add_space(space::XXS);
-            w::caption(ui, "Lowercase letters, digits and dashes \u{2014} like hermes or claude-mac.");
-        }
-        ui.add_space(space::MD);
-        w::field(ui, "Display name", &mut draft.name, false, "Hermes (Anmol\u{2019}s Mac)");
-        ui.add_space(space::MD);
-        w::caption(ui, "Runtime");
-        ui.add_space(space::XXS);
-        let others: Vec<(String, String)> = RUNTIMES
-            .iter()
-            .filter(|(v, _)| *v != draft.runtime)
-            .map(|(v, l)| ((*v).to_owned(), (*l).to_owned()))
-            .collect();
-        let mut slot: Option<String> = None;
-        ui.scope(|ui| {
-            ui.spacing_mut().interact_size.x = size::PICKER_W;
-            viz::value_select(ui, runtime_label(&draft.runtime), &others, &mut slot);
-        });
-        if let Some(rt) = slot {
-            draft.runtime = rt;
-        }
-
-        if let Some(err) = &local.error {
-            ui.add_space(space::MD);
-            w::error(ui, err);
-        }
-        ui.add_space(space::XL);
+/// A dialog's foot: `right` flush right, `left` flush left, one row high.
+/// A right-to-left layout on its own takes the rest of a modal's height and
+/// centres its buttons in it.
+fn button_row(ui: &mut egui::Ui, right: impl FnOnce(&mut egui::Ui), left: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.set_height(size::CONTROL);
+        left(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
-            let ready = valid_handle(&typed) && !draft.name.trim().is_empty() && !busy;
-            let label = if busy { "Creating\u{2026}" } else { "Create" };
-            let response = w::primary(ui, label, ready);
-            if !busy && !ready {
-                response.clone().on_disabled_hover_text("Needs a valid handle and a name.");
-            }
-            create = response.clicked();
-            if w::ghost(ui, "Cancel").clicked() {
-                close = true;
-            }
+            right(ui);
         });
     });
+}
 
-    if create {
-        local.error = None;
-        net.invalidate(ACTION_KEY);
-        net.post(
-            ACTION_KEY,
-            "/api/user/agents",
-            json!({
-                "handle": draft.handle.trim(),
-                "name": draft.name.trim(),
-                "runtime": draft.runtime,
-            }),
-        );
-        local.pending = Some(Pending::Create);
+/// The runtimes as a two-by-two set of tiles: the name and a line on what it
+/// is. The chosen one is raised and ticked — not outlined in blue.
+fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
+    let gap = space::SM;
+    let tile_w = (ui.available_width() - gap) / 2.0;
+    for pair in RUNTIMES.iter().zip(RUNTIME_LINES).collect::<Vec<_>>().chunks(2) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for ((value, label), line) in pair {
+                let on = runtime == value;
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), egui::Sense::click());
+                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *label));
+                let response = motion::operable(ui, response, radius::MD as f32);
+                if response.clicked() {
+                    *runtime = (*value).to_owned();
+                }
+                let hot = response.hovered() || response.has_focus();
+                let fill = if on {
+                    colour::SURFACE_ACTIVE
+                } else {
+                    motion::hover_fill(ui, response.id.with("fill"), hot, colour::INSET, colour::SURFACE_HOVER)
+                };
+                let p = ui.painter();
+                p.rect_filled(rect, radius::MD as f32, fill);
+                p.rect_stroke(
+                    rect,
+                    radius::MD as f32,
+                    egui::Stroke::new(1.0, if on || hot { colour::LINE_STRONG } else { colour::LINE }),
+                    egui::StrokeKind::Inside,
+                );
+                let x = rect.left() + space::MD;
+                p.text(
+                    egui::pos2(x, rect.top() + space::MD),
+                    egui::Align2::LEFT_TOP,
+                    *label,
+                    egui::FontId::new(text::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+                    if on { colour::TEXT } else { colour::TEXT_2 },
+                );
+                let galley = w::truncated(ui, line, egui::FontId::proportional(text::CAPTION), colour::TEXT_MUTED, rect.width() - space::MD * 2.0);
+                ui.painter().galley(egui::pos2(x, rect.bottom() - space::MD - galley.size().y), galley, colour::TEXT_MUTED);
+                if on {
+                    let c = egui::pos2(rect.right() - space::MD - 5.0, rect.top() + space::MD + 7.0);
+                    glyph::tick(ui.painter(), c, 11.0, colour::TEXT);
+                }
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+        });
+        ui.add_space(gap - ui.spacing().item_spacing.y);
     }
-    if (close || modal.should_close()) && !busy {
-        local.connect = None;
-        local.error = None;
+}
+
+/// What the agent reported at hello, one line at a time: each fades in a beat
+/// after the last. With reduced motion they are simply there.
+fn checklist(ui: &mut egui::Ui, setup: &Value, since: f64) {
+    const STAGGER: f64 = 0.12;
+    const FADE: f64 = 0.18;
+    let still = ui.style().animation_time <= f32::EPSILON;
+    let skill = setup.get("skill").and_then(Value::as_str);
+    let flag = |k: &str| setup.get(k).and_then(Value::as_bool);
+    let items = [
+        ("Skill installed", skill.map(|_| true), skill.map(|v| format!("v{}", v.trim_start_matches('v'))).unwrap_or_default()),
+        ("MCP server registered", flag("mcp"), String::new()),
+        ("Watcher running", flag("watcher"), String::new()),
+    ];
+    let mut animating = false;
+    // A plain list, not a card: the dialog is the surface.
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = space::SM;
+        for (i, (label, ok, detail)) in items.iter().enumerate() {
+            let t = if still { 1.0 } else { ((since - i as f64 * STAGGER) / FADE).clamp(0.0, 1.0) as f32 };
+            animating |= t < 1.0;
+            ui.scope(|ui| {
+                ui.set_opacity(egui::emath::easing::cubic_out(t));
+                face::check(ui, label, *ok, detail);
+            });
+        }
+        if items.iter().any(|(_, ok, _)| ok.is_none()) {
+            w::caption(ui, "A dash is something this agent\u{2019}s kit does not report yet.");
+        }
+    });
+    if animating {
+        ui.ctx().request_repaint();
     }
 }
 
 /// "Are you sure" for rotate and revoke. Both cut off the agent's current
 /// token, so neither happens on one click.
-fn confirm_dialog(ctx: &egui::Context, net: &mut crate::desktop::net::Net, local: &mut Local) {
+fn confirm_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
     let Some(ask) = local.confirm.clone() else { return };
     let mut go = false;
     let mut close = false;
@@ -524,7 +942,7 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_handle;
+    use super::{per_row, valid_handle};
 
     #[test]
     fn handles() {
@@ -534,5 +952,12 @@ mod tests {
         for bad in ["", "Hermes", "my agent", "-x", "under_score", "émile"] {
             assert!(!valid_handle(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn cards_per_row() {
+        assert_eq!(per_row(1000.0), 3);
+        assert_eq!(per_row(700.0), 2);
+        assert_eq!(per_row(400.0), 1);
     }
 }

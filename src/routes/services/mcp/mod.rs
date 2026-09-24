@@ -312,6 +312,7 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
                 &body()?,
                 opt_str_arg(args, "status"),
                 opt_str_arg(args, "expectedStatus"),
+                opt_str_arg(args, "now").as_deref(),
             )
             .await?,
         ),
@@ -327,6 +328,14 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
             )
             .await?,
         ),
+        "task_now" => to_value(agent::now(state, me, task()?, &str_arg(args, "text")?).await?),
+        "task_log" => {
+            let lines: Vec<String> = args
+                .get("lines")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .ok_or_else(|| AppError::BadRequest("'lines' is required: an array of strings, oldest first".into()))?;
+            agent::log(state, me, task()?, &lines).await
+        }
         "task_note" => to_value(agent::note(state, me, task()?, &body()?).await?),
         "task_submit" => to_value(
             agent::submit(

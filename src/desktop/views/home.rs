@@ -158,6 +158,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     net.get_once(HOME, "/api/user/home");
     net.get_once(TASKS, "/api/user/tasks");
+    // With the rest, not once the figures are drawn: that made it a second wave.
+    net.get_once(super::agent_session::ACTIVE_KEY, "/api/user/agents/active");
     if state.archived {
         net.get_once(ARCHIVED, "/api/user/tasks?archived=true");
     }
@@ -219,6 +221,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
         ],
     );
+
+    // ---- whose agents are holding what, right now
+    if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap()) {
+        go = Some(Target::Task(id));
+    }
 
     // The count is drawn from last frame's filter state; a click repaints, so
     // the lag is never seen. Refiltered only when the filters or the rows move.

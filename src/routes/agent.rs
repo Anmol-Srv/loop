@@ -35,6 +35,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/tasks/{id}/attach", post(attach))
         .route("/api/agent/tasks/{id}/note", post(note))
         .route("/api/agent/tasks/{id}/submit", post(submit))
+        .route("/api/agent/tasks/{id}/now", post(now))
+        .route("/api/agent/tasks/{id}/log", post(log))
         .route("/api/agent/events", get(events))
         .route("/api/agent/events/ack", post(ack_events))
         .route("/api/agent/inbox", get(inbox))
@@ -65,6 +67,9 @@ fn text(content_type: &'static str, body: String) -> Response {
 pub struct HelloBody {
     #[serde(default)]
     pub runtime: Option<String>,
+    /// What setup installed; shown to the owner as a checklist.
+    #[serde(default)]
+    pub setup: Option<agent::Setup>,
     // `version` is accepted and ignored, like any unknown field.
 }
 
@@ -75,8 +80,8 @@ async fn hello(
     body: Option<Json<HelloBody>>,
 ) -> AppResult<ApiResponse<Value>> {
     let id = caller.agent()?;
-    let runtime = body.and_then(|Json(b)| b.runtime);
-    Ok(ApiResponse::ok(agent::hello(&state, id, runtime.as_deref(), &server_url(&headers)).await?))
+    let (runtime, setup) = body.map(|Json(b)| (b.runtime, b.setup)).unwrap_or_default();
+    Ok(ApiResponse::ok(agent::hello(&state, id, runtime.as_deref(), setup, &server_url(&headers)).await?))
 }
 
 async fn me(State(state): State<AppState>, caller: Caller, headers: HeaderMap) -> AppResult<ApiResponse<Value>> {
@@ -109,6 +114,9 @@ pub struct UpdateBody {
     /// refused with a 409 naming who moved it.
     #[serde(default)]
     pub expected_status: Option<String>,
+    /// A new now line, set with the update.
+    #[serde(default)]
+    pub now: Option<String>,
 }
 
 async fn update(
@@ -118,7 +126,7 @@ async fn update(
     Json(b): Json<UpdateBody>,
 ) -> AppResult<ApiResponse<TaskRow>> {
     Ok(ApiResponse::ok(
-        agent::update(&state, caller.agent()?, id, &b.body, b.status, b.expected_status).await?,
+        agent::update(&state, caller.agent()?, id, &b.body, b.status, b.expected_status, b.now.as_deref()).await?,
     ))
 }
 
@@ -143,6 +151,34 @@ async fn note(
     Json(b): Json<BodyOnly>,
 ) -> AppResult<ApiResponse<Note>> {
     Ok(ApiResponse::ok(agent::note(&state, caller.agent()?, id, &b.body).await?))
+}
+
+#[derive(Deserialize)]
+pub struct NowBody {
+    pub text: String,
+}
+
+async fn now(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<NowBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(agent::now(&state, caller.agent()?, id, &b.text).await?))
+}
+
+#[derive(Deserialize)]
+pub struct LogBody {
+    pub lines: Vec<String>,
+}
+
+async fn log(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<LogBody>,
+) -> AppResult<ApiResponse<Value>> {
+    Ok(ApiResponse::ok(agent::log(&state, caller.agent()?, id, &b.lines).await?))
 }
 
 #[derive(Deserialize)]

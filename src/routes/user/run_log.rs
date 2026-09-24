@@ -30,5 +30,5 @@ async fn read(
     Query(q): Query<ReadQuery>,
 ) -> AppResult<ApiResponse<Vec<RunLogLine>>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::run_log::read(&state, id, q.after_seq).await?))
+    Ok(ApiResponse::ok(controllers::run_log::read(&state, id, caller.actor.person_id, q.after_seq).await?))
 }

@@ -57,12 +57,23 @@ fn from_hue(hue: f32, sat: f32, val: f32) -> Color32 {
     )
 }
 
+/// A person's colour. An agent wears its owner's, so whose it is reads at a
+/// glance.
+pub fn tint(seed: &str) -> Color32 {
+    from_hue(hue_of(seed), 0.42, 0.72)
+}
+
 /// The avatar.
 pub fn small(ui: &mut Ui, seed: &str, size: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let hue = hue_of(seed);
-    let p = ui.painter();
-    p.circle_filled(rect.center(), size / 2.0, from_hue(hue, 0.42, 0.72));
+    paint(ui.painter(), rect, seed);
+    response.on_hover_text(seed)
+}
+
+/// The disc and initials into `rect`, for a caller that has placed it already.
+pub fn paint(p: &egui::Painter, rect: egui::Rect, seed: &str) {
+    let size = rect.width();
+    p.circle_filled(rect.center(), size / 2.0, tint(seed));
     p.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -70,5 +81,4 @@ pub fn small(ui: &mut Ui, seed: &str, size: f32) -> Response {
         FontId::proportional((size * 0.36).max(text::CAPTION)),
         colour::ON_ACCENT,
     );
-    response.on_hover_text(seed)
 }

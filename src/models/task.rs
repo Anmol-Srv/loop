@@ -154,8 +154,8 @@ pub struct Task {
     /// Set while the task itself is archived. Its project can archive it too:
     /// see `TaskRow::project_archived_at`.
     pub archived_at: Option<DateTime<Utc>>,
-    /// The agent this task is handed off to, if any:
-    /// `{id, handle, name, state, lastSeenAt}`. Built in SQL so every query
+    /// The agent this task is handed off to, if any: `{id, handle, name,
+    /// runtime, ownerName, state, now, nowAt, delegatedAt, lastSeenAt}`. Built in SQL so every query
     /// that returns a task carries it without a second round trip.
     pub delegate: Option<serde_json::Value>,
 }
@@ -186,6 +186,9 @@ pub struct TaskRow {
     /// Whether the viewer may archive, restore or delete it: `can_manage`.
     pub can_archive: bool,
     pub can_delete: bool,
+    /// Whether the viewer may read the agent's private side of this task —
+    /// questions, answers, instructions, the step log: `sees_agent_private`.
+    pub can_see_agent_private: bool,
 }
 
 #[derive(Debug, Default)]
@@ -208,6 +211,16 @@ pub struct TaskFilter {
 pub fn can_manage(viewer: &str) -> String {
     format!(
         "(coalesce(t.created_by = {viewer} OR pr.created_by = {viewer}, false)
+          OR EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND role = 'admin'))"
+    )
+}
+
+/// Who may read the private side of a task's agent session: the task's
+/// owner (its assignee, the person who hands it to their agent) or an admin.
+/// SQL over `t`, for the person bound at `viewer`; a NULL viewer sees nothing.
+pub fn sees_agent_private(viewer: &str) -> String {
+    format!(
+        "(coalesce(t.assignee_person_id = {viewer}, false)
           OR EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND role = 'admin'))"
     )
 }
@@ -238,7 +251,10 @@ macro_rules! plain_task_columns {
 macro_rules! delegate_column {
     () => {
         "(SELECT json_build_object('id', a.id, 'handle', a.handle, 'name', a.name, \
-                 'state', agent_state, 'lastSeenAt', a.last_seen_at) \
+                 'runtime', a.runtime, 'ownerName', (SELECT name FROM person WHERE id = a.owner_id), \
+                 'ownerEmail', (SELECT email FROM person WHERE id = a.owner_id), \
+                 'state', agent_state, 'now', agent_now, 'nowAt', agent_now_at, \
+                 'delegatedAt', delegated_at, 'lastSeenAt', a.last_seen_at) \
             FROM agent a WHERE a.id = delegate_agent_id) AS delegate"
     };
 }
@@ -268,13 +284,15 @@ pub fn task_row_select(viewer: &str) -> String {
                 (SELECT count(*) FROM task b
                   WHERE b.id = ANY(t.blocked_by) AND b.status IN {RESOLVED}) AS blockers_done,
                 pr.archived_at AS project_archived_at,
-                {can} AS can_archive, {can} AS can_delete
+                {can} AS can_archive, {can} AS can_delete,
+                {private} AS can_see_agent_private
            FROM task t
            JOIN phase ph ON ph.id = t.phase_id
            JOIN project pr ON pr.id = ph.project_id
            LEFT JOIN person own ON own.id = t.assignee_person_id",
         cols = task_columns_t(),
         can = can_manage(viewer),
+        private = sees_agent_private(viewer),
         RESOLVED = BLOCKER_RESOLVED,
     )
 }

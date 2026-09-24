@@ -27,24 +27,23 @@
 //!   the transcript.
 
 use std::cell::RefCell;
-use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
+use super::agent_session::{self as session, Session};
 use super::agents::{state_tone, state_words, AGENTS_KEY};
 use super::menus::{task_items, Pick, Viewer};
 use super::projects::{person_option, PEOPLE_KEY, PROSE_W};
+use crate::desktop::design::agent::{self as face, Presence};
 use crate::desktop::design::{
-    avatar, cards as c, colour, pad, radius, shell, size, space, status_label, text, theme, viz,
-    widgets as w,
+    avatar, cards as c, colour, radius, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::net::memo;
 use crate::desktop::{App, Tab};
 
 const TASK_KEY: &str = "task:one";
-const LOG_KEY: &str = "task:logs";
 const PATCH_KEY: &str = "task:patch";
 const ARTIFACTS_KEY: &str = "task:artifacts";
 const ATTACH_KEY: &str = "task:artifact:new";
@@ -58,16 +57,6 @@ const AGENT_KEY: &str = "task:agent";
 /// The server's table of legal moves per track. Under `__`, not `task:`: it
 /// does not change while the app runs, so nothing here invalidates it.
 const TRACKS_KEY: &str = "__tracks";
-
-/// How far out we ask egui to wake us.
-const POLL: Duration = Duration::from_secs(2);
-/// Fire slightly early: a repaint scheduled for +2s can land a hair under it,
-/// and a strict `>= POLL` test would then skip a tick and halve the cadence.
-const DUE: Duration = Duration::from_millis(1_900);
-
-/// The log well, in rows rather than pixels — tall enough to watch a run, short
-/// enough that the controls above it stay on screen.
-const LOG_ROWS: f32 = 11.0;
 
 /// The assignee disc. Sized off the spacing scale so it lines up with the pills
 /// beside it instead of inventing a diameter.
@@ -222,13 +211,8 @@ impl Prompt {
 /// opening a different task resets it.
 struct Local {
     task_id: String,
-    lines: Vec<(i64, String)>,
-    /// `afterSeq` for the next request: the highest seq we already hold.
-    next_seq: i64,
-    fired_at: Instant,
-    /// A log request is out and its reply has not been folded in yet.
-    pending: bool,
-    log_error: Option<String>,
+    /// The agent session's drafts and its step log.
+    session: session::State,
     patching: bool,
     /// The status the page showed when the move was asked for. Sent as
     /// `expectedStatus`, so a move made from a stale page is refused rather
@@ -256,10 +240,6 @@ struct Local {
     resource_error: Option<String>,
     /// The agent action in flight — its past tense, for the notice.
     agent_busy: Option<String>,
-    /// The answer to an agent's open question, and the note that has to go
-    /// with a request for changes.
-    answer: String,
-    changes: String,
     /// A pick from the title's menu, acted on once the page is drawn.
     pick: Option<Pick>,
     /// A task action from a menu is out.
@@ -270,11 +250,7 @@ impl Local {
     fn new(task_id: String) -> Self {
         Self {
             task_id,
-            lines: Vec::new(),
-            next_seq: 0,
-            fired_at: Instant::now(),
-            pending: false,
-            log_error: None,
+            session: session::State::default(),
             patching: false,
             move_from: String::new(),
             notice: None,
@@ -289,8 +265,6 @@ impl Local {
             removing: false,
             resource_error: None,
             agent_busy: None,
-            answer: String::new(),
-            changes: String::new(),
             pick: None,
             archiving: false,
         }
@@ -429,10 +403,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let busy = local.patching || local.attaching || local.saving || local.agent_busy.is_some();
     let people = net.shared(PEOPLE_KEY).filter(|_| can_write);
     let people: &[Value] = people.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
-    // Agents are the next phase: a human task has no run log to watch, and
-    // "Waiting for the agent's first line" on every one of them was a promise
-    // nobody was going to keep.
-    let agent = str_of(&task, "assigneeKind") == Some("agent");
+    // Who may read the owner's conversation with the agent. The server says;
+    // without its word, the owner and admins are exactly who it names.
+    let private = task.get("canSeeAgentPrivate").and_then(Value::as_bool).unwrap_or(mine || admin);
 
     let mut editing = false;
     shell::with_rail(
@@ -445,21 +418,35 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 );
             }
             shell::Part::Body => {
-                if let Some(d) = delegate {
-                    delegate_panels(ui, net, task_id, &task, d, mine, local);
-                }
                 if !editing {
                     description(ui, &task);
                 }
                 manual_reason(ui, &task);
 
+                if let Some(d) = delegate {
+                    let notes = net.shared(NOTES_KEY);
+                    let evidence = net.shared(ARTIFACTS_KEY);
+                    let s = Session {
+                        task_id,
+                        task: &task,
+                        delegate: d,
+                        notes: notes.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                        notes_loaded: notes.is_some() || net.error(NOTES_KEY).is_some(),
+                        evidence: evidence.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                        mine,
+                        private,
+                        busy: local.agent_busy.is_some(),
+                    };
+                    if let Some(ask) = session::show(ui, net, &s, &mut local.session) {
+                        agent_action(net, task_id, ask.into(), local);
+                    }
+                }
+
                 shell::divider(ui);
                 resources(ui, net, track, can_write, local);
 
                 shell::divider(ui);
-                notes(ui, net, task_id, local);
-
-                run_log(ui, net, task_id, &status, agent, local);
+                notes(ui, net, task_id, delegate.is_some(), local);
             }
         },
         |ui| {
@@ -767,6 +754,18 @@ enum AgentAsk {
     Answer(String),
     Approve,
     Changes(String),
+    Instruct(String),
+}
+
+impl From<session::Ask> for AgentAsk {
+    fn from(a: session::Ask) -> Self {
+        match a {
+            session::Ask::Answer(b) => AgentAsk::Answer(b),
+            session::Ask::Approve => AgentAsk::Approve,
+            session::Ask::Changes(b) => AgentAsk::Changes(b),
+            session::Ask::Instruct(b) => AgentAsk::Instruct(b),
+        }
+    }
 }
 
 /// The hand-off control in the title's actions: "Take back" while an agent
@@ -819,6 +818,11 @@ fn agent_action(net: &mut crate::desktop::net::Net, task_id: &str, ask: AgentAsk
             json!({ "decision": "changes", "body": body }),
             "Changes requested.".to_owned(),
         ),
+        AgentAsk::Instruct(body) => (
+            format!("{base}/instruct"),
+            json!({ "body": body }),
+            "Sent \u{2014} the agent hears it at its next step.".to_owned(),
+        ),
     };
     local.notice = None;
     net.invalidate(AGENT_KEY);
@@ -835,162 +839,13 @@ fn settle_agent(net: &mut crate::desktop::net::Net, local: &mut Local) {
     match net.peek(AGENT_KEY) {
         Some(Ok(_)) => {
             local.notice = Some((done, false));
-            local.answer.clear();
-            local.changes.clear();
+            local.session.sent();
         }
         Some(Err(e)) => local.notice = Some((e.to_string(), true)),
         None => {}
     }
     invalidate_after_move(net);
     net.invalidate(AGENTS_KEY);
-}
-
-/// What the agent is waiting on the owner for, above the description: an open
-/// question with its answer box, or a submission with its review. Neither is
-/// shown to anyone but the assignee as a control — everyone else reads whose
-/// turn it is.
-fn delegate_panels(
-    ui: &mut egui::Ui,
-    net: &mut crate::desktop::net::Net,
-    task_id: &str,
-    task: &Value,
-    delegate: &Value,
-    mine: bool,
-    local: &mut Local,
-) {
-    let state = str_of(delegate, "state").unwrap_or_default();
-    if state != "needs_input" && state != "in_review" {
-        return;
-    }
-    let agent = str_of(delegate, "name").unwrap_or("The agent").to_owned();
-    let owner = str_of(task, "assigneeName").unwrap_or("the assignee").to_owned();
-    let notes = net.shared(NOTES_KEY);
-    let notes: &[Value] = notes.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
-    let want = if state == "needs_input" { "question" } else { "submission" };
-    // The newest entry of the kind, whatever order the server sent them in.
-    let latest = notes
-        .iter()
-        .filter(|n| str_of(n, "kind") == Some(want))
-        .max_by(|a, b| str_of(a, "createdAt").cmp(&str_of(b, "createdAt")));
-    let busy = local.agent_busy.is_some();
-    let mut ask: Option<AgentAsk> = None;
-
-    ui.add_space(space::LG);
-    if state == "needs_input" {
-        egui::Frame::new()
-            .fill(colour::WARN_BG)
-            .stroke(egui::Stroke::new(1.0, colour::WARN.gamma_multiply(0.30)))
-            .corner_radius(radius::LG)
-            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                panel_head(ui, &format!("{agent} asked"), latest);
-                ui.add_space(space::XS);
-                let body = latest.and_then(|n| str_of(n, "body")).unwrap_or("Its question did not load.");
-                ui.label(RichText::new(body).size(text::BODY).color(colour::TEXT));
-                ui.add_space(space::SM);
-                if !mine {
-                    w::caption(ui, &format!("Waiting for {owner} to answer."));
-                    return;
-                }
-                w::field_multiline(ui, "", &mut local.answer, 2, &format!("Answer {agent}\u{2026}"));
-                ui.add_space(space::SM);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    let ready = !local.answer.trim().is_empty() && !busy;
-                    let response = w::primary(ui, "Send answer", ready);
-                    if local.answer.trim().is_empty() {
-                        response.clone().on_disabled_hover_text("Write the answer first.");
-                    }
-                    if response.clicked() {
-                        ask = Some(AgentAsk::Answer(local.answer.trim().to_owned()));
-                    }
-                });
-            });
-    } else {
-        let target = str_of(task, "reviewTarget").unwrap_or("completed");
-        let evidence = net.shared(ARTIFACTS_KEY);
-        let evidence: Vec<&Value> = evidence
-            .as_deref()
-            .and_then(Value::as_array)
-            .map(|rows| rows.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect())
-            .unwrap_or_default();
-        egui::Frame::new()
-            .fill(colour::SURFACE)
-            .stroke(egui::Stroke::new(1.0, colour::AGENT.gamma_multiply(0.35)))
-            .corner_radius(radius::LG)
-            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                panel_head(ui, &format!("{agent} submitted this for review"), latest);
-                ui.add_space(space::SM);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::SM;
-                    w::muted(ui, "Approving moves it to");
-                    c::chip(ui, status_label(target), c::status_tone(target), true);
-                });
-                if let Some(summary) = latest.and_then(|n| str_of(n, "body")) {
-                    ui.add_space(space::SM);
-                    ui.label(RichText::new(summary).size(text::BODY).color(colour::TEXT_2));
-                }
-                ui.add_space(space::MD);
-                w::caption(ui, "Evidence");
-                ui.add_space(space::XXS);
-                if evidence.is_empty() {
-                    faint(ui, "Nothing attached.");
-                } else {
-                    for row in &evidence {
-                        resource_row(ui, row, false, local);
-                    }
-                }
-                ui.add_space(space::SM);
-                if !mine {
-                    w::caption(ui, &format!("Waiting for {owner} to review."));
-                    return;
-                }
-                w::field_multiline(
-                    ui,
-                    "",
-                    &mut local.changes,
-                    2,
-                    "What needs to change \u{2014} needed to request changes",
-                );
-                ui.add_space(space::SM);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.x = space::SM;
-                    if w::primary(ui, "Approve", !busy).clicked() {
-                        ask = Some(AgentAsk::Approve);
-                    }
-                    let noted = !local.changes.trim().is_empty();
-                    let response = w::secondary(ui, "Request changes", noted && !busy);
-                    if !noted {
-                        response.clone().on_disabled_hover_text("Say what needs to change first.");
-                    }
-                    if response.clicked() {
-                        ask = Some(AgentAsk::Changes(local.changes.trim().to_owned()));
-                    }
-                });
-            });
-    }
-    if let Some(ask) = ask {
-        agent_action(net, task_id, ask, local);
-    }
-}
-
-/// The agent mark, who did what, and when.
-fn panel_head(ui: &mut egui::Ui, what: &str, note: Option<&Value>) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        w::agent_mark(ui, AVATAR - space::XS);
-        ui.label(
-            RichText::new(what)
-                .size(text::SMALL)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
-        );
-        if let Some(at) = note.and_then(|n| str_of(n, "createdAt")) {
-            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_MUTED));
-        }
-    });
 }
 
 // ---------------------------------------------------------------- the rail
@@ -1142,12 +997,15 @@ fn rail(
     }
 
     if let Some(d) = task.get("delegate").filter(|d| d.is_object()) {
-        shell::property(ui, "Delegate", |ui| {
-            ui.spacing_mut().item_spacing.x = space::XS;
-            w::agent_mark(ui, AVATAR - space::XS);
-            value(ui, str_of(d, "name").unwrap_or("Agent"));
-        });
         let state = str_of(d, "state").unwrap_or("handed_off");
+        shell::property(ui, "Delegate", |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            let name = str_of(d, "name").unwrap_or("Agent");
+            let seed = str_of(task, "assigneeEmail").or_else(|| str_of(task, "assigneeName")).unwrap_or(name);
+            // Still: the session's header carries the one moving ring.
+            face::avatar_still(ui, seed, face::SM, Presence::of(state, str_of(d, "lastSeenAt")), name);
+            ui.add(egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT)).truncate());
+        });
         shell::property(ui, "Agent state", |ui| {
             c::chip(ui, state_words(state), state_tone(state), true);
         });
@@ -1826,6 +1684,7 @@ fn notes(
     ui: &mut egui::Ui,
     net: &mut crate::desktop::net::Net,
     task_id: &str,
+    with_session: bool,
     local: &mut Local,
 ) {
     if local.posting_note && !net.is_loading(NOTE_KEY) {
@@ -1843,8 +1702,12 @@ fn notes(
         }
     }
 
-    let rows = net.shared(NOTES_KEY);
-    let rows: &[Value] = rows.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let all = net.shared(NOTES_KEY);
+    let all: &[Value] = all.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    // With an agent on the task, its updates, questions and report are the
+    // session's timeline; the thread keeps what people said to each other.
+    let rows: Vec<&Value> =
+        all.iter().filter(|n| !with_session || !str_of(n, "kind").is_some_and(session::session_kind)).collect();
     shell::section_count(ui, "Notes", rows.len());
 
     if let Some(err) = net.error(NOTES_KEY) {
@@ -1951,140 +1814,6 @@ fn note_kind(kind: &str) -> Option<(&'static str, egui::Color32)> {
     })
 }
 
-// -------------------------------------------------------------------- run log
-
-fn run_log(
-    ui: &mut egui::Ui,
-    net: &mut crate::desktop::net::Net,
-    task_id: &str,
-    status: &str,
-    agent: bool,
-    local: &mut Local,
-) {
-    // Only an agent's run streams, so only an agent's task polls.
-    let live = agent && status == "in_progress";
-
-    // 1. Fold in whatever came back, appending to the transcript we hold.
-    if local.pending && !net.is_loading(LOG_KEY) {
-        match net.peek(LOG_KEY) {
-            Some(Ok(v)) => {
-                local.log_error = None;
-                for row in v.as_array().into_iter().flatten() {
-                    let seq = row.get("seq").and_then(Value::as_i64).unwrap_or(0);
-                    if seq > local.next_seq {
-                        local.next_seq = seq;
-                        local
-                            .lines
-                            .push((seq, str_of(row, "text").unwrap_or_default().to_string()));
-                    }
-                }
-                local.pending = false;
-            }
-            Some(Err(e)) => {
-                local.log_error = Some(e.to_string());
-                local.pending = false;
-            }
-            None => {}
-        }
-    }
-
-    // 2. Tick. `request_repaint_after` is the whole clock: it wakes the app
-    //    once, two seconds out, and nothing else keeps the loop hot. A task
-    //    that is not in progress asks for no repaint at all, so the view is
-    //    static and free.
-    if live {
-        ui.ctx().request_repaint_after(POLL);
-        if !local.pending && local.fired_at.elapsed() >= DUE {
-            net.invalidate(LOG_KEY);
-        }
-    }
-
-    // 3. Fire, if nothing is cached and nothing is out. Covers both the first
-    //    load and the tick above, and cannot double-fire: `pending` is only
-    //    cleared by step 1.
-    if !local.pending && net.peek(LOG_KEY).is_none() {
-        net.get(
-            LOG_KEY,
-            &format!("/api/user/tasks/{task_id}/logs?afterSeq={}", local.next_seq),
-        );
-        local.pending = true;
-        local.fired_at = Instant::now();
-    }
-
-    // Fetched once for every task, drawn only where there is something to
-    // show: an agent's task, or a human one that somehow has lines.
-    if !agent && local.lines.is_empty() {
-        return;
-    }
-    shell::divider(ui);
-
-    // The heading carries a live pill, which is what `section_with`'s trailing
-    // slot is for — it was hand-painted here before that existed.
-    shell::section_with(ui, "Run log", |ui| {
-        if live {
-            w::pill(ui, "live", colour::ACCENT);
-        }
-    });
-
-    if let Some(err) = &local.log_error {
-        failed(ui, "Could not load the run log", err);
-    }
-
-    egui::Frame::new()
-        .fill(colour::LOG_BG)
-        .corner_radius(radius::MD)
-        .inner_margin(egui::Margin::symmetric(
-            pad::CARD.0 as i8,
-            pad::CARD.1 as i8,
-        ))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-
-            if local.lines.is_empty() {
-                let note = if local.pending {
-                    "Loading output"
-                } else if live {
-                    "Waiting for the agent’s first line"
-                } else {
-                    "No output was recorded"
-                };
-                ui.label(
-                    egui::RichText::new(note)
-                        .monospace()
-                        .size(text::SMALL)
-                        .color(colour::LOG_SEQ),
-                );
-                return;
-            }
-
-            egui::ScrollArea::vertical()
-                .id_salt("task:log:scroll")
-                .max_height(size::ROW * LOG_ROWS)
-                .stick_to_bottom(true)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = space::XXS;
-                    for (seq, line) in &local.lines {
-                        ui.horizontal_top(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{seq:>4}"))
-                                    .monospace()
-                                    .size(text::SMALL)
-                                    .color(colour::LOG_SEQ),
-                            );
-                            ui.add_space(space::SM);
-                            ui.add(egui::Label::new(
-                                egui::RichText::new(line)
-                                    .monospace()
-                                    .size(text::SMALL)
-                                    .color(colour::LOG_TEXT),
-                            ));
-                        });
-                    }
-                });
-        });
-}
-
 // --------------------------------------------------------------------- shared
 
 fn failed(ui: &mut egui::Ui, what: &str, err: &str) {
@@ -2134,7 +1863,7 @@ pub(super) fn ago(raw: &str) -> String {
 
 /// The date itself, for the hover. "9 days ago" is the right answer to "how
 /// long", and the wrong one to "which Tuesday".
-fn exact(raw: &str) -> String {
+pub(super) fn exact(raw: &str) -> String {
     match DateTime::parse_from_rfc3339(raw) {
         Ok(t) => t.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string(),
         Err(_) => String::new(),

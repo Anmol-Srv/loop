@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
+use crate::models::task::sees_agent_private;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -21,8 +22,9 @@ pub struct Note {
     /// thread. `None` when an agent wrote it.
     pub author_name: Option<String>,
     pub body: String,
-    /// note, progress, question, answer, submission or review. Everything a
-    /// person types is a `note` unless it answers or reviews their agent.
+    /// note, progress, question, answer, submission, review or instruction.
+    /// Everything a person types is a `note` unless it answers, reviews or
+    /// instructs their agent.
     pub kind: String,
     /// `{id, name}` when an agent wrote it.
     pub agent: Option<serde_json::Value>,
@@ -33,13 +35,23 @@ const NOTE_COLUMNS: &str = "n.id, n.task_id, n.author_id, p.name AS author_name,
     (SELECT json_build_object('id', ag.id, 'name', ag.name) FROM agent ag WHERE ag.id = n.agent_id) AS agent,
     n.created_at";
 
-pub async fn list(state: &AppState, task_id: Uuid) -> AppResult<Vec<Note>> {
+/// The kinds only the task's owner, an admin and the agent itself may read.
+const PRIVATE_KINDS: &str = "('question', 'answer', 'instruction')";
+
+/// A task's notes as `viewer` may see them: the conversation between the
+/// owner and their agent is filtered out here, in the query, for everyone
+/// `sees_agent_private` does not name. The agent reads as its owner.
+pub async fn list(state: &AppState, task_id: Uuid, viewer: Option<Uuid>) -> AppResult<Vec<Note>> {
     Ok(sqlx::query_as(&format!(
         "SELECT {NOTE_COLUMNS} FROM note n
+           JOIN task t ON t.id = n.task_id
            LEFT JOIN person p ON p.id = n.author_id
-          WHERE n.task_id = $1 ORDER BY n.created_at"
+          WHERE n.task_id = $1 AND (n.kind NOT IN {PRIVATE_KINDS} OR {private})
+          ORDER BY n.created_at",
+        private = sees_agent_private("$2"),
     ))
     .bind(task_id)
+    .bind(viewer)
     .fetch_all(&state.db)
     .await?)
 }

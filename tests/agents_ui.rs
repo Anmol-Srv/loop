@@ -201,7 +201,7 @@ fn connect_validates_the_handle_and_shows_the_prompt_once() {
     p.harness.get_by(|n| n.placeholder() == Some("hermes")).type_text("Hermes Bot");
     p.steps(2);
     assert!(p.harness.query_by_label_contains("Lowercase letters, digits and dashes").is_some());
-    assert!(p.harness.get_by_label("Create").accesskit_node().is_disabled());
+    assert!(p.harness.get_by_label("Continue").accesskit_node().is_disabled());
 
     // Fix the handle (still focused), name it, create.
     for _ in 0.."Hermes Bot".len() {
@@ -215,8 +215,8 @@ fn connect_validates_the_handle_and_shows_the_prompt_once() {
     p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Hermes ("))).type_text("Hermes");
     p.steps(2);
     assert!(p.harness.query_by_label_contains("Lowercase letters").is_none());
-    assert!(!p.harness.get_by_label("Create").accesskit_node().is_disabled());
-    p.harness.get_by_label("Create").click();
+    assert!(!p.harness.get_by_label("Continue").accesskit_node().is_disabled());
+    p.harness.get_by_label("Continue").click();
     p.steps(1);
 
     let prompt = "You are being connected to Airtribe Control Plane as agent \"hermes\" for Anmol. Token: acp_secret123";
@@ -235,7 +235,7 @@ fn connect_validates_the_handle_and_shows_the_prompt_once() {
     p.steps(1);
     assert!(p.harness.query_by_label("Copied").is_some());
 
-    p.harness.get_by_label("Done").click();
+    p.harness.get_by_label("Close").click();
     p.steps(2);
     assert!(p.harness.query_by_value(prompt).is_none(), "closing forgets the prompt");
 }
@@ -245,9 +245,11 @@ fn revoke_asks_first() {
     let app = RefCell::new(None);
     let fixtures = base();
     let mut p = page(&app, &fixtures, Tab::Agents, None, 1440.0, false);
-    // Two live agents, so two of each; the revoked one has none.
-    assert_eq!(p.harness.get_all_by_label("Revoke").count(), 2);
-    p.harness.get_all_by_label("Revoke").next().unwrap().click();
+    // Two live agents, so two cards with a menu; the revoked one is folded away.
+    assert_eq!(p.harness.get_all_by_label("More actions").count(), 2);
+    p.harness.get_all_by_label("More actions").next().unwrap().click();
+    p.steps(2);
+    p.harness.get_by_label("Revoke\u{2026}").click();
     p.steps(2);
     assert!(p.harness.query_by_label("Revoke Hermes (Anmol's Mac)?").is_some());
     p.harness.get_by_label("Cancel").click();
@@ -260,7 +262,7 @@ fn question_takes_an_answer() {
     let app = RefCell::new(None);
     let fixtures = task_fixtures("needs_input");
     let mut p = page(&app, &fixtures, Tab::Home, Some(TASK), 1440.0, false);
-    assert!(p.harness.query_by_label("Hermes (Anmol's Mac) asked").is_some());
+    assert!(p.harness.query_by_label("asked").is_some());
     assert!(p.harness.query_by_label("Needs your input").is_some());
     assert!(p.harness.query_by_label("Take back").is_some());
     assert!(p.harness.get_by_label("Send answer").accesskit_node().is_disabled());
@@ -282,19 +284,22 @@ fn review_needs_a_note_to_request_changes() {
     let app = RefCell::new(None);
     let fixtures = task_fixtures("in_review");
     let mut p = page(&app, &fixtures, Tab::Home, Some(TASK), 1440.0, false);
-    assert!(p.harness.query_by_label("Hermes (Anmol's Mac) submitted this for review").is_some());
+    assert!(p.harness.query_by_label_contains("submitted this for review").is_some());
     assert!(!p.harness.get_by_label("Approve").accesskit_node().is_disabled());
-    assert!(p.harness.get_by_label("Request changes").accesskit_node().is_disabled());
+    // Request changes opens the note it needs; Send back waits for it.
+    p.harness.get_by_label("Request changes").click();
+    p.steps(2);
+    assert!(p.harness.get_by_label("Send back").accesskit_node().is_disabled());
 
     let note = |n: &egui_kittest::kittest::AccessKitNode<'_>| {
-        n.placeholder().is_some_and(|h| h.starts_with("What needs to change"))
+        n.placeholder().is_some_and(|h| h.starts_with("What should Hermes change"))
     };
     p.harness.get_by(note).focus();
     p.steps(1);
     p.harness.get_by(note).type_text("Unscored leads should be left out.");
     p.steps(2);
-    assert!(!p.harness.get_by_label("Request changes").accesskit_node().is_disabled());
-    p.harness.get_by_label("Request changes").click();
+    assert!(!p.harness.get_by_label("Send back").accesskit_node().is_disabled());
+    p.harness.get_by_label("Send back").click();
     p.steps(1);
     p.seed("task:agent", json!({}));
     p.steps(2);
@@ -396,10 +401,11 @@ fn renders() {
         save(&mut p, "agents-connect", label);
         p.harness.get_by_label("Cancel").click();
         p.steps(2);
-        p.harness.get_all_by_label("Rotate token").next().unwrap().click();
+        p.harness.get_all_by_label("More actions").next().unwrap().click();
         p.steps(2);
-        // The dialog's button is the last one; the rows' sit behind the modal.
-        p.harness.get_all_by_label("Rotate token").last().unwrap().click();
+        p.harness.get_by_label("Rotate token\u{2026}").click();
+        p.steps(2);
+        p.harness.get_by_label("Rotate token").click();
         p.steps(1);
         p.seed("agents:action", json!({
             "agent": {"id": HERMES, "name": "Hermes (Anmol's Mac)"},
@@ -410,7 +416,7 @@ fn renders() {
         save(&mut p, "agents-prompt", label);
         // The page's dialogs live in a thread-local, as the one app window's
         // would: close this one so the next width starts on the bare page.
-        p.harness.get_by_label("Done").click();
+        p.harness.get_by_label("Close").click();
         p.steps(2);
         drop(p);
 

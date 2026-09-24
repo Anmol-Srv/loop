@@ -44,8 +44,12 @@ Codex runs when someone runs it. Tell {{owner}} to start a session with
 
 ```bash
 curl -fsS -X POST --oauth2-bearer "$AIRTRIBE_TOKEN" -H 'content-type: application/json' \
-  -d '{"runtime":"codex"}' "{{server}}/api/agent/hello"
+  -d '{"runtime":"codex","setup":{"skill":"1.3.0","mcp":true,"watcher":true}}' "{{server}}/api/agent/hello"
 ```
+
+Report what is actually true: `skill` is the `version:` line of the skill you
+installed, `mcp` whether the MCP server connected, `watcher` whether your
+watcher is scheduled and its scheduler is running. Your owner sees this.
 
 The dashboard now shows you as **Connected**. Tell {{owner}} what you set up
 and anything that failed, then check your inbox once.

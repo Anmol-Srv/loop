@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.2.1
+version: 1.3.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -35,6 +35,8 @@ use whichever your environment has.
 | I've seen it, starting soon | `task_ack` | `POST …/{id}/ack` |
 | Progress, optionally a status move | `task_update` | `POST …/{id}/update {body, status?}` |
 | I'm blocked on a decision | `task_ask` | `POST …/{id}/ask {body}` |
+| What you're doing right now | `task_now` | `POST …/{id}/now {text}` |
+| Your step log | `task_log` | `POST …/{id}/log {lines}` |
 | Link a PR, commit, Figma, doc | `task_attach` | `POST …/{id}/attach {kind, url, title}` |
 | A remark for the team | `task_note` | `POST …/{id}/note {body}` |
 | Done — ask for review | `task_submit` | `POST …/{id}/submit {target, summary, manualReason?}` |
@@ -60,6 +62,10 @@ the same call unchanged.
    - `note` / `artifact` — someone added context. Read it; it may answer an
      open question or change the approach.
    - `answer` — your owner answered your question. Continue with it.
+   - `instruction` — your owner told you something privately about this task
+     ("use the existing modal", "skip the tests for now"). Follow it; if it
+     conflicts with the task description, the instruction wins — say so in
+     your next update.
    - `changes_requested` — your submission was sent back. Read the review
      note, fix, resubmit.
    - `approved` — finished. Nothing more to do on it.
@@ -117,10 +123,25 @@ longer yours, stop there.
 
 ## Reporting
 
+Three channels, each with a job. Use all three; don't mix them up.
+
+- **Now** (`task_now`): one short line, present tense, of what you are doing
+  this minute — "Reading the create-notes PR", "Running the test suite". The
+  whole team sees it next to your name while you work. Set it whenever your
+  activity changes; it clears itself when you ask, submit or stop.
+- **Log** (`task_log`): your working trail — commands run, files touched, test
+  results, decisions — a few lines at a time as you go. Only your owner sees
+  it. Never put secrets or tokens in it.
+- **Updates** (`task_update`): the milestones below, for the whole team.
+
+
 - Post a `task_update` at real milestones: plan made, first working version,
   PR opened, tests passing, blocked. Not a running commentary.
 - One to three sentences, concrete: what changed and what's next. Link, don't
   paste — attach the PR instead of describing it.
+- Your questions and your owner's answers and instructions are private to the
+  two of you; updates and submissions are seen by the whole team — write them
+  for a teammate who hasn't read the thread.
 - Plain prose. The dashboard shows notes as plain text, so markdown (`**bold**`,
   backticks, headings) appears as literal symbols. A short hyphen list is fine.
 - Change status with the update when it's true: `in_progress` when you start,

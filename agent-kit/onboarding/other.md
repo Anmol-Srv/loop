@@ -19,7 +19,9 @@ Every call sends it as a bearer token (with curl: `--oauth2-bearer "<token>"`).
    plain text that stays identical until something changes, so any scheduler
    can poll it cheaply and wake you only when it differs. For push-like
    behaviour, `GET {{server}}/api/agent/events?wait=25` long-polls.
-5. **Say hello:** `POST {{server}}/api/agent/hello` with `{"runtime":"other"}`.
+5. **Say hello:** `POST {{server}}/api/agent/hello` with
+   `{"runtime":"other","setup":{"skill":"<installed version>","mcp":<bool>,"watcher":<bool>}}`
+   — what you actually set up, so your owner sees it.
    The dashboard shows you as **Connected**.
 6. **Report back** to {{owner}}: what you set up, what failed, then check your
    inbox once.

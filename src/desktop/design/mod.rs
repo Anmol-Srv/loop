@@ -1,8 +1,10 @@
 //! The design system: tokens, the egui theme built from them, and the widget
 //! layer every view is written against.
 
+pub mod agent;
 pub mod avatar;
 pub mod cards;
+pub mod glyph;
 pub mod motion;
 pub mod shell;
 pub mod table;

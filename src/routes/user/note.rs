@@ -26,7 +26,7 @@ async fn list(
     caller: Caller,
 ) -> AppResult<ApiResponse<Vec<Note>>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::note::list(&state, id).await?))
+    Ok(ApiResponse::ok(controllers::note::list(&state, id, caller.actor.person_id).await?))
 }
 
 /// `read` is the right scope: a note changes nothing on the board, and an

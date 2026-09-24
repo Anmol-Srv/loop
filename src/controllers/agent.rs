@@ -20,7 +20,7 @@ use crate::controllers::{artifact, project, task, token};
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::Actor;
-use crate::models::task::{next_statuses, TaskRow};
+use crate::models::task::{next_statuses, TaskRow, HELD};
 
 pub const RUNTIMES: [&str; 4] = ["hermes", "claude-code", "codex", "other"];
 
@@ -58,16 +58,33 @@ pub struct Agent {
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Delegated tasks that are not finished.
     pub active_tasks: i64,
+    /// What the agent reported at hello: `{skill?, mcp?, watcher?}`.
+    pub setup: Value,
+    /// The held task it was handed most recently: `{id, title, state, now}`.
+    pub current_task: Option<Value>,
+    /// Notes it wrote per day over the last 14 days, oldest first.
+    pub activity: Vec<i64>,
 }
 
-const AGENT_SELECT: &str = "SELECT a.id, a.handle, a.name, a.runtime,
-        CASE WHEN a.revoked_at IS NOT NULL THEN 'revoked'
-             WHEN a.connected_at IS NOT NULL THEN 'connected'
-             ELSE 'waiting' END AS status,
-        a.connected_at, a.last_seen_at, a.created_at,
-        (SELECT count(*) FROM task t
-          WHERE t.delegate_agent_id = a.id AND t.done_at IS NULL AND t.status <> 'dropped') AS active_tasks
-   FROM agent a";
+fn agent_select() -> String {
+    format!(
+        "SELECT a.id, a.handle, a.name, a.runtime,
+            CASE WHEN a.revoked_at IS NOT NULL THEN 'revoked'
+                 WHEN a.connected_at IS NOT NULL THEN 'connected'
+                 ELSE 'waiting' END AS status,
+            a.connected_at, a.last_seen_at, a.created_at,
+            (SELECT count(*) FROM task t
+              WHERE t.delegate_agent_id = a.id AND t.done_at IS NULL AND t.status <> 'dropped') AS active_tasks,
+            a.setup,
+            (SELECT json_build_object('id', t.id, 'title', t.title, 'state', t.agent_state, 'now', t.agent_now)
+               FROM task t WHERE t.delegate_agent_id = a.id AND {HELD}
+              ORDER BY t.delegated_at DESC NULLS LAST LIMIT 1) AS current_task,
+            ARRAY(SELECT count(n.id) FROM generate_series(0, 13) i
+                    LEFT JOIN note n ON n.agent_id = a.id AND n.created_at::date = current_date - 13 + i
+                   GROUP BY i ORDER BY i) AS activity
+       FROM agent a"
+    )
+}
 
 /// A new or rotated agent: the token and the prompt that carries it are shown
 /// once, here, and never stored anywhere they can be read again.
@@ -79,7 +96,7 @@ pub struct Minted {
 }
 
 async fn one(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> AppResult<Agent> {
-    Ok(sqlx::query_as(&format!("{AGENT_SELECT} WHERE a.id = $1"))
+    Ok(sqlx::query_as(&format!("{} WHERE a.id = $1", agent_select()))
         .bind(id)
         .fetch_one(db)
         .await?)
@@ -87,7 +104,8 @@ async fn one(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> AppResult<Agent> {
 
 pub async fn list(state: &AppState, owner: Uuid) -> AppResult<Vec<Agent>> {
     Ok(sqlx::query_as(&format!(
-        "{AGENT_SELECT} WHERE a.owner_id = $1 ORDER BY a.revoked_at IS NOT NULL, a.created_at DESC"
+        "{} WHERE a.owner_id = $1 ORDER BY a.revoked_at IS NOT NULL, a.created_at DESC",
+        agent_select()
     ))
     .bind(owner)
     .fetch_all(&state.db)
@@ -265,9 +283,28 @@ pub async fn me(state: &AppState, id: Uuid, server: &str) -> AppResult<Value> {
     }))
 }
 
+/// What an agent's setup reported at hello, shown to its owner as a checklist.
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+pub struct Setup {
+    /// The skill `version:` it installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watcher: Option<bool>,
+}
+
 /// First contact flips the dashboard from "waiting" to "connected". Saying
-/// hello again is harmless: it keeps the first contact time.
-pub async fn hello(state: &AppState, id: Uuid, runtime: Option<&str>, server: &str) -> AppResult<Value> {
+/// hello again is harmless: it keeps the first contact time, and a hello
+/// without `setup` keeps the last one reported.
+pub async fn hello(
+    state: &AppState,
+    id: Uuid,
+    runtime: Option<&str>,
+    setup: Option<Setup>,
+    server: &str,
+) -> AppResult<Value> {
     if let Some(r) = runtime {
         if !RUNTIMES.contains(&r) {
             return Err(AppError::BadRequest(format!("runtime must be one of {}", RUNTIMES.join(", "))));
@@ -275,11 +312,12 @@ pub async fn hello(state: &AppState, id: Uuid, runtime: Option<&str>, server: &s
     }
     sqlx::query(
         "UPDATE agent SET connected_at = coalesce(connected_at, now()), last_seen_at = now(),
-                          runtime = coalesce($2, runtime)
+                          runtime = coalesce($2, runtime), setup = coalesce($3, setup)
           WHERE id = $1",
     )
     .bind(id)
     .bind(runtime)
+    .bind(setup.map(|s| json!(s)))
     .execute(&state.db)
     .await?;
     me(state, id, server).await
@@ -344,7 +382,7 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
     .bind(row.task.assignee_person_id)
     .fetch_optional(&state.db)
     .await?;
-    let notes = note::list(state, task_id).await?;
+    let notes = note::list(state, task_id, row.task.assignee_person_id).await?;
 
     let mut artifacts = serde_json::Map::new();
     for a in artifact::list(state, None, "task".into(), task_id).await?.into_iter().rev() {
@@ -485,7 +523,9 @@ pub async fn update(
     body: &str,
     status: Option<String>,
     expected_status: Option<String>,
+    now: Option<&str>,
 ) -> AppResult<TaskRow> {
+    let now = now.map(now_line).transpose()?;
     let mut d = delegated(state, agent, task_id).await?;
     if let Some(status) = status {
         if !UPDATE_TARGETS.contains(&status.as_str()) {
@@ -500,8 +540,93 @@ pub async fn update(
     }
     note::insert(&mut d.tx, task_id, Author::Agent(agent), "progress", body).await?;
     set_state(&mut d.tx, task_id, "working", None).await?;
+    if let Some(now) = now {
+        set_now(&mut d.tx, task_id, &now).await?;
+    }
     d.tx.commit().await?;
     task::get(state, task_id, None).await
+}
+
+/// A now line: one trimmed sentence, 1–120 characters.
+fn now_line(text: &str) -> AppResult<String> {
+    let text = text.trim();
+    let n = text.chars().count();
+    if n == 0 || n > 120 {
+        return Err(AppError::BadRequest(format!(
+            "a now line is 1 to 120 characters saying what you are doing right now \
+             (e.g. \"running the checkout tests\"); this one is {n}"
+        )));
+    }
+    Ok(text.to_owned())
+}
+
+/// Cleared by the `task_agent_session` trigger once the agent stops working.
+async fn set_now(tx: &mut PgTransaction<'_>, task_id: Uuid, text: &str) -> AppResult<()> {
+    sqlx::query("UPDATE task SET agent_now = $2, agent_now_at = now() WHERE id = $1")
+        .bind(task_id)
+        .bind(text)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Say what you are doing right now. It marks you working; while the task
+/// waits on your owner there is nothing to be doing on it.
+pub async fn now(state: &AppState, agent: Uuid, task_id: Uuid, text: &str) -> AppResult<TaskRow> {
+    let text = now_line(text)?;
+    let mut d = delegated(state, agent, task_id).await?;
+    match d.agent_state.as_deref() {
+        Some("needs_input") => {
+            return Err(AppError::Conflict(
+                "this task is waiting on your owner's answer; post a now line once they answer and you are working again".into(),
+            ))
+        }
+        Some("in_review") => {
+            return Err(AppError::Conflict(
+                "this task is waiting on your owner's review; post a now line if they send it back".into(),
+            ))
+        }
+        Some("working") => {}
+        _ => set_state(&mut d.tx, task_id, "working", None).await?,
+    }
+    set_now(&mut d.tx, task_id, &text).await?;
+    d.tx.commit().await?;
+    task::get(state, task_id, None).await
+}
+
+const LOG_MAX_LINES: usize = 200;
+const LOG_MAX_CHARS: usize = 2000;
+
+/// Append lines to the task's step log, numbered on from the last one. The
+/// task row is locked by `delegated`, so two posts cannot take the same seq.
+pub async fn log(state: &AppState, agent: Uuid, task_id: Uuid, lines: &[String]) -> AppResult<Value> {
+    if lines.is_empty() || lines.len() > LOG_MAX_LINES {
+        return Err(AppError::BadRequest(format!(
+            "send 1 to {LOG_MAX_LINES} lines per request; you sent {}",
+            lines.len()
+        )));
+    }
+    if let Some(i) = lines.iter().position(|l| l.chars().count() > LOG_MAX_CHARS) {
+        return Err(AppError::BadRequest(format!(
+            "line {} is over {LOG_MAX_CHARS} characters; split or trim it",
+            i + 1
+        )));
+    }
+    let mut d = delegated(state, agent, task_id).await?;
+    let last: i64 = sqlx::query_scalar(
+        "WITH added AS (
+           INSERT INTO run_log_line (task_id, seq, text)
+           SELECT $1, coalesce((SELECT max(seq) FROM run_log_line WHERE task_id = $1), 0) + u.n, u.line
+             FROM unnest($2::text[]) WITH ORDINALITY AS u(line, n)
+           RETURNING seq)
+         SELECT max(seq) FROM added",
+    )
+    .bind(task_id)
+    .bind(lines)
+    .fetch_one(&mut *d.tx)
+    .await?;
+    d.tx.commit().await?;
+    Ok(json!({ "appended": lines.len(), "lastSeq": last }))
 }
 
 pub async fn ask(state: &AppState, agent: Uuid, task_id: Uuid, body: &str) -> AppResult<TaskRow> {
@@ -696,7 +821,7 @@ fn summarise(e: &Event) -> String {
                     .join("; ")
             })
             .unwrap_or_default(),
-        "note" | "answer" | "approved" | "changes_requested" => {
+        "note" | "answer" | "instruction" | "approved" | "changes_requested" => {
             format!("{}: {}", p["author"].as_str().unwrap_or("someone"), one_line(text("body"), 200))
         }
         "artifact" => format!("{} {}", text("kind"), text("url")),
@@ -811,7 +936,8 @@ pub async fn hand_off(state: &AppState, person: Uuid, task_id: Uuid, agent: Uuid
     // second `handed_off` for it to act on.
     if delegate != Some(agent) || agent_state.as_deref() != Some("handed_off") {
         sqlx::query(
-            "UPDATE task SET delegate_agent_id = $2, agent_state = 'handed_off', review_target = NULL
+            "UPDATE task SET delegate_agent_id = $2, agent_state = 'handed_off', review_target = NULL,
+                             delegated_at = now()
               WHERE id = $1",
         )
         .bind(task_id)
@@ -848,6 +974,21 @@ pub async fn answer(state: &AppState, person: Uuid, task_id: Uuid, body: &str) -
     }
     set_state(&mut tx, task_id, "working", None).await?;
     let note = note::insert(&mut tx, task_id, Author::Person(Some(person)), "answer", body).await?;
+    tx.commit().await?;
+    Ok(note)
+}
+
+/// A private instruction to the agent holding the task. Only its owner and
+/// admins see it on the task; the agent hears it as an `instruction` event.
+pub async fn instruct(state: &AppState, person: Uuid, task_id: Uuid, body: &str) -> AppResult<Note> {
+    let mut tx = state.db.begin().await?;
+    let (delegate, agent_state, _, _, finished) = owned(&mut tx, person, task_id, "instruct its agent").await?;
+    if delegate.is_none() || finished || matches!(agent_state.as_deref(), Some("done" | "stopped")) {
+        return Err(AppError::Conflict(
+            "no agent is working on this task right now; hand it off first".into(),
+        ));
+    }
+    let note = note::insert(&mut tx, task_id, Author::Person(Some(person)), "instruction", body).await?;
     tx.commit().await?;
     Ok(note)
 }
@@ -907,6 +1048,46 @@ pub async fn needs_attention(state: &AppState, person: Uuid) -> AppResult<Vec<At
           ORDER BY t.updated_at DESC",
     )
     .bind(person)
+    .fetch_all(&state.db)
+    .await?)
+}
+
+/// A task an agent is on right now, for everyone: the team sees who is
+/// working on what, never the private side.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Active {
+    /// `{id, name, handle, runtime}`.
+    pub agent: Value,
+    /// `{id, name}`.
+    pub owner: Value,
+    /// `{id, title, projectName}`.
+    pub task: Value,
+    pub state: String,
+    pub now: Option<String>,
+    pub now_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub delegated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn active(state: &AppState) -> AppResult<Vec<Active>> {
+    Ok(sqlx::query_as(
+        "SELECT json_build_object('id', a.id, 'name', a.name, 'handle', a.handle, 'runtime', a.runtime) AS agent,
+                json_build_object('id', p.id, 'name', p.name, 'email', p.email) AS owner,
+                json_build_object('id', t.id, 'title', t.title, 'projectName', pr.name) AS task,
+                t.agent_state AS state, t.agent_now AS now, t.agent_now_at AS now_at,
+                a.last_seen_at, t.delegated_at
+           FROM task t
+           JOIN agent a ON a.id = t.delegate_agent_id
+           JOIN person p ON p.id = a.owner_id
+           JOIN phase ph ON ph.id = t.phase_id
+           JOIN project pr ON pr.id = ph.project_id
+          WHERE t.agent_state IN ('acknowledged', 'working', 'needs_input', 'in_review')
+            AND t.done_at IS NULL AND t.status <> 'dropped' AND a.revoked_at IS NULL
+            AND t.archived_at IS NULL AND pr.archived_at IS NULL
+          ORDER BY t.agent_state = 'working' DESC,
+                   coalesce(t.agent_now_at, a.last_seen_at) DESC NULLS LAST, t.id",
+    )
     .fetch_all(&state.db)
     .await?)
 }

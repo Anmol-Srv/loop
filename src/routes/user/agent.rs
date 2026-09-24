@@ -5,12 +5,12 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::routing::{delete, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::controllers::agent::{self, Agent, Minted};
+use crate::controllers::agent::{self, Active, Agent, Minted};
 use crate::controllers::note::Note;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
@@ -35,11 +35,13 @@ fn default_runtime() -> String {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/agents", post(create).get(list))
+        .route("/api/user/agents/active", get(active))
         .route("/api/user/agents/{id}", delete(revoke))
         .route("/api/user/agents/{id}/rotate", post(rotate))
         .route("/api/user/tasks/{id}/handoff", post(hand_off))
         .route("/api/user/tasks/{id}/takeback", post(take_back))
         .route("/api/user/tasks/{id}/answer", post(answer))
+        .route("/api/user/tasks/{id}/instruct", post(instruct))
         .route("/api/user/tasks/{id}/review", post(review))
 }
 
@@ -67,6 +69,12 @@ async fn create(
 
 async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Agent>>> {
     Ok(ApiResponse::ok(agent::list(&state, person(&caller)?).await?))
+}
+
+/// Every agent at work on the team, for anyone signed in.
+async fn active(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Active>>> {
+    person(&caller)?;
+    Ok(ApiResponse::ok(agent::active(&state).await?))
 }
 
 async fn rotate(
@@ -121,6 +129,15 @@ async fn answer(
     Json(body): Json<AnswerBody>,
 ) -> AppResult<ApiResponse<Note>> {
     Ok(ApiResponse::ok(agent::answer(&state, person(&caller)?, id, &body.body).await?))
+}
+
+async fn instruct(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<AnswerBody>,
+) -> AppResult<ApiResponse<Note>> {
+    Ok(ApiResponse::ok(agent::instruct(&state, person(&caller)?, id, &body.body).await?))
 }
 
 #[derive(Deserialize)]

@@ -170,6 +170,7 @@ pub fn agent_tools() -> Vec<ToolDef> {
                     "body": { "type": "string" },
                     "status": { "type": "string", "enum": ["open", "in_progress", "blocked"] },
                     "expectedStatus": { "type": "string", "description": "The status you last read; the move is refused if someone changed it since." },
+                    "now": { "type": "string", "maxLength": 120, "description": "Optionally, a new now line (see task_now)." },
                 }),
                 &["taskId", "body"],
             ),
@@ -191,6 +192,29 @@ pub fn agent_tools() -> Vec<ToolDef> {
                     "title": { "type": "string" },
                 }),
                 &["taskId", "kind", "url"],
+            ),
+        ),
+        tool(
+            "task_now",
+            "Say in one short line what you are doing right now on your task (1-120 characters, e.g. \
+             \"running the checkout tests\"). The whole team sees it live, and it marks you working. \
+             Update it whenever you move to a new step; it clears itself when you ask, submit or stop.",
+            schema(
+                json!({ "taskId": uuid, "text": { "type": "string", "minLength": 1, "maxLength": 120 } }),
+                &["taskId", "text"],
+            ),
+        ),
+        tool(
+            "task_log",
+            "Append lines to your task's step log: the commands you ran and what they printed, oldest \
+             first. Up to 200 lines per call, each at most 2000 characters. Only your owner (and admins) \
+             can read it, so it is the place for detail that would clutter progress notes.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "lines": { "type": "array", "items": { "type": "string", "maxLength": 2000 }, "minItems": 1, "maxItems": 200 },
+                }),
+                &["taskId", "lines"],
             ),
         ),
         tool("task_note", "Leave a plain note on your task for the team.", with_body()),
