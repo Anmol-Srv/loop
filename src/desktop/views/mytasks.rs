@@ -14,6 +14,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use super::menus::{task_items, Pick, Viewer};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     cards as c, colour, shell, space, status_label, viz, widgets as w,
@@ -84,6 +85,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let filters_id = egui::Id::new(FILTERS);
     let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
 
+    let viewer = Viewer::of(app);
     let net = app.net.as_mut().unwrap();
     let key = if state.archived { ARCHIVED } else { MINE };
     net.get_once(MINE, "/api/user/tasks/mine");
@@ -165,20 +167,35 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(space::SM);
 
     let mut open_task: Option<String> = None;
+    let mut picked: Option<(Value, Pick)> = None;
     if rows.is_empty() {
         w::empty(ui, "Nothing archived.", "Tasks of yours that are archived show here.");
     } else if shown.is_empty() {
         w::empty(ui, "Nothing matches.", "Clear a filter, or search for something else.");
     } else {
-        let clicked = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
-            task_row(row, shown[i]);
-        });
+        let clicked = table::show_with_menu(
+            ui,
+            TABLE,
+            &COLS,
+            shown.len(),
+            |row, i| task_row(row, shown[i]),
+            |ui, i| {
+                if let Some(pick) = task_items(ui, shown[i], &viewer, true) {
+                    picked = Some((shown[i].clone(), pick));
+                }
+            },
+        );
         if let Some(i) = clicked {
             open_task = str_at(shown[i], "id").map(str::to_owned);
         }
     }
     ui.add_space(space::XXL);
 
+    match picked {
+        Some((t, Pick::Open)) => open_task = str_at(&t, "id").map(str::to_owned),
+        Some((t, pick)) => app.board.tasks.pick(app.net.as_mut().unwrap(), &t, pick),
+        None => {}
+    }
     if let Some(id) = open_task {
         app.task = Some(id);
     }

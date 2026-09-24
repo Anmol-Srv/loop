@@ -162,7 +162,7 @@ fn deleting_a_project_needs_its_name_typed() {
     let f = fixtures(false);
     let mut p = page(&app, &f, Some(PROJECT), None, 1440.0, false);
 
-    open_menu_and_pick(&mut p, "Delete");
+    open_menu_and_pick(&mut p, "Delete\u{2026}");
     assert!(p.harness.query_by_label(&format!("Delete {NAME}?")).is_some());
     assert!(p.harness.query_by_label_contains("Its 3 tasks go with it").is_some());
     assert!(p.harness.get_by_label("Delete project").accesskit_node().is_disabled());
@@ -186,7 +186,7 @@ fn archive_asks_once_and_cancel_keeps_it() {
     let app = RefCell::new(None);
     let f = fixtures(false);
     let mut p = page(&app, &f, Some(PROJECT), None, 1440.0, false);
-    open_menu_and_pick(&mut p, "Archive");
+    open_menu_and_pick(&mut p, "Archive\u{2026}");
     assert!(p.harness.query_by_label(&format!("Archive {NAME}?")).is_some());
     p.harness.get_by_label("Cancel").click();
     p.steps(2);
@@ -195,8 +195,7 @@ fn archive_asks_once_and_cancel_keeps_it() {
 }
 
 #[test]
-fn nothing_to_offer_without_the_right() {
-    let app = RefCell::new(None);
+fn nothing_to_use_without_the_right() {
     let mut f = fixtures(false);
     for (k, v) in f.iter_mut() {
         if k == &format!("board:project:{PROJECT}") || k == "task:one" {
@@ -204,12 +203,16 @@ fn nothing_to_offer_without_the_right() {
             v["canDelete"] = json!(false);
         }
     }
-    let p = page(&app, &f, Some(PROJECT), None, 1440.0, false);
-    assert!(p.harness.query_by_label("More actions").is_none());
-    drop(p);
-    let app = RefCell::new(None);
-    let p = page(&app, &f, None, Some(TASK), 1440.0, false);
-    assert!(p.harness.query_by_label("More actions").is_none());
+    // Still offered, greyed: the copies are anyone's, and a missing Delete
+    // would teach nobody it exists.
+    for (project, task) in [(Some(PROJECT), None), (None, Some(TASK))] {
+        let app = RefCell::new(None);
+        let mut p = page(&app, &f, project, task, 1440.0, false);
+        p.harness.get_all_by_label("More actions").next().unwrap().click();
+        p.steps(2);
+        assert!(p.harness.get_by_label("Delete\u{2026}").accesskit_node().is_disabled());
+        assert!(p.harness.get_by_label("Archive\u{2026}").accesskit_node().is_disabled());
+    }
 }
 
 // -------------------------------------------------------------------- renders
@@ -231,14 +234,14 @@ fn renders() {
         p.harness.get_all_by_label("More actions").next().unwrap().click();
         p.steps(3);
         save(&mut p, "project-menu", label);
-        p.harness.get_by_label("Delete").click();
+        p.harness.get_by_label("Delete\u{2026}").click();
         p.steps(2);
         type_name(&mut p, "Checkout");
         p.steps(2);
         save(&mut p, "project-delete", label);
         p.harness.get_by_label("Cancel").click();
         p.steps(2);
-        open_menu_and_pick(&mut p, "Archive");
+        open_menu_and_pick(&mut p, "Archive\u{2026}");
         p.steps(2);
         save(&mut p, "project-archive", label);
         p.harness.get_by_label("Cancel").click();
@@ -272,7 +275,7 @@ fn renders() {
             p.harness.get_all_by_label("More actions").next().unwrap().click();
             p.steps(3);
             save(&mut p, "task-menu", label);
-            p.harness.get_by_label("Delete").click();
+            p.harness.get_by_label("Delete\u{2026}").click();
             p.steps(3);
             save(&mut p, "task-delete", label);
             p.harness.get_by_label("Cancel").click();

@@ -176,6 +176,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             }
         }
     });
+
+    // After every page, so a task's confirm dialog sits over whichever one
+    // asked. A task deleted from its own page leaves it.
+    let net = app.net.as_mut().expect("chrome runs signed in");
+    let gone = views::menus::settle(ui.ctx(), net, &mut app.board.tasks);
+    if gone.is_some() && gone == app.task {
+        app.task = None;
+    }
+    w::toasts(ui.ctx());
 }
 
 /// `compact` for the collapsed rail, which is narrower than a padded button.

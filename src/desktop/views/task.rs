@@ -34,6 +34,7 @@ use egui::RichText;
 use serde_json::{json, Value};
 
 use super::agents::{state_tone, state_words, AGENTS_KEY};
+use super::menus::{task_items, Pick, Viewer};
 use super::projects::{person_option, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::{
     avatar, cards as c, colour, pad, radius, shell, size, space, status_label, text, theme, viz,
@@ -54,9 +55,6 @@ const REMOVE_KEY: &str = "task:artifact:remove";
 /// Hand-off, take-back, answer and review all go out under this one key: they
 /// are started from one page, one at a time.
 const AGENT_KEY: &str = "task:agent";
-/// Archive, restore and delete. Not under `task:`: a success sweeps that
-/// prefix, and the reply has to be read first.
-const ARCHIVE_KEY: &str = "tasks:archive";
 /// The server's table of legal moves per track. Under `__`, not `task:`: it
 /// does not change while the app runs, so nothing here invalidates it.
 const TRACKS_KEY: &str = "__tracks";
@@ -262,16 +260,10 @@ struct Local {
     /// with a request for changes.
     answer: String,
     changes: String,
-    /// An archive or delete waiting on a yes, and the one sent.
-    ask: Option<Act>,
-    acting: Option<Act>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Act {
-    Archive,
-    Restore,
-    Delete,
+    /// A pick from the title's menu, acted on once the page is drawn.
+    pick: Option<Pick>,
+    /// A task action from a menu is out.
+    archiving: bool,
 }
 
 impl Local {
@@ -299,8 +291,8 @@ impl Local {
             agent_busy: None,
             answer: String::new(),
             changes: String::new(),
-            ask: None,
-            acting: None,
+            pick: None,
+            archiving: false,
         }
     }
 }
@@ -333,12 +325,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let admin = me_str(app, "role") == "admin";
     let can_write = app.can_write();
 
+    local.archiving = app.board.tasks.busy();
     let net = app.net.as_mut().expect("net is live whenever a view runs");
-    // Deleted: there is nothing left to show, so this is Back.
-    if settle_archive(net, local) {
-        app.task = None;
-        return;
-    }
     net.get_once(TASK_KEY, &format!("/api/user/tasks/{task_id}"));
     net.get_once(
         ARTIFACTS_KEY,
@@ -432,14 +420,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             })
             .unwrap_or_default()
     });
-    let handoff = Handoff {
-        mine,
-        // The delegate stays on a finished task as history; only an agent
-        // still holding it can be taken back.
-        delegated: delegate.is_some_and(|d| !matches!(str_of(d, "state"), Some("done" | "stopped"))),
-        finished: task.get("doneAt").is_some_and(|v| !v.is_null()) || status == "dropped",
-        agents: &agents,
-    };
+    let handoff = Handoff { mine, delegated: super::menus::held(&task), finished: super::menus::finished(&task), agents: &agents };
+    let viewer = Viewer { me: me.clone(), can_write, agents: agents.to_vec() };
 
     // The rail cannot hold `net` — the content column has it — so it reports
     // what was asked for and the request is made once both closures are gone.
@@ -459,7 +441,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             shell::Part::Header => {
                 editing = headline(
                     ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held, &handoff,
-                    local,
+                    &viewer, local,
                 );
             }
             shell::Part::Body => {
@@ -510,8 +492,21 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         }
         None => {}
     }
-    // After the page, so its dialog is drawn over it.
-    archive_confirm(ui.ctx(), net, task_id, &task, local);
+    // The page's own hand-off and details edits say how they went where
+    // they always have; archive and delete share every other menu's dialog.
+    match local.pick.take() {
+        Some(Pick::Handoff(id, name)) => agent_action(net, task_id, AgentAsk::Handoff(id, name), local),
+        Some(Pick::TakeBack) => agent_action(net, task_id, AgentAsk::TakeBack, local),
+        Some(Pick::Priority(p)) => {
+            let mut body = json!({ "priority": p });
+            if let Some(at) = &updated_at {
+                body["expectedUpdatedAt"] = json!(at);
+            }
+            save_details(net, task_id, body, false, local);
+        }
+        Some(pick) => app.board.tasks.pick(net, &task, pick),
+        None => {}
+    }
 
     // `net`'s borrow of `app` ends above, so navigation happens last.
     if let Some(project_id) = open_project {
@@ -556,13 +551,14 @@ fn headline(
     can_write: bool,
     held: &[String],
     handoff: &Handoff,
+    viewer: &Viewer,
     local: &mut Local,
 ) -> bool {
     let busy = local.patching
         || local.attaching
         || local.saving
         || local.agent_busy.is_some()
-        || local.acting.is_some();
+        || local.archiving;
     let action = primary_move(track, status)
         .filter(|(_, next)| moves.contains(next) && (can_act || anyone_may(next)));
 
@@ -632,13 +628,8 @@ fn headline(
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
-                if can_write && !busy {
-                    match task_menu(ui, task) {
-                        Some(Act::Restore) => send_archive(net, task_id, Act::Restore, local),
-                        Some(act) => local.ask = Some(act),
-                        None => {}
-                    }
-                }
+                let mut pick = None;
+                viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
                 if let Some((copy, next)) = action {
                     if w::primary(ui, copy, !busy).clicked() {
                         go = Some(next);
@@ -654,16 +645,19 @@ fn headline(
                     ui.add(egui::Spinner::new().size(text::BODY));
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
+                    let title = ui.add(
                         egui::Label::new(
                             RichText::new(str_of(task, "title").unwrap_or("Untitled"))
                                 .size(text::TITLE)
                                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                                 .color(colour::TEXT),
                         )
-                        .truncate(),
+                        .truncate()
+                        .sense(egui::Sense::click()),
                     );
+                    viz::context_menu(&title, |ui| pick = task_items(ui, task, viewer, false));
                 });
+                local.pick = pick;
             });
         });
         if edit {
@@ -2152,97 +2146,5 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
-    }
-}
-
-// ------------------------------------------------------ archive and delete
-
-/// The more-actions menu, with what the viewer may do. A task archived along
-/// with its project has no Restore of its own: the project's brings it back.
-fn task_menu(ui: &mut egui::Ui, task: &Value) -> Option<Act> {
-    let flag = |k: &str| task.get(k).and_then(Value::as_bool).unwrap_or(false);
-    let set = |k: &str| task.get(k).is_some_and(|v| !v.is_null());
-    let mut acts: Vec<(Act, &str)> = Vec::new();
-    if flag("canArchive") && !set("projectArchivedAt") {
-        acts.push(if set("archivedAt") { (Act::Restore, "Restore") } else { (Act::Archive, "Archive") });
-    }
-    if flag("canDelete") {
-        acts.push((Act::Delete, "Delete"));
-    }
-    if acts.is_empty() {
-        return None;
-    }
-    let labels: Vec<&str> = acts.iter().map(|(_, l)| *l).collect();
-    viz::more(ui, &labels).map(|i| acts[i].0)
-}
-
-fn send_archive(net: &mut crate::desktop::net::Net, task_id: &str, act: Act, local: &mut Local) {
-    let path = format!("/api/user/tasks/{task_id}");
-    net.invalidate(ARCHIVE_KEY);
-    match act {
-        Act::Archive => net.post(ARCHIVE_KEY, &format!("{path}/archive"), json!({})),
-        Act::Restore => net.post(ARCHIVE_KEY, &format!("{path}/restore"), json!({})),
-        Act::Delete => net.send(ARCHIVE_KEY, reqwest::Method::DELETE, &path, Value::Null),
-    }
-    local.notice = None;
-    local.ask = None;
-    local.acting = Some(act);
-}
-
-/// Fold in the reply. True when the task was deleted.
-fn settle_archive(net: &mut crate::desktop::net::Net, local: &mut Local) -> bool {
-    let Some(act) = local.acting.filter(|_| !net.is_loading(ARCHIVE_KEY)) else { return false };
-    local.acting = None;
-    let ok = matches!(net.peek(ARCHIVE_KEY), Some(Ok(_)));
-    if let Some(Err(e)) = net.peek(ARCHIVE_KEY) {
-        local.notice = Some((e.clone(), true));
-    }
-    net.invalidate(ARCHIVE_KEY);
-    if ok {
-        super::board::after_archive(net);
-        local.notice = match act {
-            Act::Archive => Some(("Archived.".to_owned(), false)),
-            Act::Restore => Some(("Restored.".to_owned(), false)),
-            Act::Delete => None,
-        };
-    }
-    ok && act == Act::Delete
-}
-
-/// "Archive this task?" or "Delete this task?". One click each: a task is one
-/// row, not a project's worth, and archiving is undone from the same menu.
-fn archive_confirm(
-    ctx: &egui::Context,
-    net: &mut crate::desktop::net::Net,
-    task_id: &str,
-    task: &Value,
-    local: &mut Local,
-) {
-    let Some(act) = local.ask else { return };
-    let title = str_of(task, "title").unwrap_or("this task");
-    let (mut go, mut close) = (false, false);
-    let modal = super::agents::dialog(ctx, "task:confirm", super::agents::DIALOG_W * 0.8, |ui| {
-        let delete = act == Act::Delete;
-        super::agents::heading(ui, &format!("{} \u{201c}{title}\u{201d}?", if delete { "Delete" } else { "Archive" }));
-        ui.add_space(space::XS);
-        w::muted(
-            ui,
-            if delete {
-                "Its notes, run log and links go with it. This cannot be undone \u{2014} archive it instead to keep it."
-            } else {
-                "It leaves the board, Home and everyone\u{2019}s task lists. Restore it from this page any time."
-            },
-        );
-        ui.add_space(space::XL);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = space::SM;
-            go = if delete { w::danger(ui, "Delete task", true) } else { w::primary(ui, "Archive", true) }.clicked();
-            close = w::ghost(ui, "Cancel").clicked();
-        });
-    });
-    if go {
-        send_archive(net, task_id, act, local);
-    } else if close || modal.should_close() {
-        local.ask = None;
     }
 }

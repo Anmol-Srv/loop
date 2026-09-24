@@ -21,7 +21,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use egui::RichText;
 use serde_json::Value;
 
-use super::board::{archived, archived_chip, array, fraction, num_at, project_action, project_menu, str_at, title_ink, Ask};
+use super::menus::{project_items, Pick};
+use super::board::{archived, archived_chip, array, fraction, num_at, project_action, project_ask, str_at, title_ink, Ask};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
@@ -89,8 +90,6 @@ const COL_PRIORITY: f32 = 52.0;
 /// "in 3 weeks", right-aligned. The longest thing it holds is "11 months ago".
 const COL_TARGET: f32 = 88.0;
 const COL_CREATED: f32 = 78.0;
-/// The more-actions dots.
-const COL_MORE: f32 = 32.0;
 
 /// Alignment lives with the width, so "Progress" and "Created" sit over the
 /// figures beneath them rather than at the other end of the column.
@@ -100,7 +99,7 @@ const COL_MORE: f32 = 32.0;
 /// less room, then priority. Target drops last of the droppables, because
 /// "which of these is late" is the question the table exists to answer. Name,
 /// progress and status never drop.
-const COLS: [Col; 9] = [
+const COLS: [Col; 8] = [
     Col::left("Project", COL_NAME),
     Col::fill("Description", COL_DESCRIPTION).rank(5),
     Col::right("Tasks", COL_TASKS).rank(3),
@@ -109,7 +108,6 @@ const COLS: [Col; 9] = [
     Col::left("Status", COL_STATUS),
     Col::right("Target", COL_TARGET).rank(1),
     Col::right("Created", COL_CREATED).rank(4),
-    Col::right("", COL_MORE),
 ];
 
 /// What the trailing controls on a draft-task row need: three menus, a Remove,
@@ -348,7 +346,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     } else if shown.is_empty() {
         w::empty(ui, "No projects match these filters.", "Clear them to see every project.");
     } else {
-        ask = table(ui, &shown, &flows, &mut open);
+        ask = table(ui, &shown, &flows, can_write, &mut open);
         ui.add_space(space::XXL);
     }
     if ask.is_some() {
@@ -471,21 +469,32 @@ fn sort_projects(rows: &mut [Value], flows: &HashMap<String, Value>) {
 /// Public so `tests/ui_render.rs` can draw it offscreen with fake rows: the
 /// running app cannot be screenshotted from here, and alignment is not
 /// something to verify by reading code.
-/// Returns an archive, restore or delete picked from a row's menu.
+/// Returns an archive, restore or delete picked from a row's right-click menu.
+///
+/// ponytail: no hover-revealed dots at the row's end. Right-click and the
+/// page's own button cover it, and a 32px column is one more thing an 820
+/// window has to drop.
 pub fn table(
     ui: &mut egui::Ui,
     rows: &[Value],
     flows: &HashMap<String, Value>,
+    can_write: bool,
     open: &mut Option<String>,
 ) -> Option<Ask> {
     let mut ask = None;
-    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        if let Some(a) = project_row(row, &rows[i], flows.get(str_at(&rows[i], "id"))) {
-            ask = Some(a);
-        }
-    });
-    // A pick from a row's menu is a click on the row too; it is not a visit.
-    if let (Some(i), None) = (clicked, &ask) {
+    let clicked = table::show_with_menu(
+        ui,
+        TABLE,
+        &COLS,
+        rows.len(),
+        |row, i| project_row(row, &rows[i], flows.get(str_at(&rows[i], "id"))),
+        |ui, i| match project_items(ui, &rows[i], can_write, true) {
+            Some(Pick::Open) => *open = Some(str_at(&rows[i], "id").to_owned()),
+            Some(Pick::Act(act)) => ask = Some(project_ask(&rows[i], act)),
+            _ => {}
+        },
+    );
+    if let Some(i) = clicked {
         *open = Some(str_at(&rows[i], "id").to_owned());
     }
     ask
@@ -493,7 +502,7 @@ pub fn table(
 
 /// `flow` overrides the row's own `done`/`total` when given; the list passes
 /// none, since `/projects` rows carry both.
-fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) -> Option<Ask> {
+fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) {
     let flow = flow.unwrap_or(p);
     let (done, total) = (num_at(flow, "done"), num_at(flow, "total"));
     let status = str_at(p, "status");
@@ -576,10 +585,6 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     }
 
     row.muted(7, &age(p));
-
-    let mut ask = None;
-    row.at(8, |ui| ask = project_menu(ui, p));
-    ask
 }
 
 /// How loud a priority is allowed to be. Same vocabulary as the task tables —

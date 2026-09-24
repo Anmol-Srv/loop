@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
+use super::menus::{project_items, task_items, Pick, Viewer};
 use super::projects::{
     health, label_tone, owned, parse_date, priority_tone, relative_day, Health,
     DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
@@ -112,6 +113,8 @@ pub struct State {
     acting: Option<Ask>,
     /// How the last one went, and whether it failed.
     pub notice: Option<(String, bool)>,
+    /// Task actions picked from a menu, on any page.
+    pub tasks: super::menus::Tasks,
 }
 
 /// What one project page remembers between frames.
@@ -269,6 +272,7 @@ enum Request {
 fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let keys = Keys::new(project_id);
     let can_write = app.can_write();
+    let viewer = super::menus::Viewer::of(app);
     let notice = app.board.notice.clone();
     let mut ask: Option<Ask> = None;
     let page = app.board.pages.entry(project_id.to_owned()).or_default();
@@ -343,6 +347,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 
     let mut back = false;
     let mut open_task: Option<String> = None;
+    let mut task_pick: Option<(Value, Pick)> = None;
     let requests: Vec<Request> = Vec::new();
 
     if shell::back(ui, "Projects").clicked() {
@@ -489,7 +494,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 };
                 w::empty(ui, what, next);
             } else {
-                table(ui, &shown, &mut open_task);
+                table(ui, &shown, &viewer, &mut open_task, &mut task_pick);
                 ui.add_space(space::XXL);
             }
         },
@@ -533,6 +538,9 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 
     let page = page_cell.into_inner();
     let net = app.net.as_mut().unwrap();
+    if let Some((t, pick)) = task_pick {
+        app.board.tasks.pick(net, &t, pick);
+    }
     if let Some(body) = submit {
         // Drop a previous attempt's error, so the banner belongs to this one.
         net.invalidate(ADD_KEY);
@@ -692,26 +700,28 @@ fn headline(
     let mut edit = false;
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if can_write {
-                if let Some(a) = project_menu(ui, head) {
-                    *ask = Some(a);
-                }
-            }
+            let mut pick = None;
+            viz::more(ui, |ui| pick = project_items(ui, head, can_write, false));
             if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked()
             {
                 edit = true;
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.add(
+                let title = ui.add(
                     egui::Label::new(
                         RichText::new(name)
                             .size(text::TITLE)
                             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                             .color(colour::TEXT),
                     )
-                    .truncate(),
+                    .truncate()
+                    .sense(egui::Sense::click()),
                 );
+                viz::context_menu(&title, |ui| pick = project_items(ui, head, can_write, false));
             });
+            if let Some(Pick::Act(act)) = pick {
+                *ask = Some(project_ask(head, act));
+            }
         });
     });
     if edit {
@@ -1288,12 +1298,30 @@ fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
 
 /// The project's tasks, on the shared table — so a task row is the same row
 /// the projects list draws, down to the alignment of its dates.
-fn table(ui: &mut egui::Ui, rows: &[&Value], open: &mut Option<String>) {
-    let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        task_row(row, rows[i]);
-    });
+fn table(
+    ui: &mut egui::Ui,
+    rows: &[&Value],
+    viewer: &Viewer,
+    open: &mut Option<String>,
+    picked: &mut Option<(Value, Pick)>,
+) {
+    let clicked = table::show_with_menu(
+        ui,
+        TABLE,
+        &COLS,
+        rows.len(),
+        |row, i| task_row(row, rows[i]),
+        |ui, i| {
+            if let Some(pick) = task_items(ui, rows[i], viewer, true) {
+                *picked = Some((rows[i].clone(), pick));
+            }
+        },
+    );
     if let Some(i) = clicked {
         *open = Some(str_at(rows[i], "id").to_owned());
+    }
+    if let Some((t, Pick::Open)) = picked.take_if(|(_, p)| matches!(p, Pick::Open)) {
+        *open = Some(str_at(&t, "id").to_owned());
     }
 }
 
@@ -1506,16 +1534,6 @@ pub enum Act {
     Delete,
 }
 
-impl Act {
-    fn label(self) -> &'static str {
-        match self {
-            Act::Archive => "Archive",
-            Act::Restore => "Restore",
-            Act::Delete => "Delete",
-        }
-    }
-}
-
 /// A project action and what the dialog needs to say about it.
 #[derive(Clone)]
 pub struct Ask {
@@ -1547,29 +1565,15 @@ pub(super) fn archived_chip(ui: &mut egui::Ui) {
     c::chip(ui, "Archived", c::Tone::Quiet, false);
 }
 
-/// The more-actions menu for a project, when the viewer may use it: what was
-/// picked.
-pub(super) fn project_menu(ui: &mut egui::Ui, p: &Value) -> Option<Ask> {
-    let flag = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
-    let mut acts = Vec::new();
-    if flag("canArchive") {
-        acts.push(if archived(p) { Act::Restore } else { Act::Archive });
-    }
-    if flag("canDelete") {
-        acts.push(Act::Delete);
-    }
-    if acts.is_empty() {
-        return None;
-    }
-    let labels: Vec<&str> = acts.iter().map(|a| a.label()).collect();
-    let act = acts[viz::more(ui, &labels)?];
-    Some(Ask {
+/// The ask behind an archive, restore or delete picked from a project's menu.
+pub(super) fn project_ask(p: &Value, act: Act) -> Ask {
+    Ask {
         id: str_at(p, "id").to_owned(),
         name: str_at(p, "name").to_owned(),
         act,
         tasks: num_at(p, "taskCount"),
         typed: String::new(),
-    })
+    }
 }
 
 /// Everything that lists projects or tasks, once one has been archived,

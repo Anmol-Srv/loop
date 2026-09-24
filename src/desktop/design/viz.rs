@@ -651,11 +651,7 @@ pub fn multi_select(
             }
             // Picking a set leaves the menu open, so it needs a way out that is
             // not "click somewhere harmless".
-            ui.add_space(space::XXS);
-            let (rule, _) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(rule, 0.0, colour::LINE);
-            ui.add_space(space::XXS);
+            menu_rule(ui);
             if menu_row(ui, "Done", false, false).clicked() {
                 ui.close();
             }
@@ -663,40 +659,175 @@ pub fn multi_select(
     response
 }
 
-/// "More actions": three dots opening a menu of `items`. Returns the index
-/// picked this frame. The dots are painted — the text face has no ellipsis on
-/// the midline, and the icon font's is a hairline at this size.
-pub fn more(ui: &mut Ui, items: &[&str]) -> Option<usize> {
+/// A hairline between groups of menu rows.
+pub fn menu_rule(ui: &mut Ui) {
+    ui.add_space(space::XXS);
+    let (rule, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().rect_filled(rule, 0.0, colour::LINE);
+    ui.add_space(space::XXS);
+}
+
+/// An action menu's width. The longest item, "Hand off to" and an agent's
+/// name, truncates rather than widening the menu from row to row.
+const ACTION_MENU_W: f32 = 220.0;
+
+/// "More actions": a secondary button with three painted dots, opening the
+/// same menu a right-click on the thing's row opens. The dots are painted —
+/// the text face has no ellipsis on the midline, and the icon font's is a
+/// hairline at this size.
+pub fn more(ui: &mut Ui, items: impl FnOnce(&mut Ui)) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(HEIGHT), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More actions"));
     let response = motion::operable(ui, response, radius::SM as f32);
-    let hot = response.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT, colour::SURFACE_HOVER);
-    let ink = if hot { colour::TEXT } else { colour::TEXT_MUTED };
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    // `w::secondary`'s three states, so it sits beside Edit as one of a set.
+    let hot = response.hovered() || response.has_focus() || open;
+    let fill = if open || response.is_pointer_button_down_on() {
+        colour::GLASS_ACTIVE
+    } else if hot {
+        colour::GLASS_HOVER
+    } else {
+        colour::GLASS
+    };
     let p = ui.painter();
     p.rect_filled(rect, radius::SM as f32, fill);
+    p.rect_stroke(
+        rect,
+        radius::SM as f32,
+        egui::Stroke::new(1.0, if hot { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }),
+        egui::StrokeKind::Inside,
+    );
     for dx in [-5.0, 0.0, 5.0] {
-        p.circle_filled(rect.center() + Vec2::new(dx, 0.0), 1.6, ink);
+        p.circle_filled(rect.center() + Vec2::new(dx, 0.0), 1.6, colour::TEXT);
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let response =
+        if open { response } else { response.on_hover_text("More actions \u{2014} or right-click any row") };
 
-    let mut picked = None;
     egui::Popup::menu(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .align(egui::RectAlign::BOTTOM_END)
+        .gap(space::XS)
         .frame(menu_frame())
-        .width(MENU_MIN_W * 0.75)
-        .show(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (i, label) in items.iter().enumerate() {
-                if menu_row(ui, label, false, false).clicked() {
-                    picked = Some(i);
-                }
-            }
+        .width(ACTION_MENU_W)
+        .show(|ui| menu_body(ui, items));
+    response
+}
+
+/// The action menu, opened at the pointer by a right-click on `response`.
+/// True while it is open, so a row can stay lit under it.
+pub fn context_menu(response: &Response, items: impl FnOnce(&mut Ui)) -> bool {
+    egui::Popup::context_menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(menu_frame())
+        .width(ACTION_MENU_W)
+        .show(|ui| menu_body(ui, items))
+        .is_some()
+}
+
+fn menu_body(ui: &mut Ui, items: impl FnOnce(&mut Ui)) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    // Arrow keys walk focus spatially; without this they walk off the bottom
+    // of the menu into the page under it.
+    ui.ctx().memory_mut(|m| m.set_modal_layer(ui.layer_id()));
+    items(ui);
+}
+
+/// One action in a menu. True when it was picked, which closes the menu.
+///
+/// `why` disables it and says why on hover: an item that is missing teaches
+/// nobody that it exists, one that is greyed with a reason does. `danger` is
+/// for the one that cannot be undone.
+pub fn menu_item(ui: &mut Ui, label: &str, danger: bool, why: Option<&str>) -> bool {
+    let response = action_row(ui, label, danger, why, false);
+    if response.clicked() {
+        ui.close();
+        return true;
+    }
+    false
+}
+
+/// A row that opens `items` to its side, with a painted chevron — Nunito
+/// has no arrow glyph.
+pub fn submenu(ui: &mut Ui, label: &str, why: Option<&str>, items: impl FnOnce(&mut Ui)) {
+    let response = action_row(ui, label, false, why, true);
+    if why.is_none() {
+        // egui draws a submenu in its stock menu frame; the theme's window
+        // fill and stroke are the app's, and this is its radius.
+        ui.scope(|ui| {
+            ui.visuals_mut().menu_corner_radius = radius::MD.into();
+            egui::containers::menu::SubMenu::new().show(ui, &response, |ui| {
+                ui.set_width(MENU_MIN_W);
+                menu_body(ui, items);
+            });
         });
-    picked
+    }
+}
+
+/// A submenu's pick-one row: ticked when it is the current value.
+pub fn menu_choice(ui: &mut Ui, label: &str, current: bool) -> bool {
+    if menu_row(ui, label, current, false).clicked() {
+        ui.close();
+        return true;
+    }
+    false
+}
+
+fn action_row(ui: &mut Ui, label: &str, danger: bool, why: Option<&str>, chevron: bool) -> Response {
+    let enabled = why.is_none();
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), size::CONTROL),
+        if enabled { Sense::click() } else { Sense::hover() },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let response = if enabled { motion::operable(ui, response, radius::SM as f32) } else { response };
+    // Focus is outside a menu when it opens — on the row it came from, or
+    // nowhere; the first Down arrow lands on its first live row, and egui
+    // walks focus from there.
+    let focus_outside = ui.memory(|m| m.focused()).is_none_or(|id| {
+        ui.ctx().read_response(id).is_none_or(|r| r.layer_id != ui.layer_id())
+    });
+    if enabled && focus_outside && ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+        let claim = ui.id().with("arrow");
+        let frame = ui.ctx().cumulative_pass_nr();
+        if ui.data(|d| d.get_temp::<u64>(claim)) != Some(frame) {
+            ui.data_mut(|d| d.insert_temp(claim, frame));
+            response.request_focus();
+            // Or egui walks this same press on, to the second row.
+            ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        }
+    }
+
+    let hot = enabled && (response.hovered() || response.has_focus());
+    let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT, colour::SURFACE_HOVER);
+    let ink = match (enabled, danger) {
+        (false, _) => colour::TEXT_DISABLED,
+        (true, true) => colour::DANGER,
+        (true, false) if hot => colour::TEXT,
+        _ => colour::TEXT_2,
+    };
+    let right = if chevron { space::SM + CHEVRON * 2.0 + space::SM } else { space::SM };
+    let left = rect.left() + space::SM;
+    let galley =
+        truncated(ui, label, egui::FontId::proportional(text::BODY), ink, (rect.right() - right - left).max(1.0));
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, fill);
+    p.galley(egui::pos2(left, rect.center().y - galley.size().y / 2.0), galley, ink);
+    if chevron {
+        let x = rect.right() - space::SM - CHEVRON;
+        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED } else { colour::TEXT_DISABLED });
+        p.line_segment([egui::pos2(x - CHEVRON / 2.0, rect.center().y - CHEVRON), egui::pos2(x + CHEVRON / 2.0, rect.center().y)], stroke);
+        p.line_segment([egui::pos2(x + CHEVRON / 2.0, rect.center().y), egui::pos2(x - CHEVRON / 2.0, rect.center().y + CHEVRON)], stroke);
+    }
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    match why {
+        Some(why) => response.on_hover_text(why),
+        None => response,
+    }
 }
 
 /// Every control on the filter bar is this tall, including the clear button,

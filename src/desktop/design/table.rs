@@ -179,7 +179,32 @@ pub fn show(
     id: &str,
     cols: &[Col],
     n: usize,
+    row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
+) -> Option<usize> {
+    show_inner(ui, id, cols, n, row, None)
+}
+
+/// `show`, with `menu` filling the action menu a right-click on row `i` opens.
+/// The row stays lit while its menu is open, so it is plain which one the
+/// menu is about.
+pub fn show_with_menu(
+    ui: &mut Ui,
+    id: &str,
+    cols: &[Col],
+    n: usize,
+    row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
+    mut menu: impl FnMut(&mut Ui, usize),
+) -> Option<usize> {
+    show_inner(ui, id, cols, n, row, Some(&mut menu))
+}
+
+fn show_inner(
+    ui: &mut Ui,
+    id: &str,
+    cols: &[Col],
+    n: usize,
     mut row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
+    mut menu: Option<&mut dyn FnMut(&mut Ui, usize)>,
 ) -> Option<usize> {
     // Drop the least important column until the rest fit. The gaps go with
     // them, so this converges rather than shaving one column short.
@@ -287,6 +312,7 @@ pub fn show(
                     });
                 });
 
+            let mut menu_open = None;
             for (i, response) in responses {
                 let response = motion::operable_sm(ui, response);
                 if response.hovered() {
@@ -296,7 +322,13 @@ pub fn show(
                 if response.clicked() {
                     clicked = Some(i);
                 }
+                if let Some(menu) = menu.as_mut() {
+                    if super::viz::context_menu(&response, |ui| menu(ui, i)) {
+                        menu_open = Some(i);
+                    }
+                }
             }
+            now = menu_open.or(now);
 
             // Rows sit directly under the header at a fixed pitch, so their
             // rects are known without asking the table.

@@ -41,6 +41,7 @@ use egui::{Align, Color32, Layout, RichText};
 use serde_json::Value;
 
 use super::projects::PRIORITIES;
+use super::menus::{task_items, Pick, Viewer};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, tokens,
@@ -152,6 +153,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let filters_id = egui::Id::new(FILTERS);
     let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
 
+    let viewer = Viewer::of(app);
     let net = app.net.as_mut().unwrap();
 
     net.get_once(HOME, "/api/user/home");
@@ -240,15 +242,34 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     filter_bar(ui, &mut state, &d.filter_departments, &d.filter_projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
+    let mut picked: Option<(Value, Pick)> = None;
     if shown.is_empty() {
         w::empty(ui, "Nothing matches those filters.", "Clear one of them to see more.");
-    } else if let Some(i) = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
-        let r = &t.all[shown[i]];
-        task_row(row, &rows[r.at], r);
-    }) {
+    } else if let Some(i) = table::show_with_menu(
+        ui,
+        TABLE,
+        &COLS,
+        shown.len(),
+        |row, i| {
+            let r = &t.all[shown[i]];
+            task_row(row, &rows[r.at], r);
+        },
+        |ui, i| {
+            let row = &rows[t.all[shown[i]].at];
+            if let Some(pick) = task_items(ui, row, &viewer, true) {
+                picked = Some((row.clone(), pick));
+            }
+        },
+    ) {
         go = str_at(&rows[t.all[shown[i]].at], "id").map(|id| Target::Task(id.to_owned()));
     }
     ui.add_space(space::XXL);
+
+    match picked {
+        Some((t, Pick::Open)) => go = str_at(&t, "id").map(|id| Target::Task(id.to_owned())),
+        Some((t, pick)) => app.board.tasks.pick(app.net.as_mut().unwrap(), &t, pick),
+        None => {}
+    }
 
     match go {
         Some(Target::Task(id)) => app.task = Some(id),

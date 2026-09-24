@@ -50,7 +50,7 @@ fn projects_table() {
                 .inner_margin(16)
                 .show(ui, |ui| {
                     let mut open = None;
-                    projects::table(ui, &rows, &flows, &mut open);
+                    projects::table(ui, &rows, &flows, true, &mut open);
                 });
         });
     harness.run();

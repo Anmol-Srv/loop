@@ -593,3 +593,47 @@ pub fn error(ui: &mut Ui, message: &str) {
             ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER));
         });
 }
+
+// ---------------------------------------------------------------- toast
+
+const TOAST: &str = "widgets:toast";
+
+/// Say how an action from a menu went, for a moment, at the foot of the
+/// window. A row's menu has no page of its own to put a notice on, and
+/// "Copied" belongs nowhere else.
+pub fn toast(ctx: &egui::Context, message: impl Into<String>, failed: bool) {
+    let at = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(TOAST), (message.into(), failed, at)));
+}
+
+/// Draw the current toast, if it has not run out. Once a frame, from the shell.
+pub fn toasts(ctx: &egui::Context) {
+    let id = egui::Id::new(TOAST);
+    let Some((message, failed, at)) = ctx.data(|d| d.get_temp::<(String, bool, f64)>(id)) else { return };
+    // A failure is a sentence someone has to read; "Copied." is a glance.
+    let lasts = if failed { 6.0 } else { 2.0 };
+    let left = lasts - (ctx.input(|i| i.time) - at);
+    if left <= 0.0 {
+        ctx.data_mut(|d| d.remove::<(String, bool, f64)>(id));
+        return;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+    egui::Area::new(id)
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .anchor(egui::Align2::CENTER_BOTTOM, Vec2::new(0.0, -space::XL))
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(colour::SURFACE_ACTIVE)
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .corner_radius(radius::MD)
+                .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(message)
+                            .size(text::SMALL)
+                            .color(if failed { colour::DANGER } else { colour::TEXT }),
+                    );
+                });
+        });
+}
