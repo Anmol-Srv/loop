@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::controllers::approval::ChangeRow;
 use crate::controllers::project::ProjectProgress;
-use crate::controllers::{approval, project, task};
+use crate::controllers::{agent, approval, project, task};
 use crate::db::AppState;
 use crate::errors::AppResult;
 use crate::models::task::TaskRow;
@@ -39,6 +39,8 @@ pub struct Home {
     pub waiting_on_me: Vec<ChangeRow>,
     pub projects: Vec<ProjectProgress>,
     pub team: Vec<Capacity>,
+    /// Questions and submissions from my agents, on tasks assigned to me.
+    pub needs_attention: Vec<agent::Attention>,
 }
 
 /// Everyone's load, in one grouped query.
@@ -58,9 +60,9 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
     // the set of ids anything live waits on is one pass and a hash lookup.
     let rows = sqlx::query_as::<_, Capacity>(&format!(
         "WITH waiting AS (
-           SELECT DISTINCT unnest(blocked_by) AS id
-             FROM task
-            WHERE done_at IS NULL AND status <> 'dropped'
+           SELECT DISTINCT unnest(t.blocked_by) AS id
+             FROM task t
+            WHERE t.done_at IS NULL AND t.status <> 'dropped' AND {live}
          )
          SELECT p.id  AS person_id,
                 p.email,
@@ -77,11 +79,12 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
                 ) AS blocking
            FROM person p
            LEFT JOIN task t
-             ON t.assignee_person_id = p.id
+             ON t.assignee_person_id = p.id AND {live}
           WHERE p.deleted_at IS NULL
           GROUP BY p.id, p.email, p.name, p.department
           ORDER BY open DESC, p.name",
         resolved = crate::models::task::BLOCKER_RESOLVED,
+        live = crate::models::task::LIVE,
     ))
     .fetch_all(&state.db)
     .await?;
@@ -102,29 +105,33 @@ pub struct Counts {
 }
 
 pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
-    let my_open = sqlx::query_scalar(
-        "SELECT count(*) FROM task
-          WHERE assignee_person_id = $1 AND done_at IS NULL AND status <> 'dropped'",
-    )
+    let my_open = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM task t
+          WHERE t.assignee_person_id = $1 AND t.done_at IS NULL AND t.status <> 'dropped' AND {}",
+        crate::models::task::LIVE
+    ))
     .bind(person_id)
     .fetch_one(&state.db)
     .await?;
-    let active_projects = sqlx::query_scalar("SELECT count(*) FROM project WHERE status = 'active'")
+    let active_projects =
+        sqlx::query_scalar("SELECT count(*) FROM project WHERE status = 'active' AND archived_at IS NULL")
         .fetch_one(&state.db)
         .await?;
     Ok(Counts { my_open, active_projects })
 }
 
 pub async fn home(state: &AppState, person_id: Uuid) -> AppResult<Home> {
-    let my_tasks = task::mine(state, person_id).await?;
+    let my_tasks = task::mine(state, person_id, false).await?;
     let waiting_on_me = approval::pending_for(state, person_id).await?;
     let projects = project::progress(state, None).await?;
     let team = team_capacity(state).await?;
+    let needs_attention = agent::needs_attention(state, person_id).await?;
 
     Ok(Home {
         my_tasks,
         waiting_on_me,
         projects,
         team,
+        needs_attention,
     })
 }

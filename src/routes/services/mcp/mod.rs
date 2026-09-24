@@ -1,15 +1,25 @@
-//! The MCP surface: a thin JSON-RPC 2.0 layer over the existing controllers.
+//! The MCP surface: a thin JSON-RPC 2.0 layer over the existing controllers,
+//! served as Streamable HTTP with plain JSON responses.
 //!
 //! Responses here are raw JSON-RPC, **not** the `{ success, data }` envelope the
 //! rest of this API uses. MCP clients parse the standard shape and nothing else,
 //! so wrapping it would make the endpoint unusable by the tools it exists for.
-//! Authentication is the same bearer token as everywhere else (`Caller`), and
-//! the tool list is filtered by that token's scopes.
+//! Authentication is the same bearer token as everywhere else (`Caller`). A
+//! person's token sees the board tools filtered by its scopes; an agent's token
+//! sees the agent tools and the skill.
+//!
+//! What real clients (the Python MCP SDK Hermes uses, Claude Code's http
+//! transport) need beyond plain JSON-RPC: the protocol version negotiated, a
+//! notification answered `202` with no body, and `GET` — the optional
+//! server-to-client stream, which this server does not offer — refused `405`.
 
 pub mod protocol;
 pub mod tools;
 
 use axum::extract::State;
+use axum::http::header::ALLOW;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{json, Value};
@@ -22,55 +32,122 @@ use crate::errors::{AppError, AppResult};
 use crate::middleware::auth::Caller;
 use crate::models::task::{Task, TaskFilter, TASK_COLUMNS};
 use protocol::{JsonRpcRequest, JsonRpcResponse, METHOD_NOT_FOUND, PARSE_ERROR};
+use tools::ToolDef;
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+/// Newest first; the first is what a client asking for anything else gets.
+const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const DOC_URI_PREFIX: &str = "acp://docs/";
+const SKILL_URI: &str = "acp://skill";
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/services/mcp", post(handle))
+    Router::new().route("/api/services/mcp", post(handle).get(no_stream).delete(no_stream))
 }
 
-async fn handle(State(state): State<AppState>, caller: Caller, body: String) -> Json<JsonRpcResponse> {
+/// No server-initiated stream and no sessions to end: `405` is how the
+/// transport says so, and clients carry on with POST alone.
+async fn no_stream() -> Response {
+    (StatusCode::METHOD_NOT_ALLOWED, [(ALLOW, "POST")]).into_response()
+}
+
+async fn handle(State(state): State<AppState>, caller: Caller, headers: HeaderMap, body: String) -> Response {
     // ponytail: malformed JSON and a malformed envelope both read as -32700.
     // Splitting them would need a second parse for no caller benefit.
     let request: JsonRpcRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
-        Err(e) => return Json(JsonRpcResponse::err(None, PARSE_ERROR, e.to_string())),
+        Err(e) => return Json(JsonRpcResponse::err(None, PARSE_ERROR, e.to_string())).into_response(),
     };
-    let id = request.id.clone();
+    // A notification (no id) — `notifications/initialized` above all — wants
+    // no answer. Anything else with no id is a response to a request this
+    // server never sends. Either way: accepted, nothing to say.
+    let Some(id) = request.id.clone() else {
+        return StatusCode::ACCEPTED.into_response();
+    };
+    let id = Some(id);
+    let agent = caller.agent_id.is_some();
 
     let result = match request.method.as_str() {
-        "initialize" => Ok(json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": {}, "resources": {} },
-            "serverInfo": { "name": "acp", "version": env!("CARGO_PKG_VERSION") },
-        })),
+        "initialize" => Ok(initialize(&state, &caller, &request.params).await),
+        "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_list(&caller) })),
-        "tools/call" => call_tool(&state, &caller, &request.params).await.map(|v| {
-            json!({ "content": [{ "type": "text", "text": v.to_string() }] })
-        }),
+        "tools/call" => {
+            let name = str_arg(&request.params, "name").unwrap_or_default();
+            // The same filter `tools/list` uses, so a tool the caller cannot
+            // see is also a tool it cannot call — a protocol error, not a tool
+            // result.
+            if !visible(&caller).iter().any(|t| t.name == name) {
+                Err(AppError::BadRequest(format!("unknown tool '{name}'")))
+            } else {
+                let args = request.params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let outcome = if agent {
+                    call_agent_tool(&state, &caller, &name, &args).await
+                } else {
+                    call_tool(&state, &caller, &name, &args).await
+                };
+                // A refused call is the tool's answer, not a protocol failure:
+                // the model reads the sentence and corrects course.
+                Ok(match outcome {
+                    Ok(Value::String(text)) => json!({ "content": [{ "type": "text", "text": text }] }),
+                    Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }] }),
+                    Err(e) => {
+                        let (_, message) = protocol::code_and_message(&e);
+                        json!({ "content": [{ "type": "text", "text": message }], "isError": true })
+                    }
+                })
+            }
+        }
         "resources/list" => Ok(json!({ "resources": resource_list(&caller) })),
-        "resources/read" => read_resource(&caller, &request.params),
+        "resources/read" => read_resource(&state, &caller, &headers, &request.params).await,
         other => {
-            return Json(JsonRpcResponse::err(
-                id,
-                METHOD_NOT_FOUND,
-                format!("unknown method '{other}'"),
-            ))
+            return Json(JsonRpcResponse::err(id, METHOD_NOT_FOUND, format!("unknown method '{other}'")))
+                .into_response()
         }
     };
 
     match result {
-        Ok(value) => Json(JsonRpcResponse::ok(id, value)),
+        Ok(value) => Json(JsonRpcResponse::ok(id, value)).into_response(),
         Err(e) => {
             let (code, message) = protocol::code_and_message(&e);
-            Json(JsonRpcResponse::err(id, code, message))
+            Json(JsonRpcResponse::err(id, code, message)).into_response()
         }
     }
 }
 
+/// Answer with the client's version when this server speaks it, otherwise the
+/// newest this server knows — the client then decides whether it can go on.
+async fn initialize(state: &AppState, caller: &Caller, params: &Value) -> Value {
+    let asked = params.get("protocolVersion").and_then(Value::as_str);
+    let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or(PROTOCOL_VERSIONS[0]);
+    let mut result = json!({
+        "protocolVersion": version,
+        "capabilities": { "tools": {}, "resources": {} },
+        "serverInfo": { "name": "acp", "version": env!("CARGO_PKG_VERSION") },
+    });
+    if let Some(agent) = caller.agent_id {
+        let handle: Option<String> = sqlx::query_scalar("SELECT handle FROM agent WHERE id = $1")
+            .bind(agent)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+        result["instructions"] = json!(format!(
+            "You are agent '{}' on Airtribe Control Plane. Read the {SKILL_URI} resource (the \
+             airtribe-agent skill) before acting, and start every wake-up with agent_inbox.",
+            handle.unwrap_or_default()
+        ));
+    }
+    result
+}
+
+fn visible(caller: &Caller) -> Vec<ToolDef> {
+    if caller.agent_id.is_some() {
+        tools::agent_tools()
+    } else {
+        tools::for_scopes(&caller.scopes)
+    }
+}
+
 fn tool_list(caller: &Caller) -> Vec<Value> {
-    tools::for_scopes(&caller.scopes)
+    visible(caller)
         .into_iter()
         .map(|t| json!({
             "name": t.name,
@@ -81,6 +158,14 @@ fn tool_list(caller: &Caller) -> Vec<Value> {
 }
 
 fn resource_list(caller: &Caller) -> Vec<Value> {
+    if caller.agent_id.is_some() {
+        return vec![json!({
+            "uri": SKILL_URI,
+            "name": "airtribe-agent skill",
+            "description": "How to work the tasks your owner hands you. Read before acting.",
+            "mimeType": "text/markdown",
+        })];
+    }
     tools::for_scopes(&caller.scopes)
         .into_iter()
         .map(|t| json!({
@@ -92,8 +177,12 @@ fn resource_list(caller: &Caller) -> Vec<Value> {
         .collect()
 }
 
-fn read_resource(caller: &Caller, params: &Value) -> AppResult<Value> {
+async fn read_resource(state: &AppState, caller: &Caller, headers: &HeaderMap, params: &Value) -> AppResult<Value> {
     let uri = str_arg(params, "uri")?;
+    if let (SKILL_URI, Some(agent)) = (uri.as_str(), caller.agent_id) {
+        let text = controllers::agent::skill(state, agent, &crate::routes::agent::server_url(headers)).await?;
+        return Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }] }));
+    }
     let name = uri
         .strip_prefix(DOC_URI_PREFIX)
         .ok_or_else(|| AppError::BadRequest(format!("unknown resource '{uri}'")))?;
@@ -108,19 +197,12 @@ fn read_resource(caller: &Caller, params: &Value) -> AppResult<Value> {
     }))
 }
 
-async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResult<Value> {
-    let name = str_arg(params, "name")?;
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-
-    // The scope filter is the same one `tools/list` uses, so a tool the caller
-    // cannot see is also a tool it cannot call.
-    if !tools::for_scopes(&caller.scopes).iter().any(|t| t.name == name) {
-        return Err(AppError::BadRequest(format!("unknown tool '{name}'")));
-    }
+async fn call_tool(state: &AppState, caller: &Caller, name: &str, args: &Value) -> AppResult<Value> {
+    let args = args.clone();
     let actor = &caller.actor;
 
-    match name.as_str() {
-        "project_list" => to_value(controllers::project::list(state).await?),
+    match name {
+        "project_list" => to_value(controllers::project::list(state, actor.person_id, false).await?),
         "phase_status" => {
             to_value(controllers::phase::list(state, uuid_arg(&args, "projectId")?).await?)
         }
@@ -132,6 +214,7 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
                 status: opt_str_arg(&args, "status"),
                 assignee_email: opt_str_arg(&args, "assigneeEmail"),
                 assignee_kind: opt_str_arg(&args, "assigneeKind"),
+                archived: false,
             };
             to_value(controllers::task::search(state, filter).await?)
         }
@@ -147,7 +230,7 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
             to_value(task)
         }
         "artifact_list" => to_value(
-            controllers::artifact::list(state, str_arg(&args, "parentType")?, uuid_arg(&args, "parentId")?)
+            controllers::artifact::list(state, actor.person_id, str_arg(&args, "parentType")?, uuid_arg(&args, "parentId")?)
                 .await?,
         ),
         "task_create" => to_value(
@@ -206,33 +289,62 @@ async fn call_tool(state: &AppState, caller: &Caller, params: &Value) -> AppResu
             )
             .await?,
         ),
-        // The lease is always taken under the caller's own label — there is no
-        // argument for it, so a worker cannot claim or heartbeat as someone else.
-        "work_claim" => to_value(
-            controllers::work::claim(state, &actor.label, opt_uuid_arg(&args, "taskId")?).await?,
-        ),
-        "work_heartbeat" => to_value(
-            controllers::work::heartbeat(state, &actor.label, uuid_arg(&args, "taskId")?).await?,
-        ),
-        "work_release" => to_value(
-            controllers::work::release(state, &actor.label, uuid_arg(&args, "taskId")?).await?,
-        ),
-        "run_log_append" => {
-            let lines = args
-                .get("lines")
-                .and_then(Value::as_array)
-                .ok_or_else(|| AppError::BadRequest("'lines' is required".into()))?
-                .iter()
-                .map(|l| {
-                    l.as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| AppError::BadRequest("'lines' must be strings".into()))
-                })
-                .collect::<AppResult<Vec<String>>>()?;
-            to_value(
-                controllers::run_log::append(state, &actor.label, uuid_arg(&args, "taskId")?, lines)
-                    .await?,
+        other => Err(AppError::BadRequest(format!("unknown tool '{other}'"))),
+    }
+}
+
+/// The agent tools: `/api/agent` in tool form, for the agent behind the token.
+async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &Value) -> AppResult<Value> {
+    use controllers::agent;
+    let me = caller.agent()?;
+    let task = || uuid_arg(args, "taskId");
+    let body = || str_arg(args, "body");
+    match name {
+        "agent_inbox" => Ok(Value::String(agent::inbox(state, me).await?)),
+        "agent_tasks" => to_value(agent::tasks(state, me).await?),
+        "task_context" => agent::context(state, me, task()?).await,
+        "task_ack" => to_value(agent::ack(state, me, task()?).await?),
+        "task_update" => to_value(
+            agent::update(
+                state,
+                me,
+                task()?,
+                &body()?,
+                opt_str_arg(args, "status"),
+                opt_str_arg(args, "expectedStatus"),
             )
+            .await?,
+        ),
+        "task_ask" => to_value(agent::ask(state, me, task()?, &body()?).await?),
+        "task_attach" => to_value(
+            agent::attach(
+                state,
+                me,
+                task()?,
+                &str_arg(args, "kind")?,
+                &str_arg(args, "url")?,
+                &opt_str_arg(args, "title").unwrap_or_default(),
+            )
+            .await?,
+        ),
+        "task_note" => to_value(agent::note(state, me, task()?, &body()?).await?),
+        "task_submit" => to_value(
+            agent::submit(
+                state,
+                me,
+                task()?,
+                &str_arg(args, "target")?,
+                &str_arg(args, "summary")?,
+                opt_str_arg(args, "manualReason"),
+            )
+            .await?,
+        ),
+        "events_ack" => {
+            let through = args
+                .get("through")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::BadRequest("'through' is required: the highest event id you handled".into()))?;
+            Ok(json!({ "eventCursor": agent::ack_events(state, me, through).await? }))
         }
         other => Err(AppError::BadRequest(format!("unknown tool '{other}'"))),
     }

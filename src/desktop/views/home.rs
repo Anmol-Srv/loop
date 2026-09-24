@@ -52,6 +52,9 @@ use crate::desktop::{App, Tab};
 const HOME: &str = "home";
 /// The table's rows: the whole workspace, unfiltered.
 const TASKS: &str = "home:tasks";
+/// The archived ones, which the table shows instead under its Archived toggle.
+/// The figures above it never count them.
+const ARCHIVED: &str = "home:archived";
 
 /// `App` owns no home state, and this view is the only thing that reads these
 /// filters, so they live in egui's temp store rather than growing the struct.
@@ -139,6 +142,8 @@ pub struct State {
     pub status: Option<String>,
     /// A project id, not a name.
     pub project: Option<String>,
+    /// The table lists archived tasks instead.
+    pub archived: bool,
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -151,6 +156,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     net.get_once(HOME, "/api/user/home");
     net.get_once(TASKS, "/api/user/tasks");
+    if state.archived {
+        net.get_once(ARCHIVED, "/api/user/tasks?archived=true");
+    }
 
     let loading = net.is_loading(HOME) || net.is_loading(TASKS);
     let error = net.error(HOME).or_else(|| net.error(TASKS)).map(str::to_owned);
@@ -159,8 +167,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // ponytail: hourly, so "stalled" can trail the real moment by up to an hour.
     let stamp = (net.generation(HOME), net.generation(TASKS), Utc::now().timestamp() / 3600);
     let (home, tasks) = (net.shared(HOME), net.shared(TASKS));
-    let d = memo(ui.ctx(), egui::Id::new(DERIVED), stamp, || derive(home, tasks));
-    let rows = d.rows();
+    let d = memo(ui.ctx(), egui::Id::new(DERIVED), stamp, || derive(home.clone(), tasks));
+    // The table's own source: the same shape, from the archived list.
+    let archived_stamp = (net.generation(HOME), net.generation(ARCHIVED));
+    let archived = net.shared(ARCHIVED);
+    let t = if state.archived {
+        memo(ui.ctx(), egui::Id::new(DERIVED).with("archived"), archived_stamp, || derive(home, archived))
+    } else {
+        d.clone()
+    };
+    let rows = t.rows();
 
     let mut subtitle = format!(
         "{} across {}",
@@ -207,18 +223,18 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let shown = memo(
         ui.ctx(),
         egui::Id::new(SHOWN),
-        (stamp, state.clone(), my_person_id.clone()),
+        (stamp, archived_stamp, state.clone(), my_person_id.clone()),
         || {
             let needle = state.query.trim().to_lowercase();
-            (0..d.all.len())
-                .filter(|&i| keep(&d.all[i], &rows[d.all[i].at], &state, &my_person_id, &needle))
+            (0..t.all.len())
+                .filter(|&i| keep(&t.all[i], &rows[t.all[i].at], &state, &my_person_id, &needle))
                 .collect::<Vec<usize>>()
         },
     );
     let filtered = state != State::default();
     shell::section_count_with(ui, "Tasks", shown.len(), |ui| {
         if filtered {
-            w::caption(ui, &format!("filtered from {}", d.live));
+            w::caption(ui, &format!("filtered from {}", t.live));
         }
     });
     filter_bar(ui, &mut state, &d.filter_departments, &d.filter_projects);
@@ -227,10 +243,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     if shown.is_empty() {
         w::empty(ui, "Nothing matches those filters.", "Clear one of them to see more.");
     } else if let Some(i) = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
-        let r = &d.all[shown[i]];
+        let r = &t.all[shown[i]];
         task_row(row, &rows[r.at], r);
     }) {
-        go = str_at(&rows[d.all[shown[i]].at], "id").map(|id| Target::Task(id.to_owned()));
+        go = str_at(&rows[t.all[shown[i]].at], "id").map(|id| Target::Task(id.to_owned()));
     }
     ui.add_space(space::XXL);
 
@@ -338,7 +354,7 @@ fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
     Derived {
         live: live.len(),
         project_count: projects.len(),
-        alerts: attention(&projects, &live, &by_id),
+        alerts: attention(&home, &projects, &live, &by_id),
         status: status_figures(&live),
         departments: department_rollup(&projects),
         completed: completed_figures(&live),
@@ -375,13 +391,40 @@ struct Alert {
 
 /// Everything worth a lead's attention, most severe first, capped.
 ///
-/// Five kinds, in order: a project past its date, a task waiting on another,
+/// First what an agent is waiting on me for — a question to answer, work to
+/// review — since nothing moves on those tasks until I do. Then five kinds, in
+/// order: a project past its date, a task waiting on another,
 /// a project that will miss its date at this pace, work nobody has touched,
 /// and urgent work nobody holds. Past-due outranks blocked because a date is
 /// a promise to someone outside the team; a blocked task is still internal.
-fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>) -> Vec<Alert> {
+fn attention(
+    home: &Value,
+    projects: &[&Value],
+    live: &[&Value],
+    by_id: &HashMap<&str, &Value>,
+) -> Vec<Alert> {
     let today = Local::now().date_naive();
     let mut out = Vec::new();
+
+    for item in list(home, "needsAttention") {
+        let (signal, tone, verb) = match str_at(item, "kind") {
+            Some("question") => ("Question", c::Tone::Running, "asks"),
+            Some("review") => ("Review", c::Tone::Agent, "submitted"),
+            _ => continue,
+        };
+        let Some(id) = str_at(item, "taskId") else { continue };
+        let agent = str_at(item, "agentName").unwrap_or("Your agent");
+        let body = str_at(item, "body").unwrap_or_default().lines().next().unwrap_or_default();
+        out.push(Alert {
+            rank: 0,
+            weight: 0,
+            tone,
+            signal,
+            subject: str_at(item, "title").unwrap_or_default().to_owned(),
+            reason: if body.is_empty() { format!("{agent} is waiting on you") } else { format!("{agent} {verb}: {body}") },
+            target: Target::Task(id.to_owned()),
+        });
+    }
 
     for p in projects {
         let status = str_at(p, "status").unwrap_or_default();
@@ -397,7 +440,7 @@ fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>
 
         if days < 0 && (status == "active" || status == "paused") {
             out.push(Alert {
-                rank: 0,
+                rank: 1,
                 weight: -days,
                 tone: c::Tone::Blocked,
                 signal: "Overdue",
@@ -411,7 +454,7 @@ fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>
                 d => format!("due in {}", plural(d as usize, "day")),
             };
             out.push(Alert {
-                rank: 2,
+                rank: 3,
                 weight: -days,
                 tone: c::Tone::Running,
                 signal: "At risk",
@@ -432,7 +475,7 @@ fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>
 
         if outstanding(t) > 0 {
             out.push(Alert {
-                rank: 1,
+                rank: 2,
                 weight: -priority,
                 tone: c::Tone::Blocked,
                 signal: "Blocked",
@@ -447,7 +490,7 @@ fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>
         if str_at(t, "status") == Some("in_progress") && idle > STALLED_DAYS {
             let who = str_at(t, "assigneeName").map(first_name).unwrap_or("nobody");
             out.push(Alert {
-                rank: 3,
+                rank: 4,
                 weight: idle,
                 tone: c::Tone::Running,
                 signal: "Stalled",
@@ -457,7 +500,7 @@ fn attention(projects: &[&Value], live: &[&Value], by_id: &HashMap<&str, &Value>
             });
         } else if priority <= 1 && str_at(t, "assigneeName").is_none() {
             out.push(Alert {
-                rank: 4,
+                rank: 5,
                 weight: -priority,
                 tone: c::Tone::Quiet,
                 signal: "Unassigned",
@@ -763,6 +806,10 @@ fn filter_bar(
 
         viz::select(ui, "All projects", projects, &mut state.project);
 
+        if viz::filter(ui, "Archived", state.archived, false).clicked() {
+            state.archived = !state.archived;
+        }
+
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
         }
@@ -815,7 +862,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
     row.at(0, |ui| w::dot(ui, status_colour(status)));
 
     row.at(1, |ui| {
-        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), colour::TEXT);
+        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), super::board::title_ink(t));
         // The blocker rides behind the title rather than in its own column:
         // it is a footnote on the task, not a property every row has. Keyed
         // on the counts, not the status — a blocker can resolve while the
@@ -836,7 +883,11 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
         }
     });
     row.at(4, |ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+        if super::board::archived(t) {
+            super::board::archived_chip(ui);
+        } else {
+            c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+        }
     });
     row.muted(5, str_at(t, "projectName").unwrap_or_default());
 
@@ -845,6 +896,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
             avatar::small(ui, str_at(t, "assigneeEmail").unwrap_or(name), size::AVATAR_SM);
             ui.add_space(space::XS);
             ui.label(RichText::new(first_name(name)).size(text::SMALL).color(colour::TEXT_2));
+            agent_marker(ui, t);
         }
         None => {
             ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
@@ -852,6 +904,15 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
     });
 
     row.muted(7, &age(str_at(t, "updatedAt").unwrap_or_default()));
+}
+
+/// The small agent mark beside an owner whose task is with one of their
+/// agents, the agent's name on hover.
+pub(super) fn agent_marker(ui: &mut egui::Ui, t: &Value) {
+    let Some(name) = t.get("delegate").and_then(|d| d.get("name")).and_then(Value::as_str) else {
+        return;
+    };
+    w::agent_mark(ui, size::AVATAR_SM - space::XS).on_hover_text(format!("With {name}"));
 }
 
 /// How loud a priority is allowed to be — the task tables' scale, so P1 is

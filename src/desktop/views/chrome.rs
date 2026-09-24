@@ -10,7 +10,7 @@ use crate::desktop::design::{avatar, colour, motion, radius, shell, size, space,
 use crate::desktop::{views, App, Tab};
 
 /// Destinations, in sidebar order. The index is the routing contract.
-const DESTINATIONS: [Tab; 3] = [Tab::Home, Tab::MyTasks, Tab::Projects];
+const DESTINATIONS: [Tab; 4] = [Tab::Home, Tab::MyTasks, Tab::Projects, Tab::Agents];
 
 /// The sidebar's badges. Not under `__`: the 30 s refresh keeps them current.
 /// Anything that changes a task or a project drops it alongside `home`.
@@ -63,6 +63,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 .count(mine_open.to_string()),
             shell::NavItem::new(icon::SQUARES_FOUR, "Projects", sel(Tab::Projects))
                 .count(projects_active.to_string()),
+            shell::NavItem::new(icon::ROBOT, "Agents", sel(Tab::Agents)),
         ],
     }];
 
@@ -71,7 +72,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let (clicked, search) = shell::sidebar(
         ui,
-        ("Control Plane", "Airtribe engineering"),
+        ("Loop", "Airtribe engineering"),
         &groups,
         |ui| {
             // Collapsed, there is room for the two actions and nothing else;
@@ -171,6 +172,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 Tab::Home => views::home::ui(app, ui),
                 Tab::MyTasks => views::mytasks::ui(app, ui),
                 Tab::Projects => views::board::ui(app, ui),
+                Tab::Agents => views::agents::ui(app, ui),
             }
         }
     });

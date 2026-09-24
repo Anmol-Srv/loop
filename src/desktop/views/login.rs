@@ -12,7 +12,7 @@
 
 use serde_json::json;
 
-use crate::desktop::design::{avatar, colour, size, space, widgets as w};
+use crate::desktop::design::{avatar, colour, radius, size, space, widgets as w};
 use crate::desktop::{creds, net::Net, App};
 
 /// The measure of the card's contents. Not a spacing token: it is a line
@@ -116,6 +116,51 @@ fn missing(s: &State, first_time: bool) -> Option<&'static str> {
     None
 }
 
+/// The login backdrop: HeroBg, full-bleed behind the card. A 2048 px JPEG
+/// copy of assets/HeroBg.png (the 4K original), since 2048 is the widest
+/// texture egui can count on:
+/// `sips -s format jpeg -s formatOptions 82 --resampleWidth 2048 assets/HeroBg.png --out assets/login/hero-bg.jpg`
+/// How much of the canvas colour is laid over the backdrop. The card is glass
+/// (a ~5% fill), so this is what keeps the form legible over HeroBg's glow.
+const SCRIM_ALPHA: f32 = 0.6;
+const HERO_BG: &[u8] = include_bytes!("../../../assets/login/hero-bg.jpg");
+
+/// Decode the backdrop the first time it is shown, then reuse the handle.
+///
+/// Lookup and load are separate statements on purpose: `data_mut` holds the
+/// context lock and `load_texture` takes it too (see `shell::mark_texture`).
+fn hero_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let id = egui::Id::new("login:hero");
+    if let Some(handle) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return handle;
+    }
+    let rgb = image::load_from_memory(HERO_BG).expect("the backdrop is baked in").to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let pixels = rgb.pixels().map(|p| egui::Color32::from_rgb(p[0], p[1], p[2])).collect();
+    let handle = ctx.load_texture(
+        "login:hero",
+        egui::ColorImage { size: [w as usize, h as usize], pixels, source_size: egui::vec2(w as f32, h as f32) },
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|d| d.insert_temp(id, handle.clone()));
+    handle
+}
+
+/// Cover-fit: the largest centred sub-rectangle of a `tex`-shaped image that
+/// has `rect`'s aspect, as UVs. The image fills `rect`, unstretched, and the
+/// overflow is cropped evenly off both sides.
+fn cover_uv(tex: egui::Vec2, rect: egui::Rect) -> egui::Rect {
+    let scale = (rect.width() / tex.x).max(rect.height() / tex.y);
+    let seen = egui::vec2(rect.width() / (tex.x * scale), rect.height() / (tex.y * scale));
+    egui::Rect::from_center_size(egui::pos2(0.5, 0.5), seen)
+}
+
+fn backdrop(ui: &egui::Ui, rect: egui::Rect) {
+    let tex = hero_texture(ui.ctx());
+    ui.painter().image(tex.id(), rect, cover_uv(tex.size_vec2(), rect), egui::Color32::WHITE);
+    ui.painter().rect_filled(rect, 0.0, colour::CANVAS.gamma_multiply(SCRIM_ALPHA));
+}
+
 /// Enter in a field submits the form, the way every other sign-in does.
 fn entered(response: egui::Response) -> bool {
     response.lost_focus() && response.ctx.input(|i| i.key_pressed(egui::Key::Enter))
@@ -165,13 +210,20 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(colour::CANVAS))
         .show(ui, |ui| {
+            backdrop(ui, ui.max_rect());
             let slack = (ui.available_height() - CARD_HEIGHT_GUESS) * 0.35;
             ui.add_space(slack.max(space::XL));
 
             ui.vertical_centered(|ui| {
-                w::title(ui, "Airtribe Control Plane");
+                w::title(ui, "Loop");
                 ui.add_space(space::XL);
 
+                // The shared card is glass; over HeroBg the login card needs a
+                // solid black backing so the form reads first.
+                egui::Frame::new()
+                    .fill(egui::Color32::BLACK)
+                    .corner_radius(radius::MD)
+                    .show(ui, |ui| {
                 w::card(ui, |ui| {
                     ui.set_width(CARD_WIDTH);
                     ui.vertical(|ui| {
@@ -276,6 +328,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 });
+                });
 
                 if first_time {
                     ui.add_space(space::LG);
@@ -308,5 +361,24 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         net.post("auth", path, body);
         app.login.net = Some(net);
         app.login.error = None;
+    }
+}
+
+#[cfg(test)]
+mod backdrop_tests {
+    use super::*;
+
+    #[test]
+    fn cover_crops_without_stretching() {
+        let tex = egui::vec2(2560.0, 1440.0);
+        // Taller window than 16:9: full height, sides cropped evenly.
+        let uv = cover_uv(tex, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(820.0, 1300.0)));
+        assert!((uv.height() - 1.0).abs() < 1e-6 && uv.width() < 1.0);
+        assert!((uv.center().x - 0.5).abs() < 1e-6);
+        let px = egui::vec2(uv.width() * tex.x, uv.height() * tex.y);
+        assert!((px.x / px.y - 820.0 / 1300.0).abs() < 1e-4);
+        // Wider: full width, top and bottom cropped.
+        let uv = cover_uv(tex, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(3000.0, 1000.0)));
+        assert!((uv.width() - 1.0).abs() < 1e-6 && uv.height() < 1.0);
     }
 }

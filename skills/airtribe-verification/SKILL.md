@@ -64,4 +64,4 @@ Only after verification and review: push the candidate branch and open/update a 
 
 ## Verification
 
-A green task records all evidence in an artifact and in the control-plane task record. A failed, skipped, or unavailable conditional gate is explicit in the PR; it is never converted to "passed" by prose.
+A green task records all evidence in an artifact and in the task record. A failed, skipped, or unavailable conditional gate is explicit in the PR; it is never converted to "passed" by prose.

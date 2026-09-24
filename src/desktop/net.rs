@@ -252,6 +252,17 @@ impl Net {
         }
     }
 
+    /// Put a payload under `key` as if its reply had just landed, superseding
+    /// any request still out for it. For offscreen renders and UI tests, which
+    /// draw real views from fixture JSON instead of a server.
+    pub fn seed(&mut self, key: &str, value: Value) {
+        self.seq += 1;
+        self.latest.insert(key.to_string(), self.seq);
+        self.inflight.insert(key.to_string(), false);
+        self.gens.insert(key.to_string(), self.seq);
+        self.results.insert(key.to_string(), Ok(Arc::new(value)));
+    }
+
     /// Forget a cached result so the next `get_once` refetches it.
     pub fn invalidate(&mut self, key: &str) {
         self.results.remove(key);

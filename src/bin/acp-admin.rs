@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use acp_server::{
     config::Config,
-    controllers::{people, token},
+    controllers::{agent, people, token},
     db,
     models::change::Actor,
 };
@@ -33,15 +33,16 @@ enum Command {
     SetDepartment { email: String, department: String },
     /// Make a person a member, manager or admin; their sessions end
     SetRole { email: String, role: String },
-    /// Mint an agent credential and print it once
+    /// Connect an agent for someone and print its onboarding prompt once
     Mint {
-        label: String,
+        handle: String,
         #[arg(long)]
         owner: String,
-        #[arg(long, value_delimiter = ',', default_value = "read")]
-        scopes: Vec<String>,
-        #[arg(long, default_value_t = 30)]
-        days: i64,
+        #[arg(long, default_value = "")]
+        name: String,
+        /// hermes, claude-code, codex or other
+        #[arg(long, default_value = "other")]
+        runtime: String,
     },
     /// Create or promote the first admin and print a setup code
     BootstrapAdmin {
@@ -122,12 +123,18 @@ async fn main() {
                 Err(e) => die(e),
             }
         }
-        Command::Mint { label, owner, scopes, days } => {
-            match token::mint_agent(&state, &label, &owner, scopes, days).await {
-                Ok((raw, row)) => {
-                    println!("agent credential '{}' (expires {})", row.label, row.expires_at);
-                    println!("{raw}");
-                    println!("\nThis is shown once. Export it:\n  export ACP_TOKEN={raw}");
+        Command::Mint { handle, owner, name, runtime } => {
+            // Where the agent will reach the server; this binary has no request
+            // to read it from.
+            let server = std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+            let made = match people::id_of(&state, &owner).await {
+                Ok(id) => agent::create(&state, id, &handle, &name, &runtime, &server).await,
+                Err(e) => Err(e),
+            };
+            match made {
+                Ok(m) => {
+                    println!("agent '{}' for {owner}. Paste this to the agent, once:\n", m.agent.handle);
+                    println!("{}", m.prompt);
                 }
                 Err(e) => die(e),
             }

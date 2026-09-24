@@ -227,6 +227,7 @@ fn results(tasks: Option<&Value>, projects: Option<&Value>, query: &str, can_wri
         ("Home", Target::Tab(Tab::Home)),
         ("My Tasks", Target::Tab(Tab::MyTasks)),
         ("Projects", Target::Tab(Tab::Projects)),
+        ("Agents", Target::Tab(Tab::Agents)),
     ];
     // Offered only to someone who could submit the form it opens.
     if can_write {

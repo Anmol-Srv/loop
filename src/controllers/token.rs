@@ -3,7 +3,7 @@ use crate::errors::{AppError, AppResult};
 use crate::models::token::{hash_token, TokenRow};
 
 const COLUMNS: &str =
-    "id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at, created_at";
+    "id, kind, label, owner_id, scopes, expires_at, revoked_at, last_used_at, created_at, agent_id";
 
 /// 256 bits of randomness from uuid's CSPRNG. Using uuid here rather than
 /// pulling in `rand` keeps the dependency list shorter.
@@ -34,18 +34,19 @@ async fn owner_id(state: &AppState, email: &str) -> AppResult<uuid::Uuid> {
 }
 
 async fn insert(
-    state: &AppState,
+    db: impl sqlx::PgExecutor<'_>,
     kind: &str,
     label: &str,
     owner: uuid::Uuid,
     scopes: &[String],
     valid_days: i64,
+    agent_id: Option<uuid::Uuid>,
 ) -> AppResult<(String, TokenRow)> {
     let raw = generate_raw_token();
 
     let row = sqlx::query_as::<_, TokenRow>(&format!(
-        "INSERT INTO credential (kind, label, token_hash, owner_id, scopes, expires_at)
-         VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval)
+        "INSERT INTO credential (kind, label, token_hash, owner_id, scopes, expires_at, agent_id)
+         VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval, $7)
          RETURNING {COLUMNS}"
     ))
     .bind(kind)
@@ -54,7 +55,8 @@ async fn insert(
     .bind(owner)
     .bind(scopes)
     .bind(valid_days.to_string())
-    .fetch_one(&state.db)
+    .bind(agent_id)
+    .fetch_one(db)
     .await?;
 
     Ok((raw, row))
@@ -79,7 +81,7 @@ pub async fn mint(
     }
 
     let owner = owner_id(state, owner_email).await?;
-    insert(state, "session", label, owner, &scopes, valid_days).await
+    insert(&state.db, "session", label, owner, &scopes, valid_days, None).await
 }
 
 /// Sign a person in: scopes derived from their role, labelled with their email.
@@ -92,36 +94,20 @@ pub async fn mint_session(state: &AppState, owner_email: &str) -> AppResult<(Str
     .await?
     .ok_or_else(|| AppError::NotFound(format!("no person with email '{owner_email}'")))?;
 
-    insert(state, "session", owner_email, owner, &session_scopes(&role), 30).await
+    insert(&state.db, "session", owner_email, owner, &session_scopes(&role), 30, None).await
 }
 
-/// Mint an agent credential. An agent may propose, never apply — the database
-/// constraint is the backstop, this check is so the caller gets a sentence
-/// rather than a constraint violation.
+/// Mint the credential an agent speaks with. It carries no scopes: agent
+/// routes authorise by the agent and what is delegated to it, never by scope,
+/// and the `/api/user` routes it has no business on refuse it for want of
+/// `read`. The database still forbids an agent `write` or `admin`.
 pub async fn mint_agent(
-    state: &AppState,
-    label: &str,
-    owner_email: &str,
-    scopes: Vec<String>,
-    valid_days: i64,
+    tx: &mut sqlx::PgTransaction<'_>,
+    agent_id: uuid::Uuid,
+    owner: uuid::Uuid,
+    handle: &str,
 ) -> AppResult<(String, TokenRow)> {
-    for scope in &scopes {
-        match scope.as_str() {
-            "read" | "claim" | "propose" => {}
-            "write" | "admin" => {
-                return Err(AppError::BadRequest(format!(
-                    "an agent credential cannot hold '{scope}'; agents propose, they never apply"
-                )))
-            }
-            other => return Err(AppError::BadRequest(format!("unknown scope '{other}'"))),
-        }
-    }
-
-    // Clamped rather than refused: asking for a year is a reasonable wish
-    // with a bounded answer, and the reply carries the expiry actually given.
-    let valid_days = valid_days.clamp(1, MAX_AGENT_DAYS);
-    let owner = owner_id(state, owner_email).await?;
-    insert(state, "agent", label, owner, &scopes, valid_days).await
+    insert(&mut **tx, "agent", handle, owner, &[], MAX_AGENT_DAYS, Some(agent_id)).await
 }
 
 /// The longest an agent credential lives. Long enough for a quarter's

@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
-use crate::models::project::Project;
+use crate::models::project::{self as model, Project};
 use crate::models::task::{Task, TASK_COLUMNS};
 
 /// A task as the create form describes it: enough to hand someone work.
@@ -134,11 +134,12 @@ pub async fn create(
 
     let mut tx = state.db.begin().await?;
 
-    let mut project: Project = sqlx::query_as(
-        "INSERT INTO project (id, key, name, description, priority, start_date, target_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, key, name, description, status, priority, start_date, target_date, created_at, updated_at",
-    )
+    let mut project: Project = sqlx::query_as(&format!(
+        "INSERT INTO project AS pr (id, key, name, description, priority, start_date, target_date, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING {}",
+        model::columns("$8")
+    ))
     .bind(id)
     .bind(&key)
     .bind(&name)
@@ -146,6 +147,7 @@ pub async fn create(
     .bind(priority)
     .bind(start_date)
     .bind(target_date)
+    .bind(actor.person_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -267,9 +269,9 @@ async fn insert_task(
 ) -> AppResult<Task> {
     let task: Task = sqlx::query_as(&format!(
         "INSERT INTO task (phase_id, title, body, priority,
-                           assignee_kind, assignee_person_id)
+                           assignee_kind, assignee_person_id, created_by)
          VALUES ($1, $2, $3, $4,
-                 CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END, $5)
+                 CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END, $5, $6)
          RETURNING {TASK_COLUMNS}"
     ))
     .bind(phase_id)
@@ -277,6 +279,7 @@ async fn insert_task(
     .bind(t.body.trim())
     .bind(t.priority)
     .bind(t.assignee_id)
+    .bind(actor.person_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
@@ -300,10 +303,15 @@ pub struct ProjectRow {
     pub total: i64,
 }
 
-pub async fn list(state: &AppState) -> AppResult<Vec<ProjectRow>> {
-    let projects: Vec<Project> = sqlx::query_as(
-        "SELECT id, key, name, description, status, priority, start_date, target_date, created_at, updated_at\n         FROM project ORDER BY created_at DESC",
-    )
+/// Live projects, or with `archived` only the archived ones. `viewer` is who
+/// `canArchive` is worked out for.
+pub async fn list(state: &AppState, viewer: Option<Uuid>, archived: bool) -> AppResult<Vec<ProjectRow>> {
+    let projects: Vec<Project> = sqlx::query_as(&format!(
+        "SELECT {} FROM project pr WHERE (pr.archived_at IS NOT NULL) = $2 ORDER BY pr.created_at DESC",
+        model::columns("$1")
+    ))
+    .bind(viewer)
+    .bind(archived)
     .fetch_all(&state.db)
     .await?;
 
@@ -318,7 +326,7 @@ pub async fn list(state: &AppState) -> AppResult<Vec<ProjectRow>> {
         "SELECT ph.project_id,
                 count(*) FILTER (WHERE t.done_at IS NOT NULL) AS done,
                 count(*) FILTER (WHERE t.status <> 'dropped') AS total
-           FROM phase ph JOIN task t ON t.phase_id = ph.id
+           FROM phase ph JOIN task t ON t.phase_id = ph.id AND t.archived_at IS NULL
           GROUP BY ph.project_id",
     )
     .fetch_all(&state.db)
@@ -337,12 +345,15 @@ pub async fn list(state: &AppState) -> AppResult<Vec<ProjectRow>> {
         .collect())
 }
 
-/// One project with its roster, for the detail screen.
-pub async fn get(state: &AppState, id: Uuid) -> AppResult<Project> {
-    let mut project: Project = sqlx::query_as(
-        "SELECT id, key, name, description, status, priority, start_date, target_date, created_at, updated_at\n         FROM project WHERE id = $1",
-    )
+/// One project with its roster, for the detail screen. Archived or not: the
+/// page is how it gets restored.
+pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<Project> {
+    let mut project: Project = sqlx::query_as(&format!(
+        "SELECT {} FROM project pr WHERE pr.id = $1",
+        model::columns("$2")
+    ))
     .bind(id)
+    .bind(viewer)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("project not found".into()))?;
@@ -393,6 +404,8 @@ pub struct ProjectProgress {
     pub active_people: i64,
 }
 
+/// Every live project, or `only` that one, archived or not. Archived tasks
+/// are out of every count.
 pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<ProjectProgress>> {
     // Active phase and headcount come from one extra grouped query rather than
     // being folded into the discipline rollup: mixing them would need a second
@@ -404,8 +417,8 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
                   FILTER (WHERE t.done_at IS NULL AND t.status <> 'dropped') AS active_people
            FROM project pr
            LEFT JOIN phase ph ON ph.project_id = pr.id
-           LEFT JOIN task t ON t.phase_id = ph.id
-          WHERE ($1::uuid IS NULL OR pr.id = $1)
+           LEFT JOIN task t ON t.phase_id = ph.id AND t.archived_at IS NULL
+          WHERE CASE WHEN $1::uuid IS NULL THEN pr.archived_at IS NULL ELSE pr.id = $1 END
           GROUP BY pr.id",
     )
     .bind(only)
@@ -433,9 +446,9 @@ pub async fn progress(state: &AppState, only: Option<Uuid>) -> AppResult<Vec<Pro
                 count(t.id) FILTER (WHERE t.done_at IS NOT NULL) AS done
            FROM project pr
            LEFT JOIN phase ph ON ph.project_id = pr.id
-           LEFT JOIN task t ON t.phase_id = ph.id
+           LEFT JOIN task t ON t.phase_id = ph.id AND t.archived_at IS NULL
            LEFT JOIN person own ON own.id = t.assignee_person_id
-          WHERE ($1::uuid IS NULL OR pr.id = $1)
+          WHERE CASE WHEN $1::uuid IS NULL THEN pr.archived_at IS NULL ELSE pr.id = $1 END
           GROUP BY pr.id, pr.key, pr.name, pr.status, pr.priority, pr.target_date, own.department
           ORDER BY pr.name, pr.id, own.department",
     )
@@ -492,9 +505,9 @@ pub struct ProjectPatch {
     pub expected_updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The project states. `done` and `archived` are both finished; archived is
-/// finished and out of the way.
-pub const PROJECT_STATUSES: [&str; 4] = ["active", "paused", "done", "archived"];
+/// The project states. Archived is not one of them: it is `archived_at`,
+/// beside whatever status the project had, so restoring cannot lose it.
+pub const PROJECT_STATUSES: [&str; 3] = ["active", "paused", "done"];
 
 /// Change a project's properties.
 ///
@@ -603,5 +616,118 @@ pub async fn update(
     record(&mut tx, actor, TargetType::Project, id, Op::Update, record_patch).await?;
     tx.commit().await?;
 
-    Ok(Outcome::Applied { entity: get(state, id).await? })
+    Ok(Outcome::Applied { entity: get(state, id, actor.person_id).await? })
+}
+
+/// Archiving and deleting are done by someone who can write, never queued: a
+/// proposal to delete would sit in an inbox as a loaded gun, and one to
+/// archive is not worth a second replay path.
+pub(crate) fn writer(actor: &Actor) -> AppResult<()> {
+    if actor.can_apply {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "archiving and deleting need a token with write; they cannot be proposed".into(),
+        ))
+    }
+}
+
+/// "Only Dhaval, who created this project, or an admin can delete it." `who`
+/// is each person whose call it is, with what they made.
+pub(crate) fn only(who: &[String], verb: &str, what: &str) -> String {
+    if who.is_empty() {
+        format!("Only an admin can {verb} this {what} \u{2014} nobody is recorded as creating it.")
+    } else {
+        format!("Only {}, or an admin can {verb} it.", who.join(", "))
+    }
+}
+
+/// Lock the project and refuse anyone `can_manage` does not name. Returns
+/// its name.
+async fn manage(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor: &Actor,
+    id: Uuid,
+    verb: &str,
+) -> AppResult<String> {
+    let (name, allowed, creator): (String, bool, Option<String>) = sqlx::query_as(&format!(
+        "SELECT pr.name, {}, c.name FROM project pr LEFT JOIN person c ON c.id = pr.created_by
+          WHERE pr.id = $1 FOR UPDATE OF pr",
+        model::can_manage("$2")
+    ))
+    .bind(id)
+    .bind(actor.person_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("project not found".into()))?;
+    if !allowed {
+        let who: Vec<String> = creator.map(|n| format!("{n}, who created this project")).into_iter().collect();
+        return Err(AppError::Forbidden(only(&who, verb, "project")));
+    }
+    Ok(name)
+}
+
+/// Archive a project, or restore it. Its tasks go and come back with it
+/// without being touched: a task counts as archived while its project is.
+pub async fn set_archived(state: &AppState, actor: &Actor, id: Uuid, archived: bool) -> AppResult<Project> {
+    writer(actor)?;
+    let mut tx = state.db.begin().await?;
+    manage(&mut tx, actor, id, if archived { "archive" } else { "restore" }).await?;
+    if archived {
+        super::task::refuse_held(&mut tx, HeldIn::Project(id)).await?;
+    }
+    sqlx::query(
+        "UPDATE project SET archived_at = CASE WHEN $2 THEN coalesce(archived_at, now()) END WHERE id = $1",
+    )
+    .bind(id)
+    .bind(archived)
+    .execute(&mut *tx)
+    .await?;
+    record(&mut tx, actor, TargetType::Project, id, Op::Update, json!({ "archived": archived })).await?;
+    tx.commit().await?;
+    get(state, id, actor.person_id).await
+}
+
+/// Where to look for a task an agent still holds.
+pub(crate) enum HeldIn {
+    Project(Uuid),
+    Task(Uuid),
+}
+
+/// Delete a project for good, with everything in it.
+///
+/// Phases, tasks, notes, run logs, agent events and label links go by their
+/// foreign keys. Artifacts point at their parent by type and id, with no key
+/// to cascade on, so the project's, its phases' and its tasks' are deleted
+/// here; so are other tasks' `blocked_by` entries for the tasks going. The
+/// audit trail stays: a deleted project is exactly what it is for.
+pub async fn delete(state: &AppState, actor: &Actor, id: Uuid) -> AppResult<()> {
+    writer(actor)?;
+    let mut tx = state.db.begin().await?;
+    let name = manage(&mut tx, actor, id, "delete").await?;
+    super::task::refuse_held(&mut tx, HeldIn::Project(id)).await?;
+
+    let tasks: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT t.id FROM task t JOIN phase ph ON ph.id = t.phase_id WHERE ph.project_id = $1",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM artifact
+          WHERE (parent_type = 'project' AND parent_id = $1)
+             OR (parent_type = 'phase' AND parent_id IN (SELECT id FROM phase WHERE project_id = $1))
+             OR (parent_type = 'task' AND parent_id = ANY($2))",
+    )
+    .bind(id)
+    .bind(&tasks)
+    .execute(&mut *tx)
+    .await?;
+    super::task::unblock(&mut tx, &tasks).await?;
+    sqlx::query("DELETE FROM project WHERE id = $1").bind(id).execute(&mut *tx).await?;
+
+    record(&mut tx, actor, TargetType::Project, id, Op::Delete, json!({ "name": name, "tasks": tasks.len() }))
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }

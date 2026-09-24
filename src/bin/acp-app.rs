@@ -17,7 +17,7 @@ fn main() -> eframe::Result {
             // resists being dragged smaller, and starting zoomed made the app
             // feel fixed-size. Open at a sensible size and let people set it.
             .with_resizable(true)
-            .with_title("Airtribe Control Plane")
+            .with_title("Loop")
             // eframe replaces the Dock icon with its own at launch unless the
             // window names one, so the bundle's icon.icns alone never shows.
             // Same tile `scripts/make-icon.py` writes into the bundle.
@@ -29,7 +29,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "Airtribe Control Plane",
+        "Loop",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )

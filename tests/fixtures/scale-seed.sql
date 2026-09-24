@@ -44,19 +44,20 @@ CREATE FUNCTION pg_temp.person(n int) RETURNS uuid LANGUAGE sql IMMUTABLE AS
 
 -- Projects over the year: most active, some paused, done or archived; a few
 -- past their target date.
-INSERT INTO project (id, key, name, description, status, priority, start_date, target_date, created_at, updated_at)
+INSERT INTO project (id, key, name, description, status, priority, start_date, target_date, created_at, updated_at, archived_at)
 SELECT pg_temp.pid(i),
        'proj-' || i,
        (ARRAY['Lead rating','Checkout','LMS player','Admin audit','Onboarding','Payments','Search',
               'Notifications','Reports','Mobile web','Certificates','Referrals'])[1 + i % 12] || ' ' || i,
        repeat('What this project is for, who asked, and what done looks like. ', 1 + i % 4),
        CASE WHEN i % 10 IN (7) THEN 'paused' WHEN i % 10 IN (8) THEN 'done'
-            WHEN i % 10 = 9 AND i > 10 THEN 'archived' ELSE 'active' END,
+            WHEN i % 10 = 9 AND i > 10 THEN 'done' ELSE 'active' END,
        i % 5,
        current_date - (365 - (i * 331) % 360),
        CASE WHEN i % 4 = 0 THEN NULL ELSE current_date - (365 - (i * 331) % 360) + 30 + (i * 17) % 120 END,
        now() - make_interval(days => 365 - (i * 331) % 360),
-       now() - make_interval(days => i % 30)
+       now() - make_interval(days => i % 30),
+       CASE WHEN i % 10 = 9 AND i > 10 THEN now() - make_interval(days => i % 30) END
   FROM knobs, generate_series(1, knobs.projects) i;
 
 INSERT INTO project_label (project_id, label_id)

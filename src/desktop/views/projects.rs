@@ -21,7 +21,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use egui::RichText;
 use serde_json::Value;
 
-use super::board::{array, fraction, num_at, str_at};
+use super::board::{archived, archived_chip, array, fraction, num_at, project_action, project_menu, str_at, title_ink, Ask};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
     cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
@@ -30,6 +30,8 @@ use crate::desktop::net::memo;
 use crate::desktop::App;
 
 pub(super) const PROJECTS_KEY: &str = "board:projects";
+/// The archived ones, for the list's Archived toggle.
+const ARCHIVED_KEY: &str = "board:projects:archived";
 pub(super) const PEOPLE_KEY: &str = "board:people";
 /// Where a create's reply is collected.
 const CREATE_KEY: &str = "board:create";
@@ -87,6 +89,8 @@ const COL_PRIORITY: f32 = 52.0;
 /// "in 3 weeks", right-aligned. The longest thing it holds is "11 months ago".
 const COL_TARGET: f32 = 88.0;
 const COL_CREATED: f32 = 78.0;
+/// The more-actions dots.
+const COL_MORE: f32 = 32.0;
 
 /// Alignment lives with the width, so "Progress" and "Created" sit over the
 /// figures beneath them rather than at the other end of the column.
@@ -96,7 +100,7 @@ const COL_CREATED: f32 = 78.0;
 /// less room, then priority. Target drops last of the droppables, because
 /// "which of these is late" is the question the table exists to answer. Name,
 /// progress and status never drop.
-const COLS: [Col; 8] = [
+const COLS: [Col; 9] = [
     Col::left("Project", COL_NAME),
     Col::fill("Description", COL_DESCRIPTION).rank(5),
     Col::right("Tasks", COL_TASKS).rank(3),
@@ -105,6 +109,7 @@ const COLS: [Col; 8] = [
     Col::left("Status", COL_STATUS),
     Col::right("Target", COL_TARGET).rank(1),
     Col::right("Created", COL_CREATED).rank(4),
+    Col::right("", COL_MORE),
 ];
 
 /// What the trailing controls on a draft-task row need: three menus, a Remove,
@@ -243,7 +248,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     let net = app.net.as_mut().unwrap();
 
+    let key = if app.board.filters.archived { ARCHIVED_KEY } else { PROJECTS_KEY };
     net.get_once(PROJECTS_KEY, "/api/user/projects");
+    if app.board.filters.archived {
+        net.get_once(ARCHIVED_KEY, "/api/user/projects?archived=true");
+    }
     // The assignee picker needs names, and the rows need them to resolve
     // `memberIds`. One fetch serves both.
     net.get_once(PEOPLE_KEY, "/api/user/people");
@@ -251,13 +260,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // nothing in the table needs its own.
     net.get_once(LABELS_KEY, "/api/user/labels");
 
-    let generation = net.generation(PROJECTS_KEY);
-    let list = net.shared(PROJECTS_KEY);
+    let generation = net.generation(key);
+    let list = net.shared(key);
     let list: &[Value] = list.as_deref().and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let people = array(net.data(PEOPLE_KEY));
     let labels = array(net.data(LABELS_KEY));
-    let loading = net.is_loading(PROJECTS_KEY);
-    let error = net.error(PROJECTS_KEY).map(str::to_string);
+    let loading = net.is_loading(key);
+    let error = net.error(key).map(str::to_string);
     let create_error = net.error(CREATE_KEY).map(str::to_string);
     // The label request is its own errand with its own row far down the form,
     // so its failure is reported there rather than in the banner up here.
@@ -284,6 +293,14 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         w::error(ui, err);
         ui.add_space(space::MD);
     }
+    if let Some((n, failed)) = &app.board.notice {
+        if *failed {
+            w::error(ui, n);
+        } else {
+            w::caption(ui, n);
+        }
+        ui.add_space(space::MD);
+    }
 
     let mut post: Option<Post> = None;
     if let Some(draft) = app.board.creating.as_mut() {
@@ -292,12 +309,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let mut open: Option<String> = None;
+    let mut ask: Option<Ask> = None;
     let mut shown: Arc<Vec<Value>> = Arc::default();
-    if !list.is_empty() {
+    // The bar stays while the archived list is empty: it holds the way back.
+    if !list.is_empty() || app.board.filters.archived {
         toolbar(ui, &mut app.board.filters, &labels);
         // Filtered and sorted once per reply or filter change, not per frame.
         let f = &app.board.filters;
-        let stamp = (generation, f.search.clone(), f.status.clone(), f.label.clone(), f.priority.clone());
+        let stamp =
+            (key, generation, f.search.clone(), f.status.clone(), f.label.clone(), f.priority.clone());
         shown = memo(ui.ctx(), egui::Id::new(SHOWN), stamp, || {
             let mut rows: Vec<Value> = list.iter().filter(|p| f.keeps(p)).cloned().collect();
             sort_projects(&mut rows, &flows);
@@ -316,6 +336,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     } else if list.is_empty() {
         if loading {
             w::loading(ui, "Loading projects");
+        } else if app.board.filters.archived {
+            w::empty(ui, "Nothing archived.", "Archived projects wait here until someone restores them.");
         } else if app.board.creating.is_none() {
             w::empty(
                 ui,
@@ -326,9 +348,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     } else if shown.is_empty() {
         w::empty(ui, "No projects match these filters.", "Clear them to see every project.");
     } else {
-        table(ui, &shown, &flows, &mut open);
+        ask = table(ui, &shown, &flows, &mut open);
         ui.add_space(space::XXL);
     }
+    if ask.is_some() {
+        app.board.notice = None;
+        app.board.ask = ask;
+    }
+    // After the page, so its dialog is drawn over it.
+    project_action(ui.ctx(), app.net.as_mut().unwrap(), &mut app.board);
 
     let net = app.net.as_mut().unwrap();
     match post {
@@ -362,6 +390,8 @@ pub struct ListFilters {
     pub status: Option<String>,
     pub label: Option<String>,
     pub priority: Option<String>,
+    /// The archived projects instead of the live ones.
+    pub archived: bool,
 }
 
 impl ListFilters {
@@ -370,6 +400,7 @@ impl ListFilters {
             || self.status.is_some()
             || self.label.is_some()
             || self.priority.is_some()
+            || self.archived
     }
 
     fn keeps(&self, p: &Value) -> bool {
@@ -385,9 +416,9 @@ impl ListFilters {
 }
 
 /// Status in the order a person works through them: what is moving, what is
-/// parked, what is over.
-pub(super) const PROJECT_STATUSES: [(&str, &str); 4] =
-    [("active", "Active"), ("paused", "Paused"), ("done", "Done"), ("archived", "Archived")];
+/// parked, what is over. Archived is not a status but a filter of its own.
+pub(super) const PROJECT_STATUSES: [(&str, &str); 3] =
+    [("active", "Active"), ("paused", "Paused"), ("done", "Done")];
 
 fn toolbar(ui: &mut egui::Ui, f: &mut ListFilters, labels: &[Value]) {
     let statuses = owned(&PROJECT_STATUSES);
@@ -401,6 +432,9 @@ fn toolbar(ui: &mut egui::Ui, f: &mut ListFilters, labels: &[Value]) {
         viz::select(ui, "Status", &statuses, &mut f.status);
         viz::select(ui, "Label", &label_options, &mut f.label);
         viz::select(ui, "Priority", &priorities, &mut f.priority);
+        if viz::filter(ui, "Archived", f.archived, false).clicked() {
+            f.archived = !f.archived;
+        }
         if f.any() && viz::clear(ui).clicked() {
             *f = ListFilters::default();
         }
@@ -412,13 +446,13 @@ pub(super) fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect()
 }
 
-/// Active, paused, done, archived; inside each, what is late first, then the
+/// Active, paused, done; inside each, what is late first, then the
 /// urgent, then whatever is due soonest — a project with no date goes last,
 /// since it has promised nothing yet. Created date breaks the last tie so rows
 /// do not trade places between frames.
 fn sort_projects(rows: &mut [Value], flows: &HashMap<String, Value>) {
     let status_rank = |p: &Value| {
-        PROJECT_STATUSES.iter().position(|(s, _)| *s == str_at(p, "status")).unwrap_or(4)
+        PROJECT_STATUSES.iter().position(|(s, _)| *s == str_at(p, "status")).unwrap_or(PROJECT_STATUSES.len())
     };
     let key = |p: &Value| {
         let flow = flows.get(str_at(p, "id")).unwrap_or(p);
@@ -437,23 +471,29 @@ fn sort_projects(rows: &mut [Value], flows: &HashMap<String, Value>) {
 /// Public so `tests/ui_render.rs` can draw it offscreen with fake rows: the
 /// running app cannot be screenshotted from here, and alignment is not
 /// something to verify by reading code.
+/// Returns an archive, restore or delete picked from a row's menu.
 pub fn table(
     ui: &mut egui::Ui,
     rows: &[Value],
     flows: &HashMap<String, Value>,
     open: &mut Option<String>,
-) {
+) -> Option<Ask> {
+    let mut ask = None;
     let clicked = table::show(ui, TABLE, &COLS, rows.len(), |row, i| {
-        project_row(row, &rows[i], flows.get(str_at(&rows[i], "id")));
+        if let Some(a) = project_row(row, &rows[i], flows.get(str_at(&rows[i], "id"))) {
+            ask = Some(a);
+        }
     });
-    if let Some(i) = clicked {
+    // A pick from a row's menu is a click on the row too; it is not a visit.
+    if let (Some(i), None) = (clicked, &ask) {
         *open = Some(str_at(&rows[i], "id").to_owned());
     }
+    ask
 }
 
 /// `flow` overrides the row's own `done`/`total` when given; the list passes
 /// none, since `/projects` rows carry both.
-fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) {
+fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Value>) -> Option<Ask> {
     let flow = flow.unwrap_or(p);
     let (done, total) = (num_at(flow, "done"), num_at(flow, "total"));
     let status = str_at(p, "status");
@@ -469,7 +509,7 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
         let width =
             (ui.available_width() - chips as f32 * (LABEL_CHIP_W + space::XS)).max(NAME_MIN_W);
         ui.allocate_ui(egui::vec2(width, table::ROW_H), |ui| {
-            table::strong_label(ui, str_at(p, "name"), colour::TEXT);
+            table::strong_label(ui, str_at(p, "name"), title_ink(p));
         });
         for label in labels.iter().take(shown) {
             c::chip(ui, str_at(label, "name"), label_tone(str_at(label, "colour")), false);
@@ -514,7 +554,11 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     });
 
     row.at(5, |ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), true);
+        if archived(p) {
+            archived_chip(ui);
+        } else {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
+        }
     });
 
     // A date the table can act on: "in 3 weeks" answers "is this project in
@@ -532,6 +576,10 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     }
 
     row.muted(7, &age(p));
+
+    let mut ask = None;
+    row.at(8, |ui| ask = project_menu(ui, p));
+    ask
 }
 
 /// How loud a priority is allowed to be. Same vocabulary as the task tables —
@@ -607,7 +655,7 @@ impl Health {
 pub(super) fn health(p: &Value, done: i64, total: i64) -> Option<(i64, Health)> {
     let target = parse_date(str_at(p, "targetDate"))?;
     let days = (target - Utc::now().date_naive()).num_days();
-    let h = if matches!(str_at(p, "status"), "done" | "archived") {
+    let h = if str_at(p, "status") == "done" || archived(p) {
         Health::Fine
     } else if days < 0 {
         Health::Overdue

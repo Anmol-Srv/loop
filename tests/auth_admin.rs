@@ -51,33 +51,32 @@ async fn call(pool: &PgPool, request: Request<Body>) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-async fn mint_agent(pool: &PgPool, token: &str, label: &str, scopes: Value) -> (StatusCode, Value) {
+async fn connect_agent(pool: &PgPool, token: &str, handle: &str) -> (StatusCode, Value) {
     call(
         pool,
-        req(
-            "POST",
-            "/api/user/agents",
-            token,
-            json!({ "label": label, "scopes": scopes }),
-        ),
+        req("POST", "/api/user/agents", token, json!({ "handle": handle, "runtime": "hermes" })),
     )
     .await
 }
 
 #[sqlx::test]
-async fn a_member_mints_a_read_only_agent_but_never_a_writing_one(pool: PgPool) {
+async fn a_member_connects_an_agent_that_holds_no_scopes(pool: PgPool) {
     person(&pool, MEMBER, "member").await;
     let t = session(&pool, MEMBER).await;
 
-    let (status, json) = mint_agent(&pool, &t, "hermes", json!(["read", "claim", "propose"])).await;
+    let (status, json) = connect_agent(&pool, &t, "hermes").await;
     assert_eq!(status, StatusCode::OK, "{json}");
-    assert!(!json["data"]["token"].as_str().unwrap().is_empty());
-    assert_eq!(json["data"]["agent"]["label"], "hermes");
+    let token = json["data"]["token"].as_str().unwrap();
+    assert!(!token.is_empty());
+    assert_eq!(json["data"]["agent"]["handle"], "hermes");
+    assert!(json["data"]["prompt"].as_str().unwrap().contains(token), "the prompt carries the token");
 
-    let (status, json) = mint_agent(&pool, &t, "greedy", json!(["read", "write"])).await;
-    assert!(status.is_client_error(), "got {status}: {json}");
-    let message = json["error"]["message"].as_str().unwrap();
-    assert!(message.contains("write") && message.contains("propose"), "got: {message}");
+    // Agent routes authorise by delegation, so the credential needs nothing.
+    let scopes: Vec<String> = sqlx::query_scalar("SELECT scopes FROM credential WHERE kind = 'agent'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(scopes.is_empty(), "got {scopes:?}");
 }
 
 #[sqlx::test]
@@ -87,7 +86,7 @@ async fn agents_are_private_to_their_owner(pool: PgPool) {
     let mine = session(&pool, MEMBER).await;
     let theirs = session(&pool, OTHER).await;
 
-    let (_, json) = mint_agent(&pool, &theirs, "grace-bot", json!(["read"])).await;
+    let (_, json) = connect_agent(&pool, &theirs, "grace-bot").await;
     let id = json["data"]["agent"]["id"].as_str().unwrap().to_string();
 
     let (status, json) = call(
@@ -103,7 +102,8 @@ async fn agents_are_private_to_their_owner(pool: PgPool) {
 
     // Still theirs, still live.
     let (_, json) = call(&pool, req("GET", "/api/user/agents", &theirs, json!({}))).await;
-    assert_eq!(json["data"][0]["label"], "grace-bot");
+    assert_eq!(json["data"][0]["handle"], "grace-bot");
+    assert_eq!(json["data"][0]["status"], "waiting");
 }
 
 #[sqlx::test]

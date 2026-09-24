@@ -17,7 +17,7 @@ Use this for `prod-read-lookup` and `prod-repl-proposal` routes. It supports pro
 
 ## Credential boundary
 
-- Keep the production read-only URL only in the dedicated Airtribe profile secret store/environment, for example `AIRTRIBE_PROD_READONLY_DATABASE_URL`. Never put the URL, a password, or a raw connection string in this skill, a repository, a task brief, a transcript, or a control-plane task record.
+- Keep the production read-only URL only in the dedicated Airtribe profile secret store/environment, for example `AIRTRIBE_PROD_READONLY_DATABASE_URL`. Never put the URL, a password, or a raw connection string in this skill, a repository, a task brief, a transcript, or a task record.
 - For database discovery, load `airtribe-production-db-lookup` and use its approved read-only client/wrapper. Confirm the connection role is read-only before querying.
 - Never make the write-capable production credential available to Hermes, Claude, Codex, Jev, or a generated script. The final write command is for the human to run manually in the approved production REPL.
 

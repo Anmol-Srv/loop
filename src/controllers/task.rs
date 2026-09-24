@@ -1,12 +1,14 @@
 use serde_json::json;
+use sqlx::PgTransaction;
 use uuid::Uuid;
 
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
+use crate::controllers::project::{only, writer, HeldIn};
 use crate::models::task::{
-    evidence_for, next_statuses, settle, task_row_select, terminal_of, Task, TaskFilter, TaskRow,
-    ANYONE, TASK_COLUMNS,
+    can_manage, evidence_for, next_statuses, settle, task_row_select, terminal_of, Task,
+    TaskFilter, TaskRow, task_columns_t, ANYONE, HELD, LIVE, TASK_COLUMNS,
 };
 
 pub enum Assignee {
@@ -44,8 +46,8 @@ pub async fn create(
     let mut tx = state.db.begin().await?;
 
     let task: Task = sqlx::query_as(&format!(
-        "INSERT INTO task (id, phase_id, title, body, priority)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO task (id, phase_id, title, body, priority, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING {TASK_COLUMNS}"
     ))
     .bind(id)
@@ -53,6 +55,7 @@ pub async fn create(
     .bind(&title)
     .bind(&body)
     .bind(priority)
+    .bind(actor.person_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -72,7 +75,7 @@ pub async fn create(
 /// there is no dynamic SQL string building to audit.
 pub async fn search(state: &AppState, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let tasks = sqlx::query_as(&format!(
-        "SELECT t.{} FROM task t
+        "SELECT {} FROM task t
          JOIN phase p ON p.id = t.phase_id
          LEFT JOIN person per ON per.id = t.assignee_person_id
          WHERE ($1::uuid IS NULL OR p.project_id = $1)
@@ -80,8 +83,9 @@ pub async fn search(state: &AppState, filter: TaskFilter) -> AppResult<Vec<Task>
            AND ($3::text IS NULL OR t.status = $3)
            AND ($4::text IS NULL OR per.email = $4)
            AND ($5::text IS NULL OR t.assignee_kind = $5)
+           AND {LIVE}
          ORDER BY t.priority, t.created_at",
-        TASK_COLUMNS.replace(", ", ", t.")
+        task_columns_t()
     ))
     .bind(filter.project_id)
     .bind(filter.phase_id)
@@ -115,6 +119,23 @@ pub async fn set_status(
     }
 
     let mut tx = state.db.begin().await?;
+    let task = transition(&mut tx, actor, id, status, manual_reason, expected).await?;
+    tx.commit().await?;
+    Ok(Outcome::Applied { entity: task })
+}
+
+/// `set_status`'s rules and write, inside the caller's transaction. An agent
+/// moving its delegated task and an owner approving a submission come through
+/// here too, so there is one transition path however a task moves.
+pub async fn transition(
+    tx: &mut PgTransaction<'_>,
+    actor: &Actor,
+    id: Uuid,
+    status: String,
+    manual_reason: Option<String>,
+    expected: Option<String>,
+) -> AppResult<Task> {
+    let patch = json!({ "status": status, "manual_reason": manual_reason });
 
     // Everything the rules below need, in one read inside the transaction and
     // with the row locked: two people moving the same task are serialised
@@ -146,7 +167,7 @@ pub async fn set_status(
     )
     .bind(id)
     .bind(actor.person_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| AppError::NotFound("task not found".into()))?;
 
@@ -161,43 +182,19 @@ pub async fn set_status(
     }
 
     let department = department.as_deref();
-    let next = next_statuses(department, &current);
-    if !next.contains(&status.as_str()) {
-        return Err(AppError::BadRequest(format!(
-            "a {} task in {current} goes to one of {}",
-            department.unwrap_or("unassigned"),
-            next.join(", ")
-        )));
-    }
 
     // A task is moved by the person it is assigned to; an admin can override,
     // which is what an admin is for. Shipping is the exception: it records a
     // fact about production rather than about ownership, so anyone who knows
     // it went out may say so — but only from `completed`, which the table
-    // above has already enforced. Checked here, not in the route, so the CLI
-    // and a replayed proposal obey the same rule.
+    // enforces. Checked here, not in the route, so the CLI and a replayed
+    // proposal obey the same rule.
+    let reason = check_move(department, &current, &status, &attached, manual_reason)?;
     let mine = actor.person_id.is_some() && assignee == actor.person_id;
     if !admin && !mine && !ANYONE.contains(&status.as_str()) {
         return Err(AppError::Forbidden(
             "only the person this task is assigned to can move it".into(),
         ));
-    }
-
-    // Leaving the work behind means saying how it was finished. The manual
-    // reason is the escape hatch for work that never had a PR — it is
-    // recorded rather than waved through, so the board can still answer
-    // "how did this get done".
-    let reason = manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
-    if let Some(kinds) = evidence_for(department, &status) {
-        if reason.is_none() && !attached.iter().any(|k| kinds.contains(&k.as_str())) {
-            let what = match kinds {
-                ["figma"] => "a Figma link",
-                _ => "a PR or commit",
-            };
-            return Err(AppError::BadRequest(format!(
-                "attach {what} first, or say why it was done without one"
-            )));
-        }
     }
 
     // `done_at` is stamped at the track's terminal state and cleared on the
@@ -214,13 +211,50 @@ pub async fn set_status(
     .bind(&status)
     .bind(finished)
     .bind(&reason)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
-    record(&mut tx, actor, TargetType::Task, task.id, Op::Update, patch).await?;
+    record(tx, actor, TargetType::Task, task.id, Op::Update, patch).await?;
+    Ok(task)
+}
 
-    tx.commit().await?;
-    Ok(Outcome::Applied { entity: task })
+/// Whether a task on this track may go from `current` to `status` with this
+/// evidence, returning the trimmed manual reason. The transition table and the
+/// evidence gate, and nothing about who is asking — an agent's submission is
+/// checked against this before anything moves.
+pub fn check_move(
+    department: Option<&str>,
+    current: &str,
+    status: &str,
+    attached: &[String],
+    manual_reason: Option<String>,
+) -> AppResult<Option<String>> {
+    let next = next_statuses(department, current);
+    if !next.contains(&status) {
+        return Err(AppError::BadRequest(format!(
+            "a {} task in {current} goes to one of {}",
+            department.unwrap_or("unassigned"),
+            next.join(", ")
+        )));
+    }
+
+    // Leaving the work behind means saying how it was finished. The manual
+    // reason is the escape hatch for work that never had a PR — it is
+    // recorded rather than waved through, so the board can still answer
+    // "how did this get done".
+    let reason = manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
+    if let Some(kinds) = evidence_for(department, status) {
+        if reason.is_none() && !attached.iter().any(|k| kinds.contains(&k.as_str())) {
+            let what = match kinds {
+                ["figma"] => "a Figma link",
+                _ => "a PR or commit",
+            };
+            return Err(AppError::BadRequest(format!(
+                "attach {what} first, or say why it was done without one"
+            )));
+        }
+    }
+    Ok(reason)
 }
 
 pub async fn assign(
@@ -288,9 +322,11 @@ pub async fn assign(
 
 /// One task, with its project and phase names. The clients used to fetch the
 /// whole board to render a single task; this is that request.
-pub async fn get(state: &AppState, id: Uuid) -> AppResult<TaskRow> {
-    sqlx::query_as(&format!("{} WHERE t.id = $1", task_row_select()))
+/// Archived or not; `viewer` is who `canArchive` is worked out for.
+pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<TaskRow> {
+    sqlx::query_as(&format!("{} WHERE t.id = $1", task_row_select("$2")))
         .bind(id)
+        .bind(viewer)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("task not found".into()))
@@ -308,7 +344,12 @@ pub async fn get(state: &AppState, id: Uuid) -> AppResult<TaskRow> {
 ///
 /// Returns the enriched row (project and phase names, blocker counts) rather
 /// than the bare task, because every caller needed the join anyway.
-pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>> {
+///
+/// Live tasks, or with `filter.archived` only archived ones. A task counts as
+/// archived while its project is, except when the list is that project's:
+/// asking for one project by id is asking for its tasks, and an archived
+/// project's page still shows them.
+pub async fn all(state: &AppState, filter: TaskFilter, viewer: Option<Uuid>) -> AppResult<Vec<TaskRow>> {
     Ok(sqlx::query_as(&format!(
         "{} WHERE ($1::uuid IS NULL OR pr.id = $1)
                AND ($2::uuid IS NULL OR t.phase_id = $2)
@@ -316,8 +357,9 @@ pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>
                AND ($4::text IS NULL OR own.email = $4)
                AND ($5::text IS NULL OR t.assignee_kind = $5)
                AND ($6::text IS NULL OR own.department = $6)
+               AND (t.archived_at IS NOT NULL OR ($1::uuid IS NULL AND pr.archived_at IS NOT NULL)) = $7
            ORDER BY t.priority, t.updated_at DESC",
-        task_row_select()
+        task_row_select("$8")
     ))
     .bind(filter.project_id)
     .bind(filter.phase_id)
@@ -325,16 +367,22 @@ pub async fn all(state: &AppState, filter: TaskFilter) -> AppResult<Vec<TaskRow>
     .bind(filter.assignee_email)
     .bind(filter.assignee_kind)
     .bind(filter.department)
+    .bind(filter.archived)
+    .bind(viewer)
     .fetch_all(&state.db)
     .await?)
 }
 
-pub async fn mine(state: &AppState, person_id: Uuid) -> AppResult<Vec<TaskRow>> {
+/// Live, or with `archived` only the archived.
+pub async fn mine(state: &AppState, person_id: Uuid, archived: bool) -> AppResult<Vec<TaskRow>> {
     Ok(sqlx::query_as(&format!(
-        "{} WHERE t.assignee_person_id = $1 ORDER BY t.priority, t.created_at",
-        task_row_select()
+        "{} WHERE t.assignee_person_id = $1
+               AND (t.archived_at IS NOT NULL OR pr.archived_at IS NOT NULL) = $2
+             ORDER BY t.priority, t.created_at",
+        task_row_select("$1")
     ))
     .bind(person_id)
+    .bind(archived)
     .fetch_all(&state.db)
     .await?)
 }
@@ -342,10 +390,8 @@ pub async fn mine(state: &AppState, person_id: Uuid) -> AppResult<Vec<TaskRow>> 
 
 /// A person taking ownership of unclaimed work.
 ///
-/// This is not the agent lease in `controllers::work`: it is permanent, it is
-/// editorial, and so it writes a `change` row. It deliberately leaves
-/// `claimed_by`/`claim_expires_at` alone — those belong to the lease, and a
-/// human holding a task forever is not a lease.
+/// Permanent and editorial, so it writes a `change` row. It leaves
+/// `claimed_by`/`claim_expires_at` alone — relics of the retired agent lease.
 pub async fn claim(
     state: &AppState,
     actor: &Actor,
@@ -621,4 +667,131 @@ pub fn stale_check(
         ))),
         _ => Ok(()),
     }
+}
+
+/// Lock the task and refuse anyone `can_manage` does not name. Returns
+/// whether its project is archived.
+async fn manage(tx: &mut PgTransaction<'_>, actor: &Actor, id: Uuid, verb: &str) -> AppResult<bool> {
+    #[allow(clippy::type_complexity)]
+    let (allowed, task_by, task_by_name, project_by, project_by_name, project_archived): (
+        bool,
+        Option<Uuid>,
+        Option<String>,
+        Option<Uuid>,
+        Option<String>,
+        bool,
+    ) = sqlx::query_as(&format!(
+        "SELECT {}, t.created_by, tc.name, pr.created_by, pc.name, pr.archived_at IS NOT NULL
+           FROM task t
+           JOIN phase ph ON ph.id = t.phase_id
+           JOIN project pr ON pr.id = ph.project_id
+           LEFT JOIN person tc ON tc.id = t.created_by
+           LEFT JOIN person pc ON pc.id = pr.created_by
+          WHERE t.id = $1
+            FOR UPDATE OF t",
+        can_manage("$2")
+    ))
+    .bind(id)
+    .bind(actor.person_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    if !allowed {
+        let mut who: Vec<String> = task_by_name.map(|n| format!("{n}, who created this task")).into_iter().collect();
+        if let Some(n) = project_by_name.filter(|_| project_by != task_by) {
+            who.push(format!("{n}, who created its project"));
+        }
+        return Err(AppError::Forbidden(only(&who, verb, "task")));
+    }
+    Ok(project_archived)
+}
+
+/// Refuse while an agent still holds the task, or any task in the project:
+/// archiving or deleting it out from under the agent would leave it working
+/// on something nobody can see.
+pub(crate) async fn refuse_held(tx: &mut PgTransaction<'_>, scope: HeldIn) -> AppResult<()> {
+    let (task, project) = match scope {
+        HeldIn::Task(id) => (Some(id), None),
+        HeldIn::Project(id) => (None, Some(id)),
+    };
+    let held: Option<(String, String)> = sqlx::query_as(&format!(
+        "SELECT t.title, a.name FROM task t
+           JOIN phase ph ON ph.id = t.phase_id
+           JOIN agent a ON a.id = t.delegate_agent_id
+          WHERE (t.id = $1 OR ph.project_id = $2) AND {HELD}
+          LIMIT 1"
+    ))
+    .bind(task)
+    .bind(project)
+    .fetch_optional(&mut **tx)
+    .await?;
+    match held {
+        None => Ok(()),
+        Some((_, agent)) if task.is_some() => {
+            Err(AppError::Conflict(format!("Take it back from {agent} first.")))
+        }
+        Some((title, agent)) => Err(AppError::Conflict(format!(
+            "{agent} still holds \u{201c}{title}\u{201d}. Take it back from {agent} first."
+        ))),
+    }
+}
+
+/// Take tasks that are going for good out of every `blocked_by` that names
+/// them, so nothing waits on a task that no longer exists.
+pub(crate) async fn unblock(tx: &mut PgTransaction<'_>, ids: &[Uuid]) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE task SET blocked_by = ARRAY(SELECT b FROM unnest(blocked_by) b WHERE b <> ALL($1))
+          WHERE blocked_by && $1",
+    )
+    .bind(ids)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Archive a task, or restore it. One inside an archived project comes back
+/// with the project, not on its own.
+pub async fn set_archived(state: &AppState, actor: &Actor, id: Uuid, archived: bool) -> AppResult<TaskRow> {
+    writer(actor)?;
+    let mut tx = state.db.begin().await?;
+    let project_archived = manage(&mut tx, actor, id, if archived { "archive" } else { "restore" }).await?;
+    if archived {
+        refuse_held(&mut tx, HeldIn::Task(id)).await?;
+    } else if project_archived {
+        return Err(AppError::Conflict(
+            "Its project is archived \u{2014} restore the project to bring this back.".into(),
+        ));
+    }
+    sqlx::query(
+        "UPDATE task SET archived_at = CASE WHEN $2 THEN coalesce(archived_at, now()) END WHERE id = $1",
+    )
+    .bind(id)
+    .bind(archived)
+    .execute(&mut *tx)
+    .await?;
+    record(&mut tx, actor, TargetType::Task, id, Op::Update, json!({ "archived": archived })).await?;
+    tx.commit().await?;
+    get(state, id, actor.person_id).await
+}
+
+/// Delete a task for good. Notes, run log and agent events go by their
+/// foreign keys; its artifacts and other tasks' `blocked_by` entries for it
+/// have none, so they go here.
+pub async fn delete(state: &AppState, actor: &Actor, id: Uuid) -> AppResult<()> {
+    writer(actor)?;
+    let mut tx = state.db.begin().await?;
+    manage(&mut tx, actor, id, "delete").await?;
+    refuse_held(&mut tx, HeldIn::Task(id)).await?;
+    sqlx::query("DELETE FROM artifact WHERE parent_type = 'task' AND parent_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    unblock(&mut tx, &[id]).await?;
+    let title: String = sqlx::query_scalar("DELETE FROM task WHERE id = $1 RETURNING title")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    record(&mut tx, actor, TargetType::Task, id, Op::Delete, json!({ "title": title })).await?;
+    tx.commit().await?;
+    Ok(())
 }

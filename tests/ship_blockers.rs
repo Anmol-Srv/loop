@@ -391,46 +391,33 @@ async fn set_role_takes_manager_and_keeps_one_admin(pool: PgPool) {
 
 // ---- Mediums ---------------------------------------------------------------
 
-async fn mint(pool: &PgPool, token: &str, scopes: Value, days: i64) -> (StatusCode, Value) {
-    call(pool, "POST", "/api/user/agents", token,
-        json!({ "label": "bot", "scopes": scopes, "validDays": days })).await
+async fn mint(pool: &PgPool, token: &str, handle: &str) -> (StatusCode, Value) {
+    call(pool, "POST", "/api/user/agents", token, json!({ "handle": handle })).await
 }
 
 #[sqlx::test]
 async fn an_agent_cannot_mint_an_agent(pool: PgPool) {
     let (t, _) = person(&pool, "a@airtribe.live", "backend", "member").await;
-    let (status, body) = mint(&pool, &t, json!(["read", "propose"]), 30).await;
+    let (status, body) = mint(&pool, &t, "bot").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let agent = body["data"]["token"].as_str().unwrap().to_owned();
 
-    let (status, body) = mint(&pool, &agent, json!(["read"]), 30).await;
+    let (status, body) = mint(&pool, &agent, "bot-2").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 #[sqlx::test]
-async fn an_agents_lifetime_is_clamped_to_ninety_days(pool: PgPool) {
+async fn an_agents_token_lives_ninety_days(pool: PgPool) {
     let (t, _) = person(&pool, "a@airtribe.live", "backend", "member").await;
     let now = chrono::Utc::now();
-    let expiry = |body: &Value| {
-        body["data"]["agent"]["expiresAt"].as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap()
-    };
-
-    let (_, body) = mint(&pool, &t, json!(["read"]), 36500).await;
-    assert!(expiry(&body) <= now + chrono::Duration::days(90) + chrono::Duration::minutes(1), "{body}");
-    let (_, body) = mint(&pool, &t, json!(["read"]), 0).await;
-    assert!(expiry(&body) >= now + chrono::Duration::days(1) - chrono::Duration::minutes(1), "{body}");
-}
-
-#[sqlx::test]
-async fn an_agent_gets_no_scope_its_minter_lacks(pool: PgPool) {
-    sqlx::query("INSERT INTO person (email, name) VALUES ('r@airtribe.live', 'R')").execute(&pool).await.unwrap();
-    let (reader, _) =
-        token::mint(&state(&pool), "reader", "r@airtribe.live", vec!["read".into()], 1).await.unwrap();
-
-    let (status, body) = mint(&pool, &reader, json!(["read", "propose"]), 30).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    let (status, _) = mint(&pool, &reader, json!(["read"]), 30).await;
-    assert_eq!(status, StatusCode::OK);
+    mint(&pool, &t, "bot").await;
+    let expiry: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM credential WHERE kind = 'agent'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let ninety = now + chrono::Duration::days(90);
+    assert!(expiry > ninety - chrono::Duration::minutes(1) && expiry < ninety + chrono::Duration::minutes(1));
 }
 
 #[sqlx::test]

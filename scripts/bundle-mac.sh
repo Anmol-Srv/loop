@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-NAME="Airtribe Control Plane"
+NAME="Loop"
 APP="target/$NAME.app"
 
 # UNIVERSAL=1 builds for Intel as well and joins the two with lipo — only
@@ -74,12 +74,12 @@ echo "run    open '$APP'"
 # Quit any running copy politely before the next launch. A `kill -9` leaves
 # macOS believing the app crashed, which is what put a "reopen its windows?"
 # dialog in front of every rebuild.
-osascript -e 'quit app "Airtribe Control Plane"' 2>/dev/null || true
+osascript -e "quit app \"$NAME\"" 2>/dev/null || true
 
 # DIST=1 zips the bundle for handing to teammates. `ditto` rather than `zip`
 # keeps the signature and the bundle's extended attributes intact.
 if [ "${DIST:-0}" = "1" ]; then
-  ZIP="target/Airtribe-Control-Plane.zip"
+  ZIP="target/Loop.zip"
   rm -f "$ZIP"
   ditto -c -k --keepParent "$APP" "$ZIP"
   echo "dist   $ZIP ($(du -h "$ZIP" | cut -f1)) — $(lipo -archs "$APP/Contents/MacOS/acp-app")"

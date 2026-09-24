@@ -6,7 +6,16 @@ use crate::errors::{AppError, AppResult};
 use crate::models::artifact::{Artifact, ARTIFACT_KINDS, PARENT_TYPES};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 
-const COLUMNS: &str = "id, parent_type, parent_id, kind, url, title, metadata, added_by, created_at";
+/// An artifact as the person bound to `$1` sees it. `can_remove` is the whole
+/// rule: only whoever added it may remove it (an agent's attachment is its
+/// owner's), and a row with nobody recorded is an admin's to clear. There is
+/// no admin override on anyone's own resources.
+const COLUMNS: &str = "a.id, a.parent_type, a.parent_id, a.kind, a.url, a.title, a.metadata,
+    CASE WHEN p.id IS NULL THEN NULL ELSE jsonb_build_object('id', p.id, 'name', p.name) END AS added_by,
+    ag.name AS added_by_agent,
+    coalesce(a.added_by = $1, EXISTS (SELECT 1 FROM person WHERE id = $1 AND role = 'admin')) AS can_remove,
+    a.created_at";
+const JOINS: &str = "LEFT JOIN person p ON p.id = a.added_by LEFT JOIN agent ag ON ag.id = a.added_by_agent_id";
 
 pub async fn add(
     state: &AppState,
@@ -17,12 +26,32 @@ pub async fn add(
     url: String,
     title: String,
 ) -> AppResult<Outcome<Artifact>> {
-    if !PARENT_TYPES.contains(&parent_type.as_str()) {
+    validate(&parent_type, &kind, &url)?;
+
+    if !actor.can_apply {
+        let patch = json!({
+            "parent_type": parent_type, "parent_id": parent_id,
+            "kind": kind, "url": url, "title": title
+        });
+        let change_id =
+            propose(&state.db, actor, TargetType::Artifact, Uuid::new_v4(), Op::Create, patch).await?;
+        return Ok(Outcome::Proposed { change_id });
+    }
+
+    let mut tx = state.db.begin().await?;
+    let artifact = insert(&mut tx, actor, &parent_type, parent_id, &kind, &url, &title).await?;
+    tx.commit().await?;
+    Ok(Outcome::Applied { entity: artifact })
+}
+
+/// What makes an artifact acceptable, whoever is adding it.
+pub fn validate(parent_type: &str, kind: &str, url: &str) -> AppResult<()> {
+    if !PARENT_TYPES.contains(&parent_type) {
         return Err(AppError::BadRequest(format!(
             "parentType must be one of {}", PARENT_TYPES.join(", ")
         )));
     }
-    if !ARTIFACT_KINDS.contains(&kind.as_str()) {
+    if !ARTIFACT_KINDS.contains(&kind) {
         return Err(AppError::BadRequest(format!(
             "kind must be one of {}", ARTIFACT_KINDS.join(", ")
         )));
@@ -37,45 +66,61 @@ pub async fn add(
     if kind != "commit" && !(lower.starts_with("https://") || lower.starts_with("http://")) {
         return Err(AppError::BadRequest("a link must start with http:// or https://".into()));
     }
+    Ok(())
+}
 
+/// Write an artifact inside the caller's transaction. Validation is the
+/// caller's: `add` above, or an agent route that has already checked the task
+/// is delegated to it.
+pub async fn insert(
+    tx: &mut sqlx::PgTransaction<'_>,
+    actor: &Actor,
+    parent_type: &str,
+    parent_id: Uuid,
+    kind: &str,
+    url: &str,
+    title: &str,
+) -> AppResult<Artifact> {
     let id = Uuid::new_v4();
     let patch = json!({
         "parent_type": parent_type, "parent_id": parent_id,
         "kind": kind, "url": url, "title": title
     });
 
-    if !actor.can_apply {
-        let change_id = propose(&state.db, actor, TargetType::Artifact, id, Op::Create, patch).await?;
-        return Ok(Outcome::Proposed { change_id });
-    }
-
-    let mut tx = state.db.begin().await?;
-
+    // An agent's transaction carries `acp.agent_id`, so its attachment
+    // records which agent made it.
     let artifact: Artifact = sqlx::query_as(&format!(
-        "INSERT INTO artifact (id, parent_type, parent_id, kind, url, title, added_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLUMNS}"
+        "WITH a AS (
+           INSERT INTO artifact (id, parent_type, parent_id, kind, url, title, added_by, added_by_agent_id)
+           VALUES ($2, $3, $4, $5, $6, $7, $1, acting_agent()) RETURNING *)
+         SELECT {COLUMNS} FROM a {JOINS}"
     ))
-    .bind(id)
-    .bind(&parent_type)
-    .bind(parent_id)
-    .bind(&kind)
-    .bind(&url)
-    .bind(&title)
     .bind(actor.person_id)
-    .fetch_one(&mut *tx)
+    .bind(id)
+    .bind(parent_type)
+    .bind(parent_id)
+    .bind(kind)
+    .bind(url)
+    .bind(title)
+    .fetch_one(&mut **tx)
     .await?;
 
-    record(&mut tx, actor, TargetType::Artifact, artifact.id, Op::Create, patch).await?;
-
-    tx.commit().await?;
-    Ok(Outcome::Applied { entity: artifact })
+    record(tx, actor, TargetType::Artifact, artifact.id, Op::Create, patch).await?;
+    Ok(artifact)
 }
 
-pub async fn list(state: &AppState, parent_type: String, parent_id: Uuid) -> AppResult<Vec<Artifact>> {
+/// `viewer` is who `canRemove` is worked out for.
+pub async fn list(
+    state: &AppState,
+    viewer: Option<Uuid>,
+    parent_type: String,
+    parent_id: Uuid,
+) -> AppResult<Vec<Artifact>> {
     let artifacts = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM artifact WHERE parent_type = $1 AND parent_id = $2
-         ORDER BY created_at DESC"
+        "SELECT {COLUMNS} FROM artifact a {JOINS} WHERE a.parent_type = $2 AND a.parent_id = $3
+         ORDER BY a.created_at DESC"
     ))
+    .bind(viewer)
     .bind(parent_type)
     .bind(parent_id)
     .fetch_all(&state.db)
@@ -90,22 +135,45 @@ pub async fn list(state: &AppState, parent_type: String, parent_id: Uuid) -> App
 /// a PR link that vanishes with no trace is exactly the kind of thing this
 /// table is here to prevent. It does not move the task's status back: the
 /// evidence gate guards the transition, not the state afterwards.
+///
+/// Every removal comes through here — a person, a proposal, its approval — so
+/// this is where who-may-remove is enforced, before anything is queued. There
+/// is no path that edits an artifact; one would check the same `can_remove`.
 pub async fn remove(state: &AppState, actor: &Actor, id: Uuid) -> AppResult<Outcome<Artifact>> {
-    let patch = serde_json::json!({ "id": id });
-    if !actor.can_apply {
-        let change_id = propose(&state.db, actor, TargetType::Artifact, id, Op::Delete, patch).await?;
-        return Ok(Outcome::Proposed { change_id });
-    }
-
     let mut tx = state.db.begin().await?;
     let artifact: Artifact = sqlx::query_as(&format!(
-        "DELETE FROM artifact WHERE id = $1 RETURNING {COLUMNS}"
+        "SELECT {COLUMNS} FROM artifact a {JOINS} WHERE a.id = $2 FOR UPDATE OF a"
     ))
+    .bind(actor.person_id)
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("that link is already gone".into()))?;
-    record(&mut tx, actor, TargetType::Artifact, id, Op::Delete, patch).await?;
+    if !artifact.can_remove {
+        return Err(AppError::Forbidden(refusal(&artifact)));
+    }
+
+    if actor.can_apply {
+        sqlx::query("DELETE FROM artifact WHERE id = $1").bind(id).execute(&mut *tx).await?;
+    }
+    // `record` files it as pending when the actor cannot apply.
+    let change_id = record(&mut tx, actor, TargetType::Artifact, id, Op::Delete, json!({ "id": id })).await?;
     tx.commit().await?;
-    Ok(Outcome::Applied { entity: artifact })
+    Ok(if actor.can_apply { Outcome::Applied { entity: artifact } } else { Outcome::Proposed { change_id } })
+}
+
+/// "Only Dhaval can remove this link — they added it."
+fn refusal(a: &Artifact) -> String {
+    let what = match a.kind.as_str() {
+        "pr" => "PR",
+        "figma" => "Figma file",
+        k => k,
+    };
+    match (a.added_by.as_ref().and_then(|p| p["name"].as_str()), &a.added_by_agent) {
+        (Some(name), Some(agent)) => {
+            format!("Only {name} can remove this {what} \u{2014} their agent {agent} attached it.")
+        }
+        (Some(name), None) => format!("Only {name} can remove this {what} \u{2014} they added it."),
+        (None, _) => format!("Only an admin can remove this {what} \u{2014} nobody is recorded as adding it."),
+    }
 }

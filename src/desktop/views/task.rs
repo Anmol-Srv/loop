@@ -33,11 +33,13 @@ use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
+use super::agents::{state_tone, state_words, AGENTS_KEY};
 use super::projects::{person_option, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::{
     avatar, cards as c, colour, pad, radius, shell, size, space, status_label, text, theme, viz,
     widgets as w,
 };
+use crate::desktop::net::memo;
 use crate::desktop::{App, Tab};
 
 const TASK_KEY: &str = "task:one";
@@ -49,6 +51,12 @@ const NOTES_KEY: &str = "task:notes";
 const NOTE_KEY: &str = "task:note:new";
 const DETAILS_KEY: &str = "task:details";
 const REMOVE_KEY: &str = "task:artifact:remove";
+/// Hand-off, take-back, answer and review all go out under this one key: they
+/// are started from one page, one at a time.
+const AGENT_KEY: &str = "task:agent";
+/// Archive, restore and delete. Not under `task:`: a success sweeps that
+/// prefix, and the reply has to be read first.
+const ARCHIVE_KEY: &str = "tasks:archive";
 /// The server's table of legal moves per track. Under `__`, not `task:`: it
 /// does not change while the app runs, so nothing here invalidates it.
 const TRACKS_KEY: &str = "__tracks";
@@ -248,6 +256,22 @@ struct Local {
     /// A failed remove, shown over the list it failed in rather than up by
     /// the title where the move notices live.
     resource_error: Option<String>,
+    /// The agent action in flight — its past tense, for the notice.
+    agent_busy: Option<String>,
+    /// The answer to an agent's open question, and the note that has to go
+    /// with a request for changes.
+    answer: String,
+    changes: String,
+    /// An archive or delete waiting on a yes, and the one sent.
+    ask: Option<Act>,
+    acting: Option<Act>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    Archive,
+    Restore,
+    Delete,
 }
 
 impl Local {
@@ -272,6 +296,11 @@ impl Local {
             confirm_remove: None,
             removing: false,
             resource_error: None,
+            agent_busy: None,
+            answer: String::new(),
+            changes: String::new(),
+            ask: None,
+            acting: None,
         }
     }
 }
@@ -305,6 +334,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let can_write = app.can_write();
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
+    // Deleted: there is nothing left to show, so this is Back.
+    if settle_archive(net, local) {
+        app.task = None;
+        return;
+    }
     net.get_once(TASK_KEY, &format!("/api/user/tasks/{task_id}"));
     net.get_once(
         ARTIFACTS_KEY,
@@ -317,6 +351,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     net.get_once(PEOPLE_KEY, "/api/user/people");
 
     let task = net.shared(TASK_KEY);
+    // Only the assignee hands off, so only the assignee needs their agents.
+    let mine_early = task.as_ref().is_some_and(|t| !me.is_empty() && str_of(t, "assigneePersonId") == Some(me.as_str()));
+    if mine_early {
+        net.get_once(AGENTS_KEY, "/api/user/agents");
+    }
 
     // A breadcrumb, not an id: "22222222" told nobody anything, the project
     // name tells you where you are and is the likeliest place to go next.
@@ -379,11 +418,33 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // `net` is still free, so neither column has to own it.
     settle_move(net, local);
     settle_details(ui.ctx(), net, task_id, local);
+    settle_agent(net, local);
+
+    let delegate = task.get("delegate").filter(|d| d.is_object());
+    let agents = memo(ui.ctx(), egui::Id::new("task:my-agents"), net.generation(AGENTS_KEY), || {
+        net.data(AGENTS_KEY)
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter(|a| str_of(a, "status") != Some("revoked"))
+                    .filter_map(|a| Some((str_of(a, "id")?.to_owned(), str_of(a, "name")?.to_owned())))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    let handoff = Handoff {
+        mine,
+        // The delegate stays on a finished task as history; only an agent
+        // still holding it can be taken back.
+        delegated: delegate.is_some_and(|d| !matches!(str_of(d, "state"), Some("done" | "stopped"))),
+        finished: task.get("doneAt").is_some_and(|v| !v.is_null()) || status == "dropped",
+        agents: &agents,
+    };
 
     // The rail cannot hold `net` — the content column has it — so it reports
     // what was asked for and the request is made once both closures are gone.
     let mut from_rail: Option<Ask> = None;
-    let busy = local.patching || local.attaching || local.saving;
+    let busy = local.patching || local.attaching || local.saving || local.agent_busy.is_some();
     let people = net.shared(PEOPLE_KEY).filter(|_| can_write);
     let people: &[Value] = people.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
     // Agents are the next phase: a human task has no run log to watch, and
@@ -397,10 +458,14 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         |ui, part| match part {
             shell::Part::Header => {
                 editing = headline(
-                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held, local,
+                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held, &handoff,
+                    local,
                 );
             }
             shell::Part::Body => {
+                if let Some(d) = delegate {
+                    delegate_panels(ui, net, task_id, &task, d, mine, local);
+                }
                 if !editing {
                     description(ui, &task);
                 }
@@ -445,6 +510,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         }
         None => {}
     }
+    // After the page, so its dialog is drawn over it.
+    archive_confirm(ui.ctx(), net, task_id, &task, local);
 
     // `net`'s borrow of `app` ends above, so navigation happens last.
     if let Some(project_id) = open_project {
@@ -488,9 +555,14 @@ fn headline(
     can_act: bool,
     can_write: bool,
     held: &[String],
+    handoff: &Handoff,
     local: &mut Local,
 ) -> bool {
-    let busy = local.patching || local.attaching || local.saving;
+    let busy = local.patching
+        || local.attaching
+        || local.saving
+        || local.agent_busy.is_some()
+        || local.acting.is_some();
     let action = primary_move(track, status)
         .filter(|(_, next)| moves.contains(next) && (can_act || anyone_may(next)));
 
@@ -560,10 +632,20 @@ fn headline(
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
+                if can_write && !busy {
+                    match task_menu(ui, task) {
+                        Some(Act::Restore) => send_archive(net, task_id, Act::Restore, local),
+                        Some(act) => local.ask = Some(act),
+                        None => {}
+                    }
+                }
                 if let Some((copy, next)) = action {
                     if w::primary(ui, copy, !busy).clicked() {
                         go = Some(next);
                     }
+                }
+                if let Some(ask) = handoff_control(ui, handoff, busy) {
+                    agent_action(net, task_id, ask, local);
                 }
                 if can_write && w::ghost(ui, "Edit").clicked() {
                     edit = true;
@@ -611,6 +693,18 @@ fn headline(
 
     prompt_panel(ui, net, task_id, local);
 
+    if super::board::archived(task) {
+        ui.add_space(space::MD);
+        w::caption(
+            ui,
+            if task.get("projectArchivedAt").is_some_and(|v| !v.is_null()) {
+                "Archived with its project \u{2014} restoring the project brings it back."
+            } else {
+                "Archived \u{2014} out of every list until it is restored."
+            },
+        );
+    }
+
     if let Some((message, is_error)) = &local.notice {
         ui.add_space(space::MD);
         if *is_error {
@@ -657,6 +751,251 @@ fn manual_reason(ui: &mut egui::Ui, task: &Value) {
                 .size(text::SMALL)
                 .color(colour::TEXT_MUTED),
         );
+    });
+}
+
+// ------------------------------------------------------------ the delegate
+
+/// What the page knows about handing this task to one of the viewer's agents.
+struct Handoff<'a> {
+    /// The viewer is the assignee: the only person who may hand off or take back.
+    mine: bool,
+    delegated: bool,
+    finished: bool,
+    /// The viewer's agents that can still take work: (id, name).
+    agents: &'a [(String, String)],
+}
+
+/// An agent action to send.
+enum AgentAsk {
+    Handoff(String, String),
+    TakeBack,
+    Answer(String),
+    Approve,
+    Changes(String),
+}
+
+/// The hand-off control in the title's actions: "Take back" while an agent
+/// holds the task, otherwise "Hand off to …" — a button for one agent, a
+/// picker for several. Nothing at all for anyone but the assignee, or for an
+/// assignee with no agent to hand to.
+fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAsk> {
+    if !h.mine {
+        return None;
+    }
+    if h.delegated {
+        return w::secondary(ui, "Take back", !busy).clicked().then_some(AgentAsk::TakeBack);
+    }
+    match h.agents {
+        [] => None,
+        _ if h.finished => {
+            let label = match h.agents {
+                [(_, name)] => format!("Hand off to {name}"),
+                _ => "Hand off".to_owned(),
+            };
+            w::secondary(ui, &label, false)
+                .on_disabled_hover_text("This task is finished \u{2014} there is nothing left to hand off.");
+            None
+        }
+        [(id, name)] => w::secondary(ui, &format!("Hand off to {name}"), !busy)
+            .clicked()
+            .then(|| AgentAsk::Handoff(id.clone(), name.clone())),
+        many => {
+            let options: Vec<(String, String)> = many.to_vec();
+            let mut slot: Option<String> = None;
+            ui.add_enabled_ui(!busy, |ui| {
+                viz::select(ui, "Hand off to\u{2026}", &options, &mut slot);
+            });
+            let id = slot?;
+            let name = many.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()).unwrap_or_default();
+            Some(AgentAsk::Handoff(id, name))
+        }
+    }
+}
+
+fn agent_action(net: &mut crate::desktop::net::Net, task_id: &str, ask: AgentAsk, local: &mut Local) {
+    let base = format!("/api/user/tasks/{task_id}");
+    let (path, body, done) = match ask {
+        AgentAsk::Handoff(id, name) => (format!("{base}/handoff"), json!({ "agentId": id }), format!("Handed off to {name}.")),
+        AgentAsk::TakeBack => (format!("{base}/takeback"), json!({}), "Taken back \u{2014} the agent no longer has this task.".to_owned()),
+        AgentAsk::Answer(body) => (format!("{base}/answer"), json!({ "body": body }), "Answer sent.".to_owned()),
+        AgentAsk::Approve => (format!("{base}/review"), json!({ "decision": "approve" }), "Approved.".to_owned()),
+        AgentAsk::Changes(body) => (
+            format!("{base}/review"),
+            json!({ "decision": "changes", "body": body }),
+            "Changes requested.".to_owned(),
+        ),
+    };
+    local.notice = None;
+    net.invalidate(AGENT_KEY);
+    net.post(AGENT_KEY, &path, body);
+    local.agent_busy = Some(done);
+}
+
+/// Fold in the reply to an agent action.
+fn settle_agent(net: &mut crate::desktop::net::Net, local: &mut Local) {
+    if local.agent_busy.is_none() || net.is_loading(AGENT_KEY) {
+        return;
+    }
+    let done = local.agent_busy.take().unwrap_or_default();
+    match net.peek(AGENT_KEY) {
+        Some(Ok(_)) => {
+            local.notice = Some((done, false));
+            local.answer.clear();
+            local.changes.clear();
+        }
+        Some(Err(e)) => local.notice = Some((e.to_string(), true)),
+        None => {}
+    }
+    invalidate_after_move(net);
+    net.invalidate(AGENTS_KEY);
+}
+
+/// What the agent is waiting on the owner for, above the description: an open
+/// question with its answer box, or a submission with its review. Neither is
+/// shown to anyone but the assignee as a control — everyone else reads whose
+/// turn it is.
+fn delegate_panels(
+    ui: &mut egui::Ui,
+    net: &mut crate::desktop::net::Net,
+    task_id: &str,
+    task: &Value,
+    delegate: &Value,
+    mine: bool,
+    local: &mut Local,
+) {
+    let state = str_of(delegate, "state").unwrap_or_default();
+    if state != "needs_input" && state != "in_review" {
+        return;
+    }
+    let agent = str_of(delegate, "name").unwrap_or("The agent").to_owned();
+    let owner = str_of(task, "assigneeName").unwrap_or("the assignee").to_owned();
+    let notes = net.shared(NOTES_KEY);
+    let notes: &[Value] = notes.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let want = if state == "needs_input" { "question" } else { "submission" };
+    // The newest entry of the kind, whatever order the server sent them in.
+    let latest = notes
+        .iter()
+        .filter(|n| str_of(n, "kind") == Some(want))
+        .max_by(|a, b| str_of(a, "createdAt").cmp(&str_of(b, "createdAt")));
+    let busy = local.agent_busy.is_some();
+    let mut ask: Option<AgentAsk> = None;
+
+    ui.add_space(space::LG);
+    if state == "needs_input" {
+        egui::Frame::new()
+            .fill(colour::WARN_BG)
+            .stroke(egui::Stroke::new(1.0, colour::WARN.gamma_multiply(0.30)))
+            .corner_radius(radius::LG)
+            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                panel_head(ui, &format!("{agent} asked"), latest);
+                ui.add_space(space::XS);
+                let body = latest.and_then(|n| str_of(n, "body")).unwrap_or("Its question did not load.");
+                ui.label(RichText::new(body).size(text::BODY).color(colour::TEXT));
+                ui.add_space(space::SM);
+                if !mine {
+                    w::caption(ui, &format!("Waiting for {owner} to answer."));
+                    return;
+                }
+                w::field_multiline(ui, "", &mut local.answer, 2, &format!("Answer {agent}\u{2026}"));
+                ui.add_space(space::SM);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    let ready = !local.answer.trim().is_empty() && !busy;
+                    let response = w::primary(ui, "Send answer", ready);
+                    if local.answer.trim().is_empty() {
+                        response.clone().on_disabled_hover_text("Write the answer first.");
+                    }
+                    if response.clicked() {
+                        ask = Some(AgentAsk::Answer(local.answer.trim().to_owned()));
+                    }
+                });
+            });
+    } else {
+        let target = str_of(task, "reviewTarget").unwrap_or("completed");
+        let evidence = net.shared(ARTIFACTS_KEY);
+        let evidence: Vec<&Value> = evidence
+            .as_deref()
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect())
+            .unwrap_or_default();
+        egui::Frame::new()
+            .fill(colour::SURFACE)
+            .stroke(egui::Stroke::new(1.0, colour::AGENT.gamma_multiply(0.35)))
+            .corner_radius(radius::LG)
+            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                panel_head(ui, &format!("{agent} submitted this for review"), latest);
+                ui.add_space(space::SM);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::SM;
+                    w::muted(ui, "Approving moves it to");
+                    c::chip(ui, status_label(target), c::status_tone(target), true);
+                });
+                if let Some(summary) = latest.and_then(|n| str_of(n, "body")) {
+                    ui.add_space(space::SM);
+                    ui.label(RichText::new(summary).size(text::BODY).color(colour::TEXT_2));
+                }
+                ui.add_space(space::MD);
+                w::caption(ui, "Evidence");
+                ui.add_space(space::XXS);
+                if evidence.is_empty() {
+                    faint(ui, "Nothing attached.");
+                } else {
+                    for row in &evidence {
+                        resource_row(ui, row, false, local);
+                    }
+                }
+                ui.add_space(space::SM);
+                if !mine {
+                    w::caption(ui, &format!("Waiting for {owner} to review."));
+                    return;
+                }
+                w::field_multiline(
+                    ui,
+                    "",
+                    &mut local.changes,
+                    2,
+                    "What needs to change \u{2014} needed to request changes",
+                );
+                ui.add_space(space::SM);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = space::SM;
+                    if w::primary(ui, "Approve", !busy).clicked() {
+                        ask = Some(AgentAsk::Approve);
+                    }
+                    let noted = !local.changes.trim().is_empty();
+                    let response = w::secondary(ui, "Request changes", noted && !busy);
+                    if !noted {
+                        response.clone().on_disabled_hover_text("Say what needs to change first.");
+                    }
+                    if response.clicked() {
+                        ask = Some(AgentAsk::Changes(local.changes.trim().to_owned()));
+                    }
+                });
+            });
+    }
+    if let Some(ask) = ask {
+        agent_action(net, task_id, ask, local);
+    }
+}
+
+/// The agent mark, who did what, and when.
+fn panel_head(ui: &mut egui::Ui, what: &str, note: Option<&Value>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        w::agent_mark(ui, AVATAR - space::XS);
+        ui.label(
+            RichText::new(what)
+                .size(text::SMALL)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT),
+        );
+        if let Some(at) = note.and_then(|n| str_of(n, "createdAt")) {
+            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_MUTED));
+        }
     });
 }
 
@@ -806,6 +1145,24 @@ fn rail(
         if done {
             ui.data_mut(|d| d.remove::<(Option<String>, String)>(confirm_id));
         }
+    }
+
+    if let Some(d) = task.get("delegate").filter(|d| d.is_object()) {
+        shell::property(ui, "Delegate", |ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            w::agent_mark(ui, AVATAR - space::XS);
+            value(ui, str_of(d, "name").unwrap_or("Agent"));
+        });
+        let state = str_of(d, "state").unwrap_or("handed_off");
+        shell::property(ui, "Agent state", |ui| {
+            c::chip(ui, state_words(state), state_tone(state), true);
+        });
+        shell::property(ui, "Last seen", |ui| match str_of(d, "lastSeenAt") {
+            Some(at) => {
+                value(ui, &ago(at)).on_hover_text(exact(at));
+            }
+            None => faint(ui, "Not yet"),
+        });
     }
 
     shell::property(ui, "Department", |ui| {
@@ -1404,11 +1761,17 @@ fn resource_row(
                     local.confirm_remove = None;
                 }
                 faint(ui, "Remove this link?");
-            } else if can_write && w::ghost(ui, "Remove").clicked() {
+            } else {
                 // Always drawn, never hover-only: a control that appears
                 // under the pointer is one the keyboard can never reach, and
-                // the project page's resources show it the same way.
-                local.confirm_remove = Some(id.clone());
+                // the project page's resources show it the same way. Only
+                // whoever added it may remove it; the server says who that is.
+                if can_write && row["canRemove"].as_bool() == Some(true) && w::ghost(ui, "Remove").clicked() {
+                    local.confirm_remove = Some(id.clone());
+                }
+                if let Some(who) = super::board::added_by(row) {
+                    faint(ui, &who);
+                }
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 c::chip(ui, kind_label(kind), kind_tone(kind), false);
@@ -1501,11 +1864,21 @@ fn notes(
                 if i > 0 {
                     ui.add_space(space::MD);
                 }
-                let author = str_of(row, "authorName").unwrap_or("Someone");
+                // An agent's entry is signed with the agent's name and mark;
+                // a person's with theirs.
+                let agent = row.get("agent").and_then(|a| str_of(a, "name"));
+                let author = agent.or_else(|| str_of(row, "authorName")).unwrap_or("Someone");
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::SM;
-                    avatar::small(ui, author, AVATAR);
+                    if agent.is_some() {
+                        w::agent_mark(ui, AVATAR);
+                    } else {
+                        avatar::small(ui, author, AVATAR);
+                    }
                     value(ui, author);
+                    if let Some((word, ink)) = note_kind(str_of(row, "kind").unwrap_or("note")) {
+                        ui.label(RichText::new(word).size(text::SMALL).color(ink));
+                    }
                     if let Some(at) = str_of(row, "createdAt") {
                         ui.label(
                             RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_MUTED),
@@ -1569,6 +1942,19 @@ fn notes(
         );
         local.posting_note = true;
     }
+}
+
+/// What kind of entry a note is, when it is more than a note: the word beside
+/// its author, and its ink. Colour only where it asked something of a person.
+fn note_kind(kind: &str) -> Option<(&'static str, egui::Color32)> {
+    Some(match kind {
+        "progress" => ("progress", colour::TEXT_MUTED),
+        "question" => ("asked", colour::WARN),
+        "answer" => ("answered", colour::TEXT_MUTED),
+        "submission" => ("submitted for review", colour::AGENT),
+        "review" => ("reviewed", colour::INFO),
+        _ => return None,
+    })
 }
 
 // -------------------------------------------------------------------- run log
@@ -1740,7 +2126,7 @@ fn me_str(app: &App, key: &str) -> String {
 
 /// "3 days ago". The rail has room for words where a table column has room for
 /// "3d", and a relative date is the one you can read without arithmetic.
-fn ago(raw: &str) -> String {
+pub(super) fn ago(raw: &str) -> String {
     let Ok(then) = DateTime::parse_from_rfc3339(raw) else {
         return String::new();
     };
@@ -1766,5 +2152,97 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
+    }
+}
+
+// ------------------------------------------------------ archive and delete
+
+/// The more-actions menu, with what the viewer may do. A task archived along
+/// with its project has no Restore of its own: the project's brings it back.
+fn task_menu(ui: &mut egui::Ui, task: &Value) -> Option<Act> {
+    let flag = |k: &str| task.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let set = |k: &str| task.get(k).is_some_and(|v| !v.is_null());
+    let mut acts: Vec<(Act, &str)> = Vec::new();
+    if flag("canArchive") && !set("projectArchivedAt") {
+        acts.push(if set("archivedAt") { (Act::Restore, "Restore") } else { (Act::Archive, "Archive") });
+    }
+    if flag("canDelete") {
+        acts.push((Act::Delete, "Delete"));
+    }
+    if acts.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = acts.iter().map(|(_, l)| *l).collect();
+    viz::more(ui, &labels).map(|i| acts[i].0)
+}
+
+fn send_archive(net: &mut crate::desktop::net::Net, task_id: &str, act: Act, local: &mut Local) {
+    let path = format!("/api/user/tasks/{task_id}");
+    net.invalidate(ARCHIVE_KEY);
+    match act {
+        Act::Archive => net.post(ARCHIVE_KEY, &format!("{path}/archive"), json!({})),
+        Act::Restore => net.post(ARCHIVE_KEY, &format!("{path}/restore"), json!({})),
+        Act::Delete => net.send(ARCHIVE_KEY, reqwest::Method::DELETE, &path, Value::Null),
+    }
+    local.notice = None;
+    local.ask = None;
+    local.acting = Some(act);
+}
+
+/// Fold in the reply. True when the task was deleted.
+fn settle_archive(net: &mut crate::desktop::net::Net, local: &mut Local) -> bool {
+    let Some(act) = local.acting.filter(|_| !net.is_loading(ARCHIVE_KEY)) else { return false };
+    local.acting = None;
+    let ok = matches!(net.peek(ARCHIVE_KEY), Some(Ok(_)));
+    if let Some(Err(e)) = net.peek(ARCHIVE_KEY) {
+        local.notice = Some((e.clone(), true));
+    }
+    net.invalidate(ARCHIVE_KEY);
+    if ok {
+        super::board::after_archive(net);
+        local.notice = match act {
+            Act::Archive => Some(("Archived.".to_owned(), false)),
+            Act::Restore => Some(("Restored.".to_owned(), false)),
+            Act::Delete => None,
+        };
+    }
+    ok && act == Act::Delete
+}
+
+/// "Archive this task?" or "Delete this task?". One click each: a task is one
+/// row, not a project's worth, and archiving is undone from the same menu.
+fn archive_confirm(
+    ctx: &egui::Context,
+    net: &mut crate::desktop::net::Net,
+    task_id: &str,
+    task: &Value,
+    local: &mut Local,
+) {
+    let Some(act) = local.ask else { return };
+    let title = str_of(task, "title").unwrap_or("this task");
+    let (mut go, mut close) = (false, false);
+    let modal = super::agents::dialog(ctx, "task:confirm", super::agents::DIALOG_W * 0.8, |ui| {
+        let delete = act == Act::Delete;
+        super::agents::heading(ui, &format!("{} \u{201c}{title}\u{201d}?", if delete { "Delete" } else { "Archive" }));
+        ui.add_space(space::XS);
+        w::muted(
+            ui,
+            if delete {
+                "Its notes, run log and links go with it. This cannot be undone \u{2014} archive it instead to keep it."
+            } else {
+                "It leaves the board, Home and everyone\u{2019}s task lists. Restore it from this page any time."
+            },
+        );
+        ui.add_space(space::XL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            go = if delete { w::danger(ui, "Delete task", true) } else { w::primary(ui, "Archive", true) }.clicked();
+            close = w::ghost(ui, "Cancel").clicked();
+        });
+    });
+    if go {
+        send_archive(net, task_id, act, local);
+    } else if close || modal.should_close() {
+        local.ask = None;
     }
 }

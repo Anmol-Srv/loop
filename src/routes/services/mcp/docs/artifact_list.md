@@ -13,7 +13,9 @@ documents, and links. This is how you find the PR that closed a task.
 ## Returns
 
 A JSON array of artifacts: `id`, `parentType`, `parentId`, `kind`, `url`,
-`title`, `metadata`, `addedBy`, `createdAt`.
+`title`, `metadata`, `addedBy` (`{id, name}` or null), `addedByAgent` (the
+agent's name when one attached it), `canRemove` (whether you may remove it:
+only whoever added it can), `createdAt`.
 
 ## Example
 

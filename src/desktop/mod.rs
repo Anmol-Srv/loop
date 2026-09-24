@@ -16,6 +16,7 @@ pub enum Tab {
     Home,
     MyTasks,
     Projects,
+    Agents,
 }
 
 pub struct App {

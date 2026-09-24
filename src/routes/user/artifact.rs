@@ -54,7 +54,7 @@ async fn list(
     Query(q): Query<ArtifactQuery>,
 ) -> AppResult<ApiResponse<Vec<Artifact>>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::artifact::list(&state, q.parent_type, q.parent_id).await?))
+    Ok(ApiResponse::ok(controllers::artifact::list(&state, caller.actor.person_id, q.parent_type, q.parent_id).await?))
 }
 
 async fn remove(

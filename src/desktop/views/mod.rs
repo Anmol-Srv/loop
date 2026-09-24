@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod board;
 pub mod projects;
 pub mod chrome;

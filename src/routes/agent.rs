@@ -1,0 +1,237 @@
+//! `/api/agent/*`: the routes a personal agent calls with its own token.
+//!
+//! Authorised by the agent and what is delegated to it, never by scope — an
+//! agent credential holds none. A person's session is refused with a
+//! sentence. Errors are read by models, so they say what to do next.
+
+use axum::extract::{Path, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::Value;
+use uuid::Uuid;
+
+use crate::controllers::agent::{self, Event};
+use crate::controllers::note::Note;
+use crate::db::AppState;
+use crate::errors::AppResult;
+use crate::middleware::auth::Caller;
+use crate::models::artifact::Artifact;
+use crate::models::task::TaskRow;
+use crate::response::ApiResponse;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/agent/hello", post(hello))
+        .route("/api/agent/me", get(me))
+        .route("/api/agent/tasks", get(tasks))
+        .route("/api/agent/tasks/{id}", get(context))
+        .route("/api/agent/tasks/{id}/ack", post(ack))
+        .route("/api/agent/tasks/{id}/update", post(update))
+        .route("/api/agent/tasks/{id}/ask", post(ask))
+        .route("/api/agent/tasks/{id}/attach", post(attach))
+        .route("/api/agent/tasks/{id}/note", post(note))
+        .route("/api/agent/tasks/{id}/submit", post(submit))
+        .route("/api/agent/events", get(events))
+        .route("/api/agent/events/ack", post(ack_events))
+        .route("/api/agent/inbox", get(inbox))
+        .route("/api/agent/skill", get(skill))
+        .route("/api/agent/onboarding", get(onboarding))
+}
+
+/// Where agents reach this server: `PUBLIC_URL` when set, otherwise what the
+/// request came in on. Behind a proxy that sets neither header correctly,
+/// set `PUBLIC_URL`.
+pub fn server_url(headers: &HeaderMap) -> String {
+    if let Ok(url) = std::env::var("PUBLIC_URL") {
+        if !url.trim().is_empty() {
+            return url.trim().trim_end_matches('/').to_owned();
+        }
+    }
+    let header = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
+    let host = header("x-forwarded-host").or(header("host")).unwrap_or("localhost:8080");
+    let proto = header("x-forwarded-proto").unwrap_or("http");
+    format!("{proto}://{host}")
+}
+
+fn text(content_type: &'static str, body: String) -> Response {
+    ([(CONTENT_TYPE, content_type)], body).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct HelloBody {
+    #[serde(default)]
+    pub runtime: Option<String>,
+    // `version` is accepted and ignored, like any unknown field.
+}
+
+async fn hello(
+    State(state): State<AppState>,
+    caller: Caller,
+    headers: HeaderMap,
+    body: Option<Json<HelloBody>>,
+) -> AppResult<ApiResponse<Value>> {
+    let id = caller.agent()?;
+    let runtime = body.and_then(|Json(b)| b.runtime);
+    Ok(ApiResponse::ok(agent::hello(&state, id, runtime.as_deref(), &server_url(&headers)).await?))
+}
+
+async fn me(State(state): State<AppState>, caller: Caller, headers: HeaderMap) -> AppResult<ApiResponse<Value>> {
+    Ok(ApiResponse::ok(agent::me(&state, caller.agent()?, &server_url(&headers)).await?))
+}
+
+async fn tasks(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<TaskRow>>> {
+    Ok(ApiResponse::ok(agent::tasks(&state, caller.agent()?).await?))
+}
+
+async fn context(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Value>> {
+    Ok(ApiResponse::ok(agent::context(&state, caller.agent()?, id).await?))
+}
+
+async fn ack(State(state): State<AppState>, Path(id): Path<Uuid>, caller: Caller) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(agent::ack(&state, caller.agent()?, id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBody {
+    pub body: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// The status the agent last read. When it is no longer true the move is
+    /// refused with a 409 naming who moved it.
+    #[serde(default)]
+    pub expected_status: Option<String>,
+}
+
+async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<UpdateBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(
+        agent::update(&state, caller.agent()?, id, &b.body, b.status, b.expected_status).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct BodyOnly {
+    pub body: String,
+}
+
+async fn ask(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<BodyOnly>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(agent::ask(&state, caller.agent()?, id, &b.body).await?))
+}
+
+async fn note(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<BodyOnly>,
+) -> AppResult<ApiResponse<Note>> {
+    Ok(ApiResponse::ok(agent::note(&state, caller.agent()?, id, &b.body).await?))
+}
+
+#[derive(Deserialize)]
+pub struct AttachBody {
+    pub kind: String,
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+}
+
+async fn attach(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<AttachBody>,
+) -> AppResult<ApiResponse<Artifact>> {
+    Ok(ApiResponse::ok(agent::attach(&state, caller.agent()?, id, &b.kind, &b.url, &b.title).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitBody {
+    pub target: String,
+    pub summary: String,
+    #[serde(default)]
+    pub manual_reason: Option<String>,
+}
+
+async fn submit(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<SubmitBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(
+        agent::submit(&state, caller.agent()?, id, &b.target, &b.summary, b.manual_reason).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    pub after: Option<i64>,
+    #[serde(default)]
+    pub wait: u64,
+}
+
+async fn events(
+    State(state): State<AppState>,
+    caller: Caller,
+    Query(q): Query<EventsQuery>,
+) -> AppResult<ApiResponse<Vec<Event>>> {
+    Ok(ApiResponse::ok(agent::events(&state, caller.agent()?, q.after, q.wait).await?))
+}
+
+#[derive(Deserialize)]
+pub struct AckEventsBody {
+    pub through: i64,
+}
+
+async fn ack_events(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(b): Json<AckEventsBody>,
+) -> AppResult<ApiResponse<Value>> {
+    let cursor = agent::ack_events(&state, caller.agent()?, b.through).await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "eventCursor": cursor })))
+}
+
+async fn inbox(State(state): State<AppState>, caller: Caller) -> AppResult<Response> {
+    Ok(text("text/plain; charset=utf-8", agent::inbox(&state, caller.agent()?).await?))
+}
+
+async fn skill(State(state): State<AppState>, caller: Caller, headers: HeaderMap) -> AppResult<Response> {
+    let body = agent::skill(&state, caller.agent()?, &server_url(&headers)).await?;
+    Ok(text("text/markdown; charset=utf-8", body))
+}
+
+#[derive(Deserialize)]
+pub struct OnboardingQuery {
+    pub runtime: Option<String>,
+}
+
+async fn onboarding(
+    State(state): State<AppState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Query(q): Query<OnboardingQuery>,
+) -> AppResult<Response> {
+    let body =
+        agent::onboarding(&state, caller.agent()?, q.runtime.as_deref(), &server_url(&headers)).await?;
+    Ok(text("text/markdown; charset=utf-8", body))
+}

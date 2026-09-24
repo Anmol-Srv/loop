@@ -14,6 +14,8 @@ pub struct Caller {
     /// 'session' or 'agent'. An agent's `person_id` is its owner's, so the
     /// person id alone cannot tell a person from their agent — this can.
     pub kind: String,
+    /// The agent an agent credential speaks for; `None` for a session.
+    pub agent_id: Option<uuid::Uuid>,
 }
 
 /// However recently a session was used, it ends this long after sign-in, so a
@@ -40,6 +42,17 @@ impl Caller {
         self.actor
             .person_id
             .ok_or_else(|| AppError::Forbidden("this credential is not tied to a person".into()))
+    }
+
+    /// The agent behind an agent credential. The `/api/agent` routes and the
+    /// agent MCP tools start here, so a person's session is turned away with
+    /// a sentence rather than acting as an agent.
+    pub fn agent(&self) -> AppResult<uuid::Uuid> {
+        self.agent_id.ok_or_else(|| {
+            AppError::Forbidden(
+                "this is for agent credentials; connect an agent from the Agents page and use its token".into(),
+            )
+        })
     }
 
     /// A mutation needs either `propose` (queues as pending) or `write`
@@ -88,6 +101,21 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
         touch(db, &row).await?;
     }
 
+    // An agent's "last seen" is what its owner reads to know it is alive, so
+    // it is finer than the credential's: to the minute. The WHERE makes the
+    // write a no-op inside the minute.
+    // ponytail: one UPDATE per agent call; batch in memory if agents ever
+    // call often enough for that to show.
+    if let Some(agent) = row.agent_id {
+        sqlx::query(
+            "UPDATE agent SET last_seen_at = now()
+              WHERE id = $1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '1 minute')",
+        )
+        .bind(agent)
+        .execute(db)
+        .await?;
+    }
+
     Ok(Caller {
         actor: Actor {
             label: row.label,
@@ -96,6 +124,7 @@ pub async fn resolve(db: &PgPool, raw: &str) -> AppResult<Caller> {
         },
         scopes: row.scopes,
         kind: row.kind,
+        agent_id: row.agent_id,
     })
 }
 

@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -46,7 +46,9 @@ fn default_priority() -> i32 {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/projects", post(create).get(list))
-        .route("/api/user/projects/{id}", get(show).patch(update))
+        .route("/api/user/projects/{id}", get(show).patch(update).delete(remove))
+        .route("/api/user/projects/{id}/archive", post(archive))
+        .route("/api/user/projects/{id}/restore", post(restore))
         .route("/api/user/projects/{id}/flow", get(flow))
         .route("/api/user/projects/{id}/tasks", post(add_task))
 }
@@ -73,9 +75,13 @@ async fn create(
     Ok(ApiResponse::ok(project))
 }
 
-async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<ProjectRow>>> {
+async fn list(
+    State(state): State<AppState>,
+    caller: Caller,
+    Query(q): Query<super::task::ArchivedQuery>,
+) -> AppResult<ApiResponse<Vec<ProjectRow>>> {
     caller.require("read")?;
-    let projects = controllers::project::list(&state).await?;
+    let projects = controllers::project::list(&state, caller.actor.person_id, q.archived).await?;
     Ok(ApiResponse::ok(projects))
 }
 
@@ -95,7 +101,31 @@ async fn show(
     caller: Caller,
 ) -> AppResult<ApiResponse<Project>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::project::get(&state, id).await?))
+    Ok(ApiResponse::ok(controllers::project::get(&state, id, caller.actor.person_id).await?))
+}
+
+async fn archive(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Project>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::project::set_archived(&state, &caller.actor, id, true).await?))
+}
+
+async fn restore(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Project>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::project::set_archived(&state, &caller.actor, id, false).await?))
+}
+
+async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>, caller: Caller) -> AppResult<ApiResponse<serde_json::Value>> {
+    caller.can_mutate()?;
+    controllers::project::delete(&state, &caller.actor, id).await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "id": id, "deleted": true })))
 }
 
 async fn add_task(

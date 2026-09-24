@@ -24,6 +24,8 @@ use crate::desktop::App;
 /// The personal list. Prefixed `mytasks` so any view that moves a task can drop
 /// it with one `invalidate_prefix`.
 const MINE: &str = "mytasks:mine";
+/// The archived ones, under the Archived toggle.
+const ARCHIVED: &str = "mytasks:archived";
 /// This view owns its filters and nothing else reads them, so they live in
 /// egui's temp store rather than growing `App`.
 const FILTERS: &str = "mytasks:filters";
@@ -41,6 +43,8 @@ struct State {
     status: Option<String>,
     project: Option<String>,
     priority: Option<String>,
+    /// The archived tasks instead of the live ones.
+    archived: bool,
 }
 
 /// The status vocabulary, in the order it reads in the menu: both tracks' happy
@@ -81,16 +85,20 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
 
     let net = app.net.as_mut().unwrap();
+    let key = if state.archived { ARCHIVED } else { MINE };
     net.get_once(MINE, "/api/user/tasks/mine");
+    if state.archived {
+        net.get_once(ARCHIVED, "/api/user/tasks/mine?archived=true");
+    }
 
-    let loading = net.is_loading(MINE);
-    let error = net.error(MINE).map(str::to_owned);
-    let generation = net.generation(MINE);
-    let tasks = net.shared(MINE).unwrap_or_else(|| Arc::new(Value::Null));
+    let loading = net.is_loading(key);
+    let error = net.error(key).map(str::to_owned);
+    let generation = net.generation(key);
+    let tasks = net.shared(key).unwrap_or_else(|| Arc::new(Value::Null));
 
     // Newest first, whatever order the server sent. One sort, here, so the
     // filters below never reshuffle the list as they narrow it.
-    let sorted = memo(ui.ctx(), egui::Id::new(SORTED), generation, || {
+    let sorted = memo(ui.ctx(), egui::Id::new(SORTED), (key, generation), || {
         let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
         let mut order: Vec<usize> = (0..all.len()).collect();
         order.sort_by(|&a, &b| {
@@ -124,7 +132,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
-    if rows.is_empty() {
+    // The archived list may be empty; its toggle is still the way back.
+    if rows.is_empty() && !state.archived {
         if loading {
             w::loading(ui, "Loading your work");
         } else {
@@ -137,7 +146,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    let picked = memo(ui.ctx(), egui::Id::new(SHOWN), (generation, state.clone()), || {
+    let picked = memo(ui.ctx(), egui::Id::new(SHOWN), (key, generation, state.clone()), || {
         (0..rows.len()).filter(|&i| keep(rows[i], &state)).collect::<Vec<usize>>()
     });
     let shown: Vec<&Value> = picked.iter().map(|&i| rows[i]).collect();
@@ -156,7 +165,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(space::SM);
 
     let mut open_task: Option<String> = None;
-    if shown.is_empty() {
+    if rows.is_empty() {
+        w::empty(ui, "Nothing archived.", "Tasks of yours that are archived show here.");
+    } else if shown.is_empty() {
         w::empty(ui, "Nothing matches.", "Clear a filter, or search for something else.");
     } else {
         let clicked = table::show(ui, TABLE, &COLS, shown.len(), |row, i| {
@@ -190,6 +201,10 @@ fn filter_bar(ui: &mut egui::Ui, state: &mut State, projects: &[&str]) {
         let priorities: Vec<(String, String)> =
             (0..=4).map(|p| (p.to_string(), format!("P{p}"))).collect();
         viz::select(ui, "Any priority", &priorities, &mut state.priority);
+
+        if viz::filter(ui, "Archived", state.archived, false).clicked() {
+            state.archived = !state.archived;
+        }
 
         if *state != State::default() && viz::clear(ui).clicked() {
             *state = State::default();
@@ -235,8 +250,10 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     row.at(0, |ui| {
         // Finished work stays legible and stops competing: the rows above it
         // are the ones with something to decide.
-        let ink = if done { colour::TEXT_MUTED } else { colour::TEXT };
+        let ink = if done || super::board::archived(t) { colour::TEXT_MUTED } else { colour::TEXT };
         table::strong_label(ui, str_at(t, "title").unwrap_or_default(), ink);
+        // You are the owner of every row here, so the mark rides on the title.
+        super::home::agent_marker(ui, t);
         // Blocked rides behind the title rather than replacing the status:
         // the status is still true, the blocker is why it is not moving.
         if blocked(t) {
@@ -256,7 +273,11 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     });
 
     row.at(3, |ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), true);
+        if super::board::archived(t) {
+            super::board::archived_chip(ui);
+        } else {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
+        }
     });
 
     row.muted(4, project_of(t));

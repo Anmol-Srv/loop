@@ -8,9 +8,11 @@
 FROM rust:1.96-slim-trixie AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY migrations ./migrations
+# The agent skill and onboarding docs are compiled in, served at /api/agent/*.
+COPY agent-kit ./agent-kit
 RUN cargo build --release --bins
 
 FROM debian:trixie-slim

@@ -27,7 +27,7 @@ The lookup tool is `prod_db_query` (Hermes plugin `airtribe-prod-db`, source `he
 
 TLS: with no CA file the tool uses `sslmode=require` (encrypted, chain unverified). Place DigitalOcean's cluster CA at `~/.hermes/profiles/airtribe/certs/prod-db-ca.crt` (or set `AIRTRIBE_PROD_DB_CA`) and it switches to `verify-full` automatically. Never ask for a certificate or credential in chat; if the tool is missing, stop and report that the profile environment or plugin is not configured.
 
-- Never include the URL, password, host, port, database name, or decoded connection fields in a skill, command, task brief, control-plane task record, source file, PR, log, or chat response.
+- Never include the URL, password, host, port, database name, or decoded connection fields in a skill, command, task brief, task record, source file, PR, log, or chat response.
 - Treat a URL pasted into chat as exposed. Do not copy it from conversation history; rotate the underlying password through normal operations.
 - The configured database principal must be a true database-level read-only role. The tool checks this before every lookup and rejects a write-capable role rather than trusting the URL label.
 

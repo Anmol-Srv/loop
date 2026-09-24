@@ -91,6 +91,33 @@ pub fn dot(ui: &mut Ui, c: Color32) {
     ui.painter().circle_filled(rect.center(), size::DOT / 2.0 - 0.5, c);
 }
 
+/// The agent mark: a small robot head, painted — the UI font has no glyph for
+/// it, and one shape everywhere is what lets "an agent holds this" read at a
+/// glance in a table, a rail and a thread alike.
+pub fn agent_mark(ui: &mut Ui, side: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    paint_agent_mark(ui.painter(), rect, colour::AGENT);
+    response
+}
+
+pub fn paint_agent_mark(p: &egui::Painter, rect: egui::Rect, ink: Color32) {
+    let s = rect.width();
+    let stroke = egui::Stroke::new((s / 11.0).max(1.0), ink);
+    // The head sits low in the square, leaving the top for the antenna.
+    let head = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + s * 0.12, rect.top() + s * 0.34),
+        egui::pos2(rect.right() - s * 0.12, rect.bottom() - s * 0.06),
+    );
+    p.rect_stroke(head, s * 0.16, stroke, egui::StrokeKind::Inside);
+    let eye_y = head.center().y;
+    for dx in [-0.17, 0.17] {
+        p.circle_filled(egui::pos2(head.center().x + s * dx, eye_y), s * 0.075, ink);
+    }
+    let top = egui::pos2(head.center().x, rect.top() + s * 0.12);
+    p.line_segment([top, egui::pos2(top.x, head.top())], stroke);
+    p.circle_filled(top, s * 0.08, ink);
+}
+
 /// A tinted pill. For one-off state, not for every row.
 pub fn pill(ui: &mut Ui, label: &str, c: Color32) {
     let pad = Vec2::new(space::SM, space::XXS);
@@ -164,42 +191,15 @@ pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
 
 // ---------------------------------------------------------------- surfaces
 
-/// The glass edge: three strokes, brightest on top.
-///
-/// Real glass catches light along its upper rim and loses it toward the
-/// bottom. One flat border cannot say that, which is why a translucent
-/// rectangle never quite reads as glass. bencho.dev encodes the same idea as
-/// `--edge-hi .75 / --edge-far .42 / --edge-lo .18`; this is that, adapted for
-/// a dark surface where the light is weaker.
+/// The glass edge: one even hairline all round, brighter on hover. No lit top
+/// rim; it read as a stray border on every card.
 pub fn glass_edge(ui: &Ui, rect: egui::Rect, r: f32, hovered: bool) {
-    let (hi, mid, lo) = if hovered {
-        (colour::EDGE_HI_HOVER, colour::EDGE_MID_HOVER, colour::EDGE_MID)
-    } else {
-        (colour::EDGE_HI, colour::EDGE_MID, colour::EDGE_LO)
-    };
-    let p = ui.painter();
-
-    // Sides and bottom carry the dim tone; the rounded rect gives the corners.
-    p.rect_stroke(rect, r, egui::Stroke::new(1.0, mid), egui::StrokeKind::Inside);
-    p.line_segment(
-        [
-            egui::pos2(rect.left() + r, rect.bottom() - 0.5),
-            egui::pos2(rect.right() - r, rect.bottom() - 0.5),
-        ],
-        egui::Stroke::new(1.0, lo),
-    );
-    // The top rim, catching the light. This is the line that sells it.
-    p.line_segment(
-        [
-            egui::pos2(rect.left() + r, rect.top() + 0.5),
-            egui::pos2(rect.right() - r, rect.top() + 0.5),
-        ],
-        egui::Stroke::new(1.0, hi),
-    );
+    let tone = if hovered { colour::EDGE_MID_HOVER } else { colour::EDGE_MID };
+    ui.painter().rect_stroke(rect, r, egui::Stroke::new(1.0, tone), egui::StrokeKind::Inside);
 }
 
-/// A glass card. Translucent, so the sidebar wash shows through, with the
-/// gradient rim above doing the work a shadow would do elsewhere.
+/// A glass card. Translucent, so the sidebar wash shows through, with a
+/// hairline edge doing the work a shadow would do elsewhere.
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
     glass_panel(ui, false, add)
 }
@@ -384,6 +384,9 @@ fn button_with(
         Vec2::new(width, height),
         if enabled { Sense::click() } else { Sense::hover() },
     );
+    // Painted by hand, so it names itself for the accessibility tree: a
+    // screen reader, and a test that clicks a button by its label.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     // Keyboard operability, applied once here rather than at every call site.
     let response = if enabled {
         super::motion::operable(ui, response, radius::SM as f32)
@@ -530,8 +533,12 @@ pub fn field_multiline(
     hint: &str,
 ) -> Response {
     ui.vertical(|ui| {
-        caption(ui, label);
-        ui.add_space(space::XXS);
+        // An unlabelled box (a comment box, an answer box) takes no caption
+        // row: an empty one left a blank line above it.
+        if !label.is_empty() {
+            caption(ui, label);
+            ui.add_space(space::XXS);
+        }
         ui.add_sized(
             [ui.available_width(), size::CONTROL * rows as f32],
             egui::TextEdit::multiline(value)

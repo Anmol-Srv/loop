@@ -92,19 +92,11 @@ pub mod colour {
     pub const GLASS_HOVER: Color32 = Color32::from_rgba_premultiplied(0x1A, 0x1A, 0x1A, 0x1A);
     pub const GLASS_ACTIVE: Color32 = Color32::from_rgba_premultiplied(0x24, 0x24, 0x24, 0x24);
 
-    // ---- the glass edge, as a gradient rather than one flat stroke.
-    //
-    // Real glass catches light on its top edge and loses it toward the bottom.
-    // bencho.dev encodes exactly this as --edge-hi .75 / --edge-far .42 /
-    // --edge-lo .18, and it is the difference between "glass" and "translucent
-    // rectangle". Three tones, brightest on top.
-    /// Top edge, catching the light.
-    pub const EDGE_HI: Color32 = Color32::from_rgba_premultiplied(0x40, 0x40, 0x40, 0x40);
-    /// The sides.
+    // ---- the glass edge: one even hairline, brighter on hover.
+    /// The resting edge.
     pub const EDGE_MID: Color32 = Color32::from_rgba_premultiplied(0x1C, 0x1C, 0x1C, 0x1C);
-    /// Bottom edge, in shadow.
-    pub const EDGE_LO: Color32 = Color32::from_rgba_premultiplied(0x0E, 0x0E, 0x0E, 0x0E);
-    /// Every edge brightens on hover — the lift is in the rim, not a shadow.
+    /// Hover: the lift is in the edge, not a shadow. `_HI_` is the secondary
+    /// button's brighter rim.
     pub const EDGE_HI_HOVER: Color32 = Color32::from_rgba_premultiplied(0x5E, 0x5E, 0x5E, 0x5E);
     pub const EDGE_MID_HOVER: Color32 = Color32::from_rgba_premultiplied(0x2E, 0x2E, 0x2E, 0x2E);
 
@@ -189,15 +181,14 @@ pub mod text {
     pub const CAPTION: f32 = 10.5;
 }
 
-/// Slight curve, never round.
-/// Slight curve, never round — except pills, which are fully round.
-/// bencho.dev leans harder on both ends (28px cards, 999px pills); we keep the
-/// cards tighter because this is a dense board, not a gallery.
+/// Slight curve, never round. Only count badges and avatars are circles.
+/// bencho.dev leans much harder (28px cards, 999px pills); this is a dense
+/// board, not a gallery.
 pub mod radius {
-    pub const SM: u8 = 6;
-    pub const MD: u8 = 10;
-    pub const LG: u8 = 14;
-    pub const XL: u8 = 18;
+    pub const SM: u8 = 4;
+    pub const MD: u8 = 6;
+    pub const LG: u8 = 8;
+    pub const XL: u8 = 10;
     pub const PILL: u8 = 99;
 }
 

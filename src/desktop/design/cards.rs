@@ -82,15 +82,16 @@ pub fn chip(ui: &mut Ui, label: &str, tone: Tone, dot: bool) -> Response {
         Vec2::new(galley.size().x + dot_w + pad_x * 2.0, height),
         Sense::hover(),
     );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
 
     let p = ui.painter();
     if fill != Color32::TRANSPARENT {
-        p.rect_filled(rect, radius::PILL as f32, fill);
+        p.rect_filled(rect, radius::SM as f32, fill);
     }
     if stroke != Color32::TRANSPARENT {
         p.rect_stroke(
             rect,
-            radius::PILL as f32,
+            radius::SM as f32,
             egui::Stroke::new(1.0, stroke),
             egui::StrokeKind::Inside,
         );
@@ -300,13 +301,13 @@ pub fn slim_card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
     out.response
 }
 
-/// A page's tab strip: a pill group, not underlines.
+/// A page's tab strip: a segmented group, not underlines.
 pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
     let mut clicked = None;
     egui::Frame::new()
         .fill(colour::SURFACE)
         .stroke(egui::Stroke::new(1.0, colour::LINE))
-        .corner_radius(radius::PILL)
+        .corner_radius(radius::SM)
         .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -322,10 +323,10 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                         Vec2::new(galley.size().x + space::MD * 2.0, 24.0),
                         Sense::click(),
                     );
-                    let response = motion::operable(ui, response, radius::PILL as f32);
+                    let response = motion::operable(ui, response, radius::SM as f32);
                     if on {
                         ui.painter()
-                            .rect_filled(rect, radius::PILL as f32, colour::SURFACE_ACTIVE);
+                            .rect_filled(rect, radius::SM as f32, colour::SURFACE_ACTIVE);
                     } else {
                         let tint = motion::hover_fill(
                             ui,
@@ -334,7 +335,7 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                             Color32::TRANSPARENT,
                             colour::SURFACE_HOVER,
                         );
-                        ui.painter().rect_filled(rect, radius::PILL as f32, tint);
+                        ui.painter().rect_filled(rect, radius::SM as f32, tint);
                         if response.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }

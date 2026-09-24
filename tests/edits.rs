@@ -146,12 +146,13 @@ async fn token_of(pool: &PgPool) -> String {
 
 #[sqlx::test]
 async fn a_removed_link_leaves_an_audit_row(pool: PgPool) {
-    let (token, _) = person(&pool, "a@airtribe.live", "backend").await;
+    let (token, me) = person(&pool, "a@airtribe.live", "backend").await;
     let (project_id, _) = project(&pool).await;
     let artifact: Uuid = sqlx::query_scalar(
-        "INSERT INTO artifact (parent_type, parent_id, kind, url) VALUES ('project', $1, 'doc', 'https://d') RETURNING id",
+        "INSERT INTO artifact (parent_type, parent_id, kind, url, added_by)
+         VALUES ('project', $1, 'doc', 'https://d', $2) RETURNING id",
     )
-    .bind(project_id).fetch_one(&pool).await.unwrap();
+    .bind(project_id).bind(me).fetch_one(&pool).await.unwrap();
 
     let (status, _) = call(&pool, "DELETE", &format!("/api/user/artifacts/{artifact}"), &token,
         serde_json::Value::Null).await;

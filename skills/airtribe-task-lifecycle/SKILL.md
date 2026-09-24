@@ -17,9 +17,7 @@ Use this skill for every mycohort-api coding task. Hermes is the control plane; 
 
 ## Where task state lives
 
-The durable ledger is the **Airtribe Control Plane** (`acp`): the server at `http://localhost:8080`, with the Mac app as its dashboard. Every task record, state transition, and evidence pointer belongs there. The task folder at `/Users/anmol/Drive/Airtribe/.airtribe-worktrees/tasks/<task-id>/` holds `TASK.md` and `EVENTS.md` as a human-readable mirror of that ledger, not as a second source of truth. Reactor contract: `TASK.md` must contain the acp task id and `**Branch:**` / `**Worktree:**` lines (the `**Key:** value` form), otherwise `reactor/react.py` reports "needs brief" and never launches a worker.
-
-Ownership is split: a **deterministic reactor** (`reactor/react.py`, no LLM) owns task pickup, worker liveness, and mechanical verification. Hermes owns planning, task briefs, and judgement-based review.
+The task folder at `/Users/anmol/Drive/Airtribe/.airtribe-worktrees/tasks/<task-id>/` is the record: `TASK.md` holds the brief, branch and worktree (`**Branch:**` / `**Worktree:**` lines), and `EVENTS.md` is the append-only trail of state transitions and evidence pointers.
 
 ## Non-negotiable boundaries
 
@@ -50,7 +48,7 @@ Ownership is split: a **deterministic reactor** (`reactor/react.py`, no LLM) own
 6. **Write a task brief.** Use `airtribe_bridge.py prepare` to create the locked worktree under `/Users/anmol/Drive/Airtribe/.airtribe-worktrees/` and its brief. Include the plan, invariants, acceptance tests, conditional verification requirements, source evidence, and an explicit `do not merge` instruction. Keep task metadata in the task folder, never inside the product repository.
    - Completion: a builder could implement without rediscovering the task's safety constraints.
 
-7. **Launch the worker.** Run `airtribe_bridge.py launch` to start one named tmux session containing the real Claude Code process in the selected worktree. Worker defaults: **model Opus 5, standard permissions, and always `--max-turns 200`** so a runaway session is capped. Record task ID, branch, worktree, tmux session, base SHA, and launch command in the control-plane task record.
+7. **Launch the worker.** Run `airtribe_bridge.py launch` to start one named tmux session containing the real Claude Code process in the selected worktree. Worker defaults: **model Opus 5, standard permissions, and always `--max-turns 200`** so a runaway session is capped. Record task ID, branch, worktree, tmux session, base SHA, and launch command in the task record (`EVENTS.md`).
    - Completion: a human can attach to the exact same tmux session through cmux; no second mutating worker exists in that worktree.
 
 8. **Handle human takeover.** If a human attaches, mark the task human-active. Do not respawn, inject prompts, or concurrently modify that worktree until the session returns control.
@@ -77,4 +75,4 @@ Ownership is split: a **deterministic reactor** (`reactor/react.py`, no LLM) own
 
 ## Verification
 
-A task is ready for PR only when its control-plane record names the worktree, branch, candidate SHA, test evidence, review verdict, and PR URL. A task may be marked done only after humans—not automation—remain the merge authority.
+A task is ready for PR only when its task record names the worktree, branch, candidate SHA, test evidence, review verdict, and PR URL. A task may be marked done only after humans—not automation—remain the merge authority.

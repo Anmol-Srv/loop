@@ -150,14 +150,14 @@ pub fn bar_row(ui: &mut Ui, name: &str, fill: f32, tint: Color32, right: &str, n
         let track_w = (ui.available_width() - right_w - space::SM).max(20.0);
         let (track, _) = ui.allocate_exact_size(Vec2::new(track_w, 12.0), Sense::hover());
         let p = ui.painter();
-        p.rect_filled(track, 3.0, colour::INSET);
+        p.rect_filled(track, 2.0, colour::INSET);
         if fill > 0.0 {
             p.rect_filled(
                 egui::Rect::from_min_size(
                     track.min,
                     Vec2::new(track.width() * fill.clamp(0.0, 1.0), track.height()),
                 ),
-                3.0,
+                2.0,
                 tint,
             );
         }
@@ -193,7 +193,7 @@ pub fn columns(ui: &mut Ui, values: &[f32], labels: &[&str], tint: Color32) {
         let x = rect.left() + i as f32 * (w + gap);
         p.rect_filled(
             egui::Rect::from_min_size(egui::pos2(x, rect.bottom() - h), Vec2::new(w, h)),
-            3.0,
+            2.0,
             tint,
         );
     }
@@ -474,6 +474,10 @@ fn menu_frame() -> egui::Frame {
 fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), size::CONTROL), Sense::click());
+    // Painted, so it names itself: a screen reader, and a test picking a row.
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
+    });
     let response = motion::operable(ui, response, radius::SM as f32);
 
     let fill = if selected {
@@ -657,6 +661,42 @@ pub fn multi_select(
             }
         });
     response
+}
+
+/// "More actions": three dots opening a menu of `items`. Returns the index
+/// picked this frame. The dots are painted — the text face has no ellipsis on
+/// the midline, and the icon font's is a hairline at this size.
+pub fn more(ui: &mut Ui, items: &[&str]) -> Option<usize> {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(HEIGHT), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More actions"));
+    let response = motion::operable(ui, response, radius::SM as f32);
+    let hot = response.hovered() || egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT, colour::SURFACE_HOVER);
+    let ink = if hot { colour::TEXT } else { colour::TEXT_MUTED };
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, fill);
+    for dx in [-5.0, 0.0, 5.0] {
+        p.circle_filled(rect.center() + Vec2::new(dx, 0.0), 1.6, ink);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let mut picked = None;
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .align(egui::RectAlign::BOTTOM_END)
+        .frame(menu_frame())
+        .width(MENU_MIN_W * 0.75)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, label) in items.iter().enumerate() {
+                if menu_row(ui, label, false, false).clicked() {
+                    picked = Some(i);
+                }
+            }
+        });
+    picked
 }
 
 /// Every control on the filter bar is this tall, including the clear button,

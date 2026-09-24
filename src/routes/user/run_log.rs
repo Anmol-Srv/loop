@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
-use axum::routing::post;
-use axum::{Json, Router};
+use axum::routing::get;
+use axum::Router;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -13,12 +13,6 @@ use crate::response::ApiResponse;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppendBody {
-    pub lines: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReadQuery {
     #[serde(default)]
     pub after_seq: i64,
@@ -26,18 +20,7 @@ pub struct ReadQuery {
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/user/tasks/{id}/logs", post(append).get(read))
-}
-
-async fn append(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    caller: Caller,
-    Json(body): Json<AppendBody>,
-) -> AppResult<ApiResponse<i64>> {
-    caller.require("claim")?;
-    let last_seq = controllers::run_log::append(&state, &caller.actor.label, id, body.lines).await?;
-    Ok(ApiResponse::ok(last_seq))
+        .route("/api/user/tasks/{id}/logs", get(read))
 }
 
 async fn read(

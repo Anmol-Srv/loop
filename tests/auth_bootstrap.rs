@@ -13,24 +13,28 @@ async fn bootstrap(pool: &PgPool) -> (AppState, String) {
 
 #[sqlx::test]
 async fn an_agent_cannot_hold_write(pool: PgPool) {
-    let (state, _) = bootstrap(&pool).await;
+    let (_state, _) = bootstrap(&pool).await;
 
-    let err = token::mint_agent(&state, "hermes", EMAIL, vec!["read".into(), "write".into()], 30)
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("write"), "got: {err}");
-
-    // And with the guard bypassed, the database still refuses.
+    // Agents are minted with no scopes at all; bypass that, and the database
+    // still refuses an agent that could apply.
     let person_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM person WHERE email = $1")
         .bind(EMAIL)
         .fetch_one(&pool)
         .await
         .unwrap();
-    let direct = sqlx::query(
-        "INSERT INTO credential (kind, label, token_hash, owner_id, scopes, expires_at)
-         VALUES ('agent', 'sneaky', 'deadbeef', $1, ARRAY['read','write'], now() + interval '1 day')",
+    let agent_id: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO agent (owner_id, handle, name) VALUES ($1, 'sneaky', 'Sneaky') RETURNING id",
     )
     .bind(person_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let direct = sqlx::query(
+        "INSERT INTO credential (kind, label, token_hash, owner_id, scopes, expires_at, agent_id)
+         VALUES ('agent', 'sneaky', 'deadbeef', $1, ARRAY['read','write'], now() + interval '1 day', $2)",
+    )
+    .bind(person_id)
+    .bind(agent_id)
     .execute(&pool)
     .await;
     assert!(direct.is_err(), "the constraint must reject an agent with write");
@@ -80,10 +84,11 @@ async fn revoking_a_person_ends_sessions_and_agents(pool: PgPool) {
     people::set_password(&state, EMAIL, &code, "correct horse battery").await.unwrap();
 
     let (session_raw, _) = token::mint_session(&state, EMAIL).await.unwrap();
-    let (agent_raw, _) =
-        token::mint_agent(&state, "hermes", EMAIL, vec!["read".into(), "propose".into()], 30)
-            .await
-            .unwrap();
+    let owner = people::id_of(&state, EMAIL).await.unwrap();
+    let agent_raw = acp_server::controllers::agent::create(&state, owner, "hermes", "", "hermes", "http://x")
+        .await
+        .unwrap()
+        .token;
 
     let revoked = people::revoke_person(&state, EMAIL).await.unwrap();
     assert_eq!(revoked, 2, "both the session and the agent must be revoked");

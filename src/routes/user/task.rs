@@ -67,6 +67,16 @@ pub struct TaskQuery {
     pub status: Option<String>,
     pub assignee_email: Option<String>,
     pub assignee_kind: Option<String>,
+    /// Only archived tasks. Without it, only live ones.
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// `?archived=true` on a list: only what is archived.
+#[derive(Deserialize)]
+pub struct ArchivedQuery {
+    #[serde(default)]
+    pub archived: bool,
 }
 
 pub fn routes() -> Router<AppState> {
@@ -76,7 +86,9 @@ pub fn routes() -> Router<AppState> {
         // The two literal paths are declared before `{id}` for a human reader;
         // the router prefers a static segment over a parameter regardless.
         .route("/api/user/tasks/mine", get(mine))
-        .route("/api/user/tasks/{id}", get(one).patch(update))
+        .route("/api/user/tasks/{id}", get(one).patch(update).delete(remove))
+        .route("/api/user/tasks/{id}/archive", post(archive))
+        .route("/api/user/tasks/{id}/restore", post(restore))
         .route("/api/user/tasks/{id}/assign", post(assign))
         .route("/api/user/tasks/{id}/details", patch(details))
         .route("/api/user/tasks/{id}/claim", post(claim))
@@ -118,8 +130,9 @@ async fn search(
         status: q.status,
         assignee_email: q.assignee_email,
         assignee_kind: q.assignee_kind,
+        archived: q.archived,
     };
-    Ok(ApiResponse::ok(controllers::task::all(&state, filter).await?))
+    Ok(ApiResponse::ok(controllers::task::all(&state, filter, caller.actor.person_id).await?))
 }
 
 async fn update(
@@ -182,15 +195,40 @@ async fn one(
     caller: Caller,
 ) -> AppResult<ApiResponse<TaskRow>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::task::get(&state, id).await?))
+    Ok(ApiResponse::ok(controllers::task::get(&state, id, caller.actor.person_id).await?))
 }
 
 async fn mine(
     State(state): State<AppState>,
     caller: Caller,
+    Query(q): Query<ArchivedQuery>,
 ) -> AppResult<ApiResponse<Vec<TaskRow>>> {
     caller.require("read")?;
-    Ok(ApiResponse::ok(controllers::task::mine(&state, caller.person_id()?).await?))
+    Ok(ApiResponse::ok(controllers::task::mine(&state, caller.person_id()?, q.archived).await?))
+}
+
+async fn archive(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<TaskRow>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::task::set_archived(&state, &caller.actor, id, true).await?))
+}
+
+async fn restore(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<TaskRow>> {
+    caller.can_mutate()?;
+    Ok(ApiResponse::ok(controllers::task::set_archived(&state, &caller.actor, id, false).await?))
+}
+
+async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>, caller: Caller) -> AppResult<ApiResponse<serde_json::Value>> {
+    caller.can_mutate()?;
+    controllers::task::delete(&state, &caller.actor, id).await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "id": id, "deleted": true })))
 }
 
 

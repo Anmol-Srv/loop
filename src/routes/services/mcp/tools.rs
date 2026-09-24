@@ -1,8 +1,10 @@
 //! The MCP tool registry.
 //!
-//! `scope` is the scope that unlocks the tool. Mutating tools are unlocked by
-//! `propose` *or* `write` — the difference is what happens when they run, not
-//! whether they are visible.
+//! Two sets. A person's token sees the board tools, filtered by scope:
+//! `scope` is the scope that unlocks the tool, and mutating tools are unlocked
+//! by `propose` *or* `write` — the difference is what happens when they run,
+//! not whether they are visible. An agent's token sees only the agent tools,
+//! which act on the tasks handed to it and nothing else.
 
 use serde_json::{json, Value};
 
@@ -119,42 +121,6 @@ pub fn all() -> Vec<ToolDef> {
             ),
             doc: include_str!("docs/artifact_add.md"),
         },
-        ToolDef {
-            name: "work_claim",
-            description: "Lease the next task assigned to an agent, or a named one. Returns null \
-                          when nothing is claimable. See the doc for the claim/heartbeat/log/\
-                          propose/release loop.",
-            scope: "claim",
-            input_schema: schema(json!({ "taskId": uuid }), &[]),
-            doc: include_str!("docs/work_claim.md"),
-        },
-        ToolDef {
-            name: "work_heartbeat",
-            description: "Extend your lease on a task by another 5 minutes. Call while working.",
-            scope: "claim",
-            input_schema: schema(json!({ "taskId": uuid }), &["taskId"]),
-            doc: include_str!("docs/work_heartbeat.md"),
-        },
-        ToolDef {
-            name: "work_release",
-            description: "Drop your lease and return the task to 'open' for another worker.",
-            scope: "claim",
-            input_schema: schema(json!({ "taskId": uuid }), &["taskId"]),
-            doc: include_str!("docs/work_release.md"),
-        },
-        ToolDef {
-            name: "run_log_append",
-            description: "Append lines to a task's run log. Requires that you hold its lease.",
-            scope: "claim",
-            input_schema: schema(
-                json!({
-                    "taskId": uuid,
-                    "lines": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-                }),
-                &["taskId", "lines"],
-            ),
-            doc: include_str!("docs/run_log_append.md"),
-        },
     ]
 }
 
@@ -169,4 +135,85 @@ pub fn for_scopes(scopes: &[String]) -> Vec<ToolDef> {
             other => has(other),
         })
         .collect()
+}
+
+/// What a personal agent may call: the `/api/agent` routes, as tools. Their
+/// documentation is the skill (`acp://skill`), not a page per tool.
+pub fn agent_tools() -> Vec<ToolDef> {
+    let uuid = json!({ "type": "string", "format": "uuid" });
+    let task_only = || schema(json!({ "taskId": uuid }), &["taskId"]);
+    let with_body = || schema(json!({ "taskId": uuid, "body": { "type": "string" } }), &["taskId", "body"]);
+    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef { name, description, scope: "agent", input_schema, doc: "" };
+    vec![
+        tool(
+            "agent_inbox",
+            "What needs you now: tasks handed to you and not yet acknowledged, and events you have not \
+             handled, oldest first. Start every wake-up here.",
+            schema(json!({}), &[]),
+        ),
+        tool("agent_tasks", "Every task currently handed to you.", schema(json!({}), &[])),
+        tool(
+            "task_context",
+            "Everything about one of your tasks: the task with its track and allowed next statuses, the \
+             project, the owner, every note oldest first, artifacts by kind, and related work (tasks it \
+             waits on and tasks waiting on it, with their PRs, commits and Figma links).",
+            task_only(),
+        ),
+        tool("task_ack", "Acknowledge a task handed to you, so your owner sees you have it.", task_only()),
+        tool(
+            "task_update",
+            "Post progress on your task, optionally moving it to open, in_progress or blocked. Finishing \
+             moves go through task_submit.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "body": { "type": "string" },
+                    "status": { "type": "string", "enum": ["open", "in_progress", "blocked"] },
+                    "expectedStatus": { "type": "string", "description": "The status you last read; the move is refused if someone changed it since." },
+                }),
+                &["taskId", "body"],
+            ),
+        ),
+        tool(
+            "task_ask",
+            "Ask your owner a question that only they can decide. The task shows as waiting on them until \
+             they answer.",
+            with_body(),
+        ),
+        tool(
+            "task_attach",
+            "Attach evidence or context to your task: a pr, commit, figma, doc or link.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "kind": { "type": "string", "enum": crate::models::artifact::ARTIFACT_KINDS },
+                    "url": { "type": "string", "description": "A web link; for a commit, its hash." },
+                    "title": { "type": "string" },
+                }),
+                &["taskId", "kind", "url"],
+            ),
+        ),
+        tool("task_note", "Leave a plain note on your task for the team.", with_body()),
+        tool(
+            "task_submit",
+            "Submit your task for your owner to approve, asking to move it to a finishing status \
+             (engineering: completed or shipped; design: handoff or completed). Evidence is checked now: \
+             engineering completed needs a pr or commit attached, design handoff needs a figma link, \
+             unless you give manualReason.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "target": { "type": "string", "enum": ["completed", "shipped", "handoff"] },
+                    "summary": { "type": "string", "description": "What you did and how you verified it, checkable in two minutes." },
+                    "manualReason": { "type": "string", "description": "Why this finished without the usual evidence." },
+                }),
+                &["taskId", "target", "summary"],
+            ),
+        ),
+        tool(
+            "events_ack",
+            "Mark events as handled, through the given event id (the #number in your inbox).",
+            schema(json!({ "through": { "type": "integer" } }), &["through"]),
+        ),
+    ]
 }

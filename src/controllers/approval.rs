@@ -153,9 +153,10 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
     };
 
     let created = match (change.target_type.as_str(), change.op.as_str()) {
+        // A create is the proposer's: they are who it is recorded as made by.
         ("project", "create") => match project::create(
             state,
-            actor,
+            &Actor { person_id: change.on_behalf_of, ..actor.clone() },
             Some(str_at("key")?),
             str_at("name")?,
             p.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -193,7 +194,10 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
             None
         }
         ("artifact", "delete") => {
-            artifact::remove(state, actor, change.target_id).await?;
+            // Removing is the adder's call, so it is checked against who
+            // asked, not who approved.
+            let proposer = Actor { person_id: change.on_behalf_of, ..actor.clone() };
+            artifact::remove(state, &proposer, change.target_id).await?;
             None
         }
         ("phase", "update") => {
@@ -202,7 +206,7 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
         }
         ("task", "create") => match task::create(
             state,
-            actor,
+            &Actor { person_id: change.on_behalf_of, ..actor.clone() },
             uuid_at("phase_id")?,
             str_at("title")?,
             str_at("body")?,

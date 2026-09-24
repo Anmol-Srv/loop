@@ -149,6 +149,15 @@ pub struct Task {
     pub done_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The finishing status the delegate agent submitted for review.
+    pub review_target: Option<String>,
+    /// Set while the task itself is archived. Its project can archive it too:
+    /// see `TaskRow::project_archived_at`.
+    pub archived_at: Option<DateTime<Utc>>,
+    /// The agent this task is handed off to, if any:
+    /// `{id, handle, name, state, lastSeenAt}`. Built in SQL so every query
+    /// that returns a task carries it without a second round trip.
+    pub delegate: Option<serde_json::Value>,
 }
 
 /// A task plus the names a list needs to render a row, and a count of how many
@@ -172,6 +181,11 @@ pub struct TaskRow {
     pub discipline: Option<String>,
     pub blockers_total: i64,
     pub blockers_done: i64,
+    /// Set while the project is archived, which archives every task in it.
+    pub project_archived_at: Option<DateTime<Utc>>,
+    /// Whether the viewer may archive, restore or delete it: `can_manage`.
+    pub can_archive: bool,
+    pub can_delete: bool,
 }
 
 #[derive(Debug, Default)]
@@ -182,32 +196,85 @@ pub struct TaskFilter {
     pub status: Option<String>,
     pub assignee_email: Option<String>,
     pub assignee_kind: Option<String>,
+    /// Only archived tasks (its own flag or its project's) instead of only
+    /// live ones.
+    pub archived: bool,
 }
 
-pub const TASK_COLUMNS: &str = "id, phase_id, title, body, status, priority, \
-    assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
-    claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at";
+/// Who may archive, restore or delete a task: whoever created it, whoever
+/// created its project, or an admin. SQL over `t` and `pr`, for the person
+/// bound at `viewer` — selected into every `TaskRow` and checked by the
+/// controller before it acts, so the app and the server ask one question.
+pub fn can_manage(viewer: &str) -> String {
+    format!(
+        "(coalesce(t.created_by = {viewer} OR pr.created_by = {viewer}, false)
+          OR EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND role = 'admin'))"
+    )
+}
+
+/// A task that is neither archived nor in an archived project, as SQL over
+/// `t` alone, for the queries that do not join the project.
+pub const LIVE: &str = "(t.archived_at IS NULL AND t.phase_id NOT IN
+    (SELECT ph.id FROM phase ph JOIN project pr ON pr.id = ph.project_id
+      WHERE pr.archived_at IS NOT NULL))";
+
+/// An agent still holds the task: it has to be taken back before the task can
+/// be archived or deleted. The delegate stays on a finished task as history.
+pub const HELD: &str = "(t.delegate_agent_id IS NOT NULL
+    AND coalesce(t.agent_state, '') NOT IN ('done', 'stopped')
+    AND t.done_at IS NULL AND t.status <> 'dropped')";
+
+macro_rules! plain_task_columns {
+    () => {
+        "id, phase_id, title, body, status, priority, \
+         assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
+         claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at, \
+         review_target, archived_at"
+    };
+}
+
+/// The delegate as one JSON value. Unqualified column names, so it reads the
+/// same in a `RETURNING` and in a `FROM task t` select.
+macro_rules! delegate_column {
+    () => {
+        "(SELECT json_build_object('id', a.id, 'handle', a.handle, 'name', a.name, \
+                 'state', agent_state, 'lastSeenAt', a.last_seen_at) \
+            FROM agent a WHERE a.id = delegate_agent_id) AS delegate"
+    };
+}
+
+pub const TASK_COLUMNS: &str = concat!(plain_task_columns!(), ", ", delegate_column!());
+
+/// `TASK_COLUMNS` for a query that names the task `t`.
+pub fn task_columns_t() -> String {
+    format!("t.{}, {}", plain_task_columns!().replace(", ", ", t."), delegate_column!())
+}
 
 /// The `SELECT ... FROM` for a `TaskRow`, ending before any `WHERE`.
+/// `viewer` is the placeholder (or `NULL::uuid`) `canArchive` is worked out
+/// for.
 ///
 /// ponytail: the two blocker counts are correlated subqueries, one pair per
 /// row. A board is hundreds of tasks, not millions, and `blocked_by` is empty
 /// for nearly all of them. If a personal list ever gets slow, this becomes one
 /// `LEFT JOIN LATERAL` over `unnest(blocked_by)`.
-pub fn task_row_select() -> String {
+pub fn task_row_select(viewer: &str) -> String {
     format!(
-        "SELECT t.{cols},
+        "SELECT {cols},
                 ph.project_id, pr.name AS project_name, ph.name AS phase_name,
                 own.name AS assignee_name, own.email AS assignee_email,
                 own.department AS discipline,
                 (SELECT count(*) FROM task b WHERE b.id = ANY(t.blocked_by)) AS blockers_total,
                 (SELECT count(*) FROM task b
-                  WHERE b.id = ANY(t.blocked_by) AND b.status IN {RESOLVED}) AS blockers_done
+                  WHERE b.id = ANY(t.blocked_by) AND b.status IN {RESOLVED}) AS blockers_done,
+                pr.archived_at AS project_archived_at,
+                {can} AS can_archive, {can} AS can_delete
            FROM task t
            JOIN phase ph ON ph.id = t.phase_id
            JOIN project pr ON pr.id = ph.project_id
            LEFT JOIN person own ON own.id = t.assignee_person_id",
-        cols = TASK_COLUMNS.replace(", ", ", t."),
+        cols = task_columns_t(),
+        can = can_manage(viewer),
         RESOLVED = BLOCKER_RESOLVED,
     )
 }

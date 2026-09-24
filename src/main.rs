@@ -32,15 +32,6 @@ async fn main() {
 
     let state = db::AppState { db: pool };
 
-    // The lease reaper rides the job queue, so it must be scheduled before the
-    // worker starts looking for work.
-    if let Err(e) = acp_server::jobs::worker::ensure_lease_sweep(&state).await {
-        tracing::error!(error = %e, "could not schedule the lease sweep");
-    }
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let worker = tokio::spawn(acp_server::jobs::worker::run_loop(state.clone(), shutdown_rx));
-
     let addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     tracing::info!("acp-server listening on {addr}");
@@ -52,9 +43,6 @@ async fn main() {
         .await
         .unwrap();
 
-    tracing::info!("draining the job worker");
-    let _ = shutdown_tx.send(true);
-    let _ = worker.await;
     tracing::info!("stopped");
 }
 
@@ -62,7 +50,7 @@ async fn main() {
 ///
 /// Only Ctrl-C was handled, so every deploy killed the server outright and
 /// dropped whatever requests were in flight; now both let in-flight requests
-/// finish and the job worker stop cleanly.
+/// finish.
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

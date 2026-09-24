@@ -109,6 +109,27 @@ impl Client {
         response.json().await.map_err(|e| format!("bad response body: {e}"))
     }
 
+    /// A plain-text GET (the agent inbox), returned as-is on success and as
+    /// the envelope's error message otherwise.
+    pub async fn get_text(&self, path: &str) -> Result<String, String> {
+        let response = self
+            .http
+            .get(format!("{}{}", self.base_url, path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        let ok = response.status().is_success();
+        let text = response.text().await.map_err(|e| format!("bad response body: {e}"))?;
+        if ok {
+            return Ok(text);
+        }
+        match serde_json::from_str(&text) {
+            Ok(json) => unwrap_envelope(json).map(|v| v.to_string()),
+            Err(_) => Err(text),
+        }
+    }
+
     pub async fn send(&self, method: reqwest::Method, path: &str, body: Value) -> Result<Value, String> {
         self.request(method, path, body).await.1
     }

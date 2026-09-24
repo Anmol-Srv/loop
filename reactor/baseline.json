@@ -1,7 +1,0 @@
-{
-  "note": "Node 26 vs jsonwebtoken (buffer-equal-constant-time); re-baseline when Node is pinned.",
-  "recorded": "2026-09-18",
-  "sha": "8c04e020",
-  "failed_tests": 23,
-  "failed_suites": 52
-}

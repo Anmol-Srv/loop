@@ -19,6 +19,12 @@ pub struct Artifact {
     pub url: String,
     pub title: String,
     pub metadata: Value,
-    pub added_by: Option<Uuid>,
+    /// `{id, name}` of the person who added it (an agent's owner, when an
+    /// agent attached it), or null for rows from before anyone was recorded.
+    pub added_by: Option<Value>,
+    /// The agent's name, when an agent attached it for `added_by`.
+    pub added_by_agent: Option<String>,
+    /// Whether the person asking may remove it; see `controllers::artifact`.
+    pub can_remove: bool,
     pub created_at: DateTime<Utc>,
 }

@@ -24,8 +24,8 @@ A native desktop client in Rust — egui, no webview, no HTML. It talks to the
 same API as everything else, so it is a front end, not a second system.
 
 ```bash
-./scripts/bundle-mac.sh        # builds "target/Airtribe Control Plane.app"
-open "target/Airtribe Control Plane.app"
+./scripts/bundle-mac.sh        # builds "target/Loop.app"
+open "target/Loop.app"
 ```
 
 Or run it straight from cargo while developing:

@@ -28,7 +28,7 @@ enum Command {
     Logout,
     /// Who the stored credential says you are
     Whoami,
-    /// Agent credentials you own
+    /// Your agents, and — with an agent's token in ACP_TOKEN — the agent's own verbs
     Agent {
         #[command(subcommand)]
         action: AgentAction,
@@ -74,18 +74,60 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AgentAction {
-    /// Mint an agent credential. The token is printed once and never again.
-    Mint {
-        label: String,
-        #[arg(long, default_value = "read,claim,propose")]
-        scopes: String,
-        #[arg(long, default_value_t = 30)]
-        days: i64,
+    /// Connect an agent. Prints the onboarding prompt, token included, once.
+    #[command(alias = "mint")]
+    Connect {
+        handle: String,
+        #[arg(long, default_value = "")]
+        name: String,
+        /// hermes, claude-code, codex or other
+        #[arg(long, default_value = "other")]
+        runtime: String,
     },
-    /// List the agent credentials you own
+    /// List the agents you own
     Ls,
-    /// Revoke one of your agent credentials
+    /// A new token for an agent; the old one stops working
+    Rotate { id: String },
+    /// Revoke an agent and take back its tasks
     Revoke { id: String },
+    /// (as an agent) What needs you now
+    Inbox,
+    /// (as an agent) The tasks handed to you
+    Tasks,
+    /// (as an agent) Everything about one of your tasks
+    Show { id: String },
+    /// (as an agent) Acknowledge a task handed to you
+    Ack { id: String },
+    /// (as an agent) Post progress, optionally moving the task to open, in_progress or blocked
+    Update {
+        id: String,
+        body: String,
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// (as an agent) Ask your owner a question
+    Ask { id: String, body: String },
+    /// (as an agent) Attach a pr, commit, figma, doc or link
+    Attach {
+        id: String,
+        #[arg(long)]
+        kind: String,
+        #[arg(long)]
+        url: String,
+        #[arg(long, default_value = "")]
+        title: String,
+    },
+    /// (as an agent) Submit for review: completed, shipped, or handoff
+    Submit {
+        id: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        summary: String,
+        /// Why it finished without the usual PR, commit or Figma
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -226,6 +268,14 @@ fn table(headers: &[&str], rows: &[Vec<String>]) {
     }
 }
 
+/// A connected or rotated agent: the prompt is the only copy of its token.
+fn minted(data: &Value) {
+    let agent = data.get("agent").cloned().unwrap_or(Value::Null);
+    println!("agent '{}' ({}), id {}", text(&agent, "handle"), text(&agent, "runtime"), text(&agent, "id"));
+    println!("Paste this to the agent. It carries the token and is shown once:\n");
+    println!("{}", text(data, "prompt"));
+}
+
 /// Login and setup return the identical shape, so they land the same way.
 fn signed_in(data: Value) {
     let token = text(&data, "token");
@@ -314,22 +364,13 @@ async fn main() {
             Err(e) => die(e),
         },
         Command::Agent { action } => match action {
-            AgentAction::Mint { label, scopes: requested, days } => {
-                let list: Vec<&str> = requested.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            AgentAction::Connect { handle, name, runtime } => {
                 match client
                     .send(reqwest::Method::POST, "/api/user/agents",
-                        json!({ "label": label, "scopes": list, "validDays": days }))
+                        json!({ "handle": handle, "name": name, "runtime": runtime }))
                     .await
                 {
-                    Ok(data) => {
-                        let agent = data.get("agent").cloned().unwrap_or(Value::Null);
-                        println!("minted '{}'  scopes: {}  expires {}",
-                            text(&agent, "label"), scopes(&agent), when(&agent, "expiresAt"));
-                        println!("id: {}", text(&agent, "id"));
-                        println!();
-                        println!("token (shown once, it is not stored anywhere you can read it again):");
-                        return println!("  {}", text(&data, "token"));
-                    }
+                    Ok(data) => return minted(&data),
                     Err(e) => die(e),
                 }
             }
@@ -337,27 +378,77 @@ async fn main() {
                 Ok(data) => {
                     let agents = data.as_array().cloned().unwrap_or_default();
                     if agents.is_empty() {
-                        return println!("no agent credentials");
+                        return println!("no agents");
                     }
                     let rows: Vec<Vec<String>> = agents
                         .iter()
                         .map(|a| vec![
-                            text(a, "label").to_string(),
-                            scopes(a),
-                            when(a, "expiresAt"),
-                            when(a, "lastUsedAt"),
+                            text(a, "handle").to_string(),
+                            text(a, "runtime").to_string(),
+                            text(a, "status").to_string(),
+                            when(a, "lastSeenAt"),
+                            a.get("activeTasks").map(Value::to_string).unwrap_or_default(),
                             text(a, "id").to_string(),
                         ])
                         .collect();
-                    return table(&["LABEL", "SCOPES", "EXPIRES", "LAST USED", "ID"], &rows);
+                    return table(&["HANDLE", "RUNTIME", "STATUS", "LAST SEEN", "TASKS", "ID"], &rows);
                 }
                 Err(e) => die(e),
             },
-            AgentAction::Revoke { id } => {
-                match client.send(reqwest::Method::DELETE, &format!("/api/user/agents/{id}"), Value::Null).await {
-                    Ok(agent) => return println!("revoked '{}'", text(&agent, "label")),
+            AgentAction::Rotate { id } => {
+                match client.send(reqwest::Method::POST, &format!("/api/user/agents/{id}/rotate"), Value::Null).await {
+                    Ok(data) => return minted(&data),
                     Err(e) => die(e),
                 }
+            }
+            AgentAction::Revoke { id } => {
+                match client.send(reqwest::Method::DELETE, &format!("/api/user/agents/{id}"), Value::Null).await {
+                    Ok(agent) => return println!("revoked '{}'", text(&agent, "handle")),
+                    Err(e) => die(e),
+                }
+            }
+            AgentAction::Inbox => match client.get_text("/api/agent/inbox").await {
+                Ok(inbox) => return print!("{inbox}"),
+                Err(e) => die(e),
+            },
+            AgentAction::Tasks => match client.get("/api/agent/tasks").await {
+                Ok(data) => {
+                    let tasks = data.as_array().cloned().unwrap_or_default();
+                    if tasks.is_empty() {
+                        return println!("nothing handed to you");
+                    }
+                    let rows: Vec<Vec<String>> = tasks
+                        .iter()
+                        .map(|t| vec![
+                            text(t, "title").to_string(),
+                            text(t, "status").to_string(),
+                            t.pointer("/delegate/state").and_then(Value::as_str).unwrap_or("-").to_string(),
+                            text(t, "id").to_string(),
+                        ])
+                        .collect();
+                    return table(&["TITLE", "STATUS", "STATE", "ID"], &rows);
+                }
+                Err(e) => die(e),
+            },
+            AgentAction::Show { id } => client.get(&format!("/api/agent/tasks/{id}")).await,
+            AgentAction::Ack { id } => {
+                client.send(reqwest::Method::POST, &format!("/api/agent/tasks/{id}/ack"), Value::Null).await
+            }
+            AgentAction::Update { id, body, status } => {
+                client.send(reqwest::Method::POST, &format!("/api/agent/tasks/{id}/update"),
+                    json!({ "body": body, "status": status })).await
+            }
+            AgentAction::Ask { id, body } => {
+                client.send(reqwest::Method::POST, &format!("/api/agent/tasks/{id}/ask"),
+                    json!({ "body": body })).await
+            }
+            AgentAction::Attach { id, kind, url, title } => {
+                client.send(reqwest::Method::POST, &format!("/api/agent/tasks/{id}/attach"),
+                    json!({ "kind": kind, "url": url, "title": title })).await
+            }
+            AgentAction::Submit { id, target, summary, reason } => {
+                client.send(reqwest::Method::POST, &format!("/api/agent/tasks/{id}/submit"),
+                    json!({ "target": target, "summary": summary, "manualReason": reason })).await
             }
         },
         Command::Admin { action } => match action {

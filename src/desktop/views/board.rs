@@ -106,6 +106,12 @@ pub struct State {
     /// Each project page's drafts, keyed by project id, so a half-typed edit
     /// survives going to a task and coming back.
     pages: HashMap<String, Page>,
+    /// A project archive or delete waiting on a yes, from the list or a page.
+    pub ask: Option<Ask>,
+    /// The one sent and not yet answered.
+    acting: Option<Ask>,
+    /// How the last one went, and whether it failed.
+    pub notice: Option<(String, bool)>,
 }
 
 /// What one project page remembers between frames.
@@ -128,6 +134,8 @@ struct Page {
     notice: Option<String>,
     /// A remove that failed for a reason other than the link being gone.
     resource_error: Option<String>,
+    /// The task table shows the archived tasks instead.
+    archived: bool,
 }
 
 /// Name and description while Edit is open, with what they were when editing
@@ -222,6 +230,8 @@ struct Keys {
     detail_path: String,
     flow: String,
     tasks: String,
+    /// The same list, archived only, for the Archived toggle.
+    archived: String,
     patch: String,
     artifacts: String,
     artifacts_path: String,
@@ -236,6 +246,7 @@ impl Keys {
             detail_path: format!("/api/user/projects/{id}"),
             flow: format!("board:flow:{id}"),
             tasks: format!("board:tasks:{id}"),
+            archived: format!("board:tasks:{id}:archived"),
             // Not under `board:`: an Add task sweeps that prefix, and a PATCH
             // reply swept before it is read would leave its edit open forever.
             patch: format!("project:patch:{id}"),
@@ -258,6 +269,8 @@ enum Request {
 fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let keys = Keys::new(project_id);
     let can_write = app.can_write();
+    let notice = app.board.notice.clone();
+    let mut ask: Option<Ask> = None;
     let page = app.board.pages.entry(project_id.to_owned()).or_default();
     let net = app.net.as_mut().unwrap();
 
@@ -277,7 +290,11 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 
     net.get_once(&keys.detail, &keys.detail_path);
     net.get_once(&keys.flow, &format!("/api/user/projects/{project_id}/flow"));
+    let tasks_key = if page.archived { keys.archived.clone() } else { keys.tasks.clone() };
     net.get_once(&keys.tasks, &format!("/api/user/tasks?projectId={project_id}"));
+    if page.archived {
+        net.get_once(&keys.archived, &format!("/api/user/tasks?projectId={project_id}&archived=true"));
+    }
     net.get_once(&keys.artifacts, &keys.artifacts_path);
     // The assignee picker wants names and departments. Same key the list
     // screen fills, so arriving from it costs nothing.
@@ -288,15 +305,18 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let flow = net.shared(&keys.flow);
     let flow_error = net.error(&keys.flow).map(str::to_string);
     // Sorted once per reply rather than copied and sorted every frame.
-    let tasks_generation = net.generation(&keys.tasks);
-    let reply = net.shared(&keys.tasks);
-    let tasks = memo(ui.ctx(), egui::Id::new(&keys.tasks), tasks_generation, || {
+    let tasks_generation = net.generation(&tasks_key);
+    let reply = net.shared(&tasks_key);
+    let tasks = memo(ui.ctx(), egui::Id::new(&tasks_key), tasks_generation, || {
         let mut tasks = array(reply.as_deref());
         sort_tasks(&mut tasks);
         tasks
     });
-    let tasks_loading = net.is_loading(&keys.tasks);
-    let tasks_error = net.error(&keys.tasks).map(str::to_string);
+    // The rail's people are the live work, whichever list the table shows.
+    let live_list = if page.archived { array(net.data(&keys.tasks)) } else { Vec::new() };
+    let live: &[Value] = if page.archived { &live_list } else { &tasks };
+    let tasks_loading = net.is_loading(&tasks_key);
+    let tasks_error = net.error(&tasks_key).map(str::to_string);
     let add_error = net.error(ADD_KEY).map(str::to_string);
     let posting = net.is_loading(ADD_KEY);
     let patching = net.is_loading(&keys.patch);
@@ -352,15 +372,26 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             let mut requests = requests_cell.borrow_mut();
             let requests: &mut Vec<Request> = &mut requests;
             if part == shell::Part::Header {
-                headline(ui, head, page, can_write, patching, requests);
+                headline(ui, head, page, can_write, patching, requests, &mut ask);
                 // Under the title, where the task page says it: the edit that
                 // prompted it is usually right here.
                 if let Some(err) = &patch_error {
                     ui.add_space(space::SM);
                     w::error(ui, err);
+                } else if let Some((n, failed)) = &notice {
+                    ui.add_space(space::SM);
+                    if *failed {
+                        w::error(ui, n);
+                    } else {
+                        w::caption(ui, n);
+                    }
                 } else if let Some(n) = &page.notice {
                     ui.add_space(space::SM);
                     w::caption(ui, n);
+                }
+                if archived(head) {
+                    ui.add_space(space::SM);
+                    w::caption(ui, "Archived \u{2014} out of every list, its tasks with it, until it is restored.");
                 }
                 return;
             }
@@ -405,14 +436,23 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                     }
                 }
             });
-            if !tasks.is_empty() {
-                let labels: Vec<String> =
-                    TABS.iter().zip(counts).map(|(l, n)| format!("{l} {n}")).collect();
-                let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-                if let Some(i) = c::tabs(ui, &refs, page.tab) {
-                    page.tab = i;
+            // The archived toggle sits at the tabs' far end: it swaps the
+            // list the tabs slice rather than being a fourth slice of it.
+            ui.horizontal(|ui| {
+                if !tasks.is_empty() {
+                    let labels: Vec<String> =
+                        TABS.iter().zip(counts).map(|(l, n)| format!("{l} {n}")).collect();
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    if let Some(i) = c::tabs(ui, &refs, page.tab) {
+                        page.tab = i;
+                    }
                 }
-            }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if viz::filter(ui, "Archived", page.archived, false).clicked() {
+                        page.archived = !page.archived;
+                    }
+                });
+            });
 
             if let Some(draft) = app.board.adding.as_mut() {
                 add_outcome = add_form(ui, draft, &members, posting, add_error.as_deref());
@@ -432,6 +472,8 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             } else if tasks.is_empty() {
                 if tasks_loading {
                     w::loading(ui, "Loading tasks");
+                } else if page.archived {
+                    w::empty(ui, "No archived tasks.", "Tasks archived from this project show here.");
                 } else if !form_open {
                     w::empty(
                         ui,
@@ -460,7 +502,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 ui,
                 head,
                 page,
-                &tasks,
+                live,
                 &all_labels,
                 (done, total),
                 can_write,
@@ -469,6 +511,10 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
         },
     );
 
+    if ask.is_some() {
+        app.board.notice = None;
+        app.board.ask = ask;
+    }
     if start_add {
         app.board.adding = Some(TaskDraft::default());
     }
@@ -521,6 +567,10 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 );
             }
         }
+    }
+    // Last, so its dialog is drawn over the page it is about.
+    if project_action(ui.ctx(), net, &mut app.board).as_deref() == Some(project_id) {
+        app.project = None;
     }
 }
 
@@ -587,6 +637,7 @@ fn headline(
     can_write: bool,
     patching: bool,
     requests: &mut Vec<Request>,
+    ask: &mut Option<Ask>,
 ) {
     let name = match str_at(head, "name") {
         "" => "Project",
@@ -641,6 +692,11 @@ fn headline(
     let mut edit = false;
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if can_write {
+                if let Some(a) = project_menu(ui, head) {
+                    *ask = Some(a);
+                }
+            }
             if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked()
             {
                 edit = true;
@@ -968,7 +1024,8 @@ fn resource_row(
         ui.set_min_height(size::CONTROL);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::XS;
-            if can_write {
+            // Only whoever added it may remove it; the server says who that is.
+            if can_write && row["canRemove"].as_bool() == Some(true) {
                 // Destructive, so it asks first — inline, where the eye already is.
                 if confirming {
                     if w::ghost(ui, "Keep").clicked() {
@@ -980,6 +1037,11 @@ fn resource_row(
                     faint(ui, "Remove this link?");
                 } else if w::ghost(ui, "Remove").clicked() {
                     page.removing = Some(id.to_owned());
+                }
+            }
+            if !confirming {
+                if let Some(who) = added_by(row) {
+                    faint(ui, &who);
                 }
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1244,7 +1306,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
 
     row.at(0, |ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        table::strong_label(ui, str_at(t, "title"), colour::TEXT);
+        table::strong_label(ui, str_at(t, "title"), title_ink(t));
         // Blockers beat the status column: a task marked in progress that
         // waits on someone else is not in progress, and the chip beside its
         // title is what says so.
@@ -1266,6 +1328,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         ui.spacing_mut().item_spacing.x = space::XS;
         avatar::small(ui, who, size::AVATAR_SM);
         ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
+        super::home::agent_marker(ui, t);
     });
 
     row.at(3, |ui| {
@@ -1274,7 +1337,11 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     });
 
     row.at(4, |ui| {
-        c::chip(ui, status_label(status), c::status_tone(status), true);
+        if archived(t) {
+            archived_chip(ui);
+        } else {
+            c::chip(ui, status_label(status), c::status_tone(status), true);
+        }
     });
 
     row.muted(5, &since(str_at(t, "createdAt")));
@@ -1405,6 +1472,16 @@ pub(super) fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+/// "Added by Dhaval", or "Attached by Hermes for Anmol" when an agent did.
+/// Rows from before anyone was recorded say nothing.
+pub(super) fn added_by(artifact: &Value) -> Option<String> {
+    let person = artifact["addedBy"]["name"].as_str()?;
+    Some(match artifact["addedByAgent"].as_str() {
+        Some(agent) => format!("Attached by {agent} for {person}"),
+        None => format!("Added by {person}"),
+    })
+}
+
 pub(super) fn num_at(v: &Value, key: &str) -> i64 {
     v.get(key).and_then(Value::as_i64).unwrap_or(0)
 }
@@ -1414,4 +1491,198 @@ pub(super) fn fraction(done: i64, total: i64) -> f32 {
         return 0.0;
     }
     done as f32 / total as f32
+}
+
+// ------------------------------------------------------ archive and delete
+
+/// Where a project archive, restore or delete reply is collected. Not under
+/// `board:`, which a success sweeps before the reply is read.
+const ACTION_KEY: &str = "projects:action";
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Act {
+    Archive,
+    Restore,
+    Delete,
+}
+
+impl Act {
+    fn label(self) -> &'static str {
+        match self {
+            Act::Archive => "Archive",
+            Act::Restore => "Restore",
+            Act::Delete => "Delete",
+        }
+    }
+}
+
+/// A project action and what the dialog needs to say about it.
+#[derive(Clone)]
+pub struct Ask {
+    pub id: String,
+    pub name: String,
+    pub act: Act,
+    pub tasks: i64,
+    /// What has been typed into the delete dialog's name check.
+    pub typed: String,
+}
+
+/// Archived: a task's own flag, or its project's.
+pub(super) fn archived(v: &Value) -> bool {
+    ["archivedAt", "projectArchivedAt"].iter().any(|k| v.get(*k).is_some_and(|x| !x.is_null()))
+}
+
+/// An archived row reads as set aside: its name steps back.
+pub(super) fn title_ink(v: &Value) -> egui::Color32 {
+    if archived(v) {
+        colour::TEXT_MUTED
+    } else {
+        colour::TEXT
+    }
+}
+
+/// Where the status chip goes on an archived row: that it is put away matters
+/// more than where it stood when it was.
+pub(super) fn archived_chip(ui: &mut egui::Ui) {
+    c::chip(ui, "Archived", c::Tone::Quiet, false);
+}
+
+/// The more-actions menu for a project, when the viewer may use it: what was
+/// picked.
+pub(super) fn project_menu(ui: &mut egui::Ui, p: &Value) -> Option<Ask> {
+    let flag = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
+    let mut acts = Vec::new();
+    if flag("canArchive") {
+        acts.push(if archived(p) { Act::Restore } else { Act::Archive });
+    }
+    if flag("canDelete") {
+        acts.push(Act::Delete);
+    }
+    if acts.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = acts.iter().map(|a| a.label()).collect();
+    let act = acts[viz::more(ui, &labels)?];
+    Some(Ask {
+        id: str_at(p, "id").to_owned(),
+        name: str_at(p, "name").to_owned(),
+        act,
+        tasks: num_at(p, "taskCount"),
+        typed: String::new(),
+    })
+}
+
+/// Everything that lists projects or tasks, once one has been archived,
+/// restored or deleted.
+pub(super) fn after_archive(net: &mut Net) {
+    net.invalidate_prefix("board:");
+    net.invalidate_prefix("home");
+    net.invalidate_prefix("task:");
+    net.invalidate_prefix("mytasks");
+    net.invalidate(super::chrome::COUNTS);
+}
+
+/// The asked-for project action: its confirmation, the request once it is
+/// given (a restore needs none), and the reply. Returns the id of a project
+/// just deleted, so a page showing it can leave.
+pub(super) fn project_action(ctx: &egui::Context, net: &mut Net, s: &mut State) -> Option<String> {
+    let mut gone = None;
+    if let Some(a) = s.acting.clone().filter(|_| !net.is_loading(ACTION_KEY)) {
+        match net.peek(ACTION_KEY) {
+            Some(Ok(_)) => {
+                let past = match a.act {
+                    Act::Archive => "archived",
+                    Act::Restore => "restored",
+                    Act::Delete => "deleted",
+                };
+                s.notice = Some((format!("{} {past}.", a.name), false));
+                after_archive(net);
+                if a.act == Act::Delete {
+                    gone = Some(a.id);
+                }
+            }
+            Some(Err(e)) => s.notice = Some((e.clone(), true)),
+            None => {}
+        }
+        s.acting = None;
+        net.invalidate(ACTION_KEY);
+    }
+
+    let mut go = s.ask.as_ref().is_some_and(|a| a.act == Act::Restore);
+    if let Some(ask) = s.ask.as_mut().filter(|a| a.act != Act::Restore) {
+        let mut close = false;
+        let modal = super::agents::dialog(ctx, "project:confirm", super::agents::DIALOG_W, |ui| {
+            (go, close) = confirm(ui, ask);
+        });
+        if close || modal.should_close() {
+            s.ask = None;
+        }
+    }
+    if let Some(a) = s.ask.take_if(|_| go) {
+        let id = &a.id;
+        net.invalidate(ACTION_KEY);
+        match a.act {
+            Act::Delete => {
+                net.send(ACTION_KEY, reqwest::Method::DELETE, &format!("/api/user/projects/{id}"), Value::Null)
+            }
+            Act::Archive => net.post(ACTION_KEY, &format!("/api/user/projects/{id}/archive"), json!({})),
+            Act::Restore => net.post(ACTION_KEY, &format!("/api/user/projects/{id}/restore"), json!({})),
+        }
+        s.notice = None;
+        s.acting = Some(a);
+    }
+    gone
+}
+
+/// The dialog's body: (confirmed, cancelled). Archiving is one click from
+/// undone, so it asks once; deleting cannot be undone, so the name has to be
+/// typed — which is also where the person reads what they are deleting.
+fn confirm(ui: &mut egui::Ui, ask: &mut Ask) -> (bool, bool) {
+    let tasks = match ask.tasks {
+        0 => "It has no tasks".to_owned(),
+        1 => "Its one task goes with it".to_owned(),
+        n => format!("Its {n} tasks go with it"),
+    };
+    let delete = ask.act == Act::Delete;
+    if delete {
+        super::agents::heading(ui, &format!("Delete {}?", ask.name));
+        ui.add_space(space::XS);
+        w::muted(
+            ui,
+            &format!(
+                "{tasks}, with their notes, run logs and links, and so do the project\u{2019}s \
+                 resources. This cannot be undone \u{2014} archive it instead to keep it."
+            ),
+        );
+        ui.add_space(space::LG);
+        w::field(ui, "Type the project name to confirm", &mut ask.typed, false, &ask.name);
+    } else {
+        super::agents::heading(ui, &format!("Archive {}?", ask.name));
+        ui.add_space(space::XS);
+        let with = if ask.tasks == 0 { "It leaves".to_owned() } else { format!("{tasks} out of") };
+        w::muted(
+            ui,
+            &format!(
+                "{with} the project list, Home and everyone\u{2019}s tasks. Restore it from \
+                 Projects, under Archived, any time."
+            ),
+        );
+    }
+    ui.add_space(space::XL);
+    let (mut go, mut close) = (false, false);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        go = if delete {
+            let ready = ask.typed.trim() == ask.name.trim();
+            let r = w::danger(ui, "Delete project", ready);
+            if !ready {
+                r.clone().on_disabled_hover_text("Type the name exactly as it is shown.");
+            }
+            r.clicked()
+        } else {
+            w::primary(ui, "Archive", true).clicked()
+        };
+        close = w::ghost(ui, "Cancel").clicked();
+    });
+    (go, close)
 }
