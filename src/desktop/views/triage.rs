@@ -484,7 +484,9 @@ fn filed_by(ui: &mut egui::Ui, src: &Value) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         w::agent_mark(ui, text::BODY);
-        let r = ui.label(RichText::new(line).size(text::SMALL).color(colour::TEXT_MUTED));
+        // Wraps: an agent's reason can run long, and an unwrapped line in a
+        // horizontal row widens the whole column and pushes the rail off-screen.
+        let r = ui.add(egui::Label::new(RichText::new(line).size(text::SMALL).color(colour::TEXT_MUTED)).wrap());
         if confidence.is_some() {
             r.on_hover_text("The last figure is how sure the agent was, from 0 to 1.");
         }

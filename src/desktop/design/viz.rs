@@ -661,22 +661,35 @@ pub fn tag_picker(
     // Keyed to the picker rather than the control's auto id, so the popup
     // survives the row reflowing as badges come and go.
     let popup_id = ui.make_persistent_id(("tag-picker", add_label));
+    let confirm_id = popup_id.with("confirm-remove");
     let trigger = ui
         .horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
             // The control first: badges after it can wrap without moving the
             // popup out from under the pointer.
             let trigger = filter(ui, add_label, false, true);
-            for (i, id) in chosen.iter().enumerate() {
+            for id in chosen.iter() {
                 if let Some(t) = options.iter().find(|t| t.id == id) {
                     if super::cards::removable_badge(ui, t.name, t.hue, t.ink) {
-                        drop = Some(i);
+                        // Asks first: the × sits one click from where people
+                        // aim at the badge itself.
+                        ui.data_mut(|d| d.insert_temp(confirm_id, t.id.to_owned()));
                     }
                 }
             }
             trigger
         })
         .inner;
+    let pending: Option<String> = ui.data(|d| d.get_temp(confirm_id));
+    if let Some(id) = pending {
+        let name = options.iter().find(|t| t.id == id).map_or("this", |t| t.name);
+        match confirm_remove(ui.ctx(), confirm_id, name) {
+            Some(true) => drop = chosen.iter().position(|c| *c == id),
+            Some(false) => {}
+            None => return None, // still asking; nothing else changes this frame
+        }
+        ui.data_mut(|d| d.remove::<String>(confirm_id));
+    }
     if let Some(i) = drop {
         chosen.remove(i);
     }
@@ -1328,4 +1341,48 @@ mod date_tests {
         let dec = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
         assert_eq!(shift_month(dec, 1), NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
     }
+}
+
+
+/// "Remove the "Slack" label?" — Some(true) to remove, Some(false) to keep,
+/// None while it is still asking. Escape and clicking outside keep it.
+fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool> {
+    let mut answer = None;
+    let modal = egui::Modal::new(id.with("modal"))
+        .backdrop_color(colour::CANVAS.gamma_multiply(0.7))
+        .frame(
+            egui::Frame::new()
+                .fill(colour::SURFACE)
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .corner_radius(radius::LG)
+                .inner_margin(egui::Margin::same(space::XL as i8)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(
+                egui::RichText::new(format!("Remove the \u{201c}{name}\u{201d} label?"))
+                    .size(text::CARD)
+                    .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
+            ui.add_space(space::SM);
+            ui.label(
+                egui::RichText::new("It comes off this item only; the label stays available for others.")
+                    .size(text::BODY)
+                    .color(colour::TEXT_2),
+            );
+            ui.add_space(space::LG);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if super::widgets::danger(ui, "Remove", true).clicked() {
+                    answer = Some(true);
+                }
+                if super::widgets::ghost(ui, "Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    if modal.should_close() && answer.is_none() {
+        answer = Some(false);
+    }
+    answer
 }

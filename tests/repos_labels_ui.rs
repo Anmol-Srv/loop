@@ -252,13 +252,23 @@ fn badges_are_removable_by_click_and_backspace() {
     p.steps(2);
     assert_eq!(p.draft_labels(), vec![BACKEND.to_owned()], "row two, Infra, unticked");
 
-    // Escape closes the popup; the painted × removes a badge.
+    // Escape closes the popup; the painted × asks before it removes a badge.
     p.harness.key_press(egui::Key::Escape);
     p.steps(2);
     assert!(p.harness.query_by_label("Search labels").is_none());
     p.harness.get_by_label("Remove Backend").click();
     p.steps(2);
-    assert!(p.draft_labels().is_empty());
+    assert_eq!(p.draft_labels(), vec![BACKEND.to_owned()], "nothing comes off before the confirm");
+    assert!(p.harness.query_by_label_contains("Remove the").is_some(), "a warning names the label");
+    // The confirm's Cancel is the newest one; the create form has its own.
+    p.harness.get_all_by_label("Cancel").last().unwrap().click();
+    p.steps(2);
+    assert_eq!(p.draft_labels(), vec![BACKEND.to_owned()], "Cancel keeps it");
+    p.harness.get_by_label("Remove Backend").click();
+    p.steps(2);
+    p.harness.get_by_label("Remove").click();
+    p.steps(2);
+    assert!(p.draft_labels().is_empty(), "Remove takes it off");
 }
 
 #[test]

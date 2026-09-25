@@ -637,3 +637,22 @@ fn renders() {
         save(&mut p, "home-triage", label);
     }
 }
+
+#[test]
+#[ignore = "width sweep of the task page: cargo test --features app --test intake_ui task_page_width_sweep -- --ignored"]
+fn task_page_width_sweep() {
+    let mut f = task_page_fixtures(BUG, true);
+    for (k, v) in f.iter_mut() {
+        if *k == "task:one" {
+            v["title"] = json!("Add Frontend to the Mock Interview skill options for every learner track");
+            v["labels"] = json!([{"id": "l1", "name": "Slack", "colour": "purple"}]);
+            v["source"]["reason"] = json!("A specific additional Mock Interview skill option was requested from the owner in the issues channel, which needs a product decision before it can be built.");
+        }
+    }
+    for w in [880.0, 960.0, 1040.0, 1120.0, 1200.0, 1400.0] {
+        let app = RefCell::new(None);
+        let mut p = page(&app, &f, Tab::Home, Some(BUG), (w, 900.0), true);
+        let path = format!("/tmp/sweep-{}.png", w as i32);
+        p.harness.render().expect("render").save(&path).expect("png");
+    }
+}
