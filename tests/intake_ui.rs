@@ -1,5 +1,6 @@
-//! Intake agents: the Triage group in My Tasks, the task page's Source card
-//! and category, Accept / Dismiss from the row, the menu and the page, the
+//! Intake agents: the Triage tab and My Tasks' line to it, the task page's
+//! Source card and category, Accept / Dismiss from the row (hover icons, A/D),
+//! the menu and the page, the
 //! connect flow's intake switch, the agent card's intake stats, and Home's
 //! triage items — from fixture JSON in the shapes of
 //! docs/superpowers/plans/2026-09-25-intake-agents.md.
@@ -7,6 +8,8 @@
 //! `renders` draws each surface at 1440 and 820 into
 //! docs/design-mocks/render/intake/:
 //!   cargo test --features app --test intake_ui -- --ignored --nocapture
+//! and the Triage tab, My Tasks' line to it and the task page's decision into
+//! docs/design-mocks/render/triage/.
 #![cfg(feature = "app")]
 
 use std::cell::RefCell;
@@ -30,6 +33,7 @@ const IDEA: &str = "33333333-0000-0000-0000-000000000003";
 
 const BUG_TITLE: &str = "Checkout fails for saved cards";
 const DM_TITLE: &str = "Export cohort roster as CSV";
+const IDEA_TITLE: &str = "Show cohort start dates on the invoice";
 const BUG_TEXT: &str = "Checkout is failing for anyone paying with a saved card \u{2014} it spins and then says \u{201c}payment method invalid\u{201d}. New cards work. Started this morning.";
 const DM_TEXT: &str = "Hey, could we get a CSV export of the roster? I copy it by hand every Monday.";
 
@@ -72,7 +76,7 @@ fn triage_task(id: &str, title: &str, category: &str, src: Value, minutes: i64) 
 fn triage() -> Vec<Value> {
     vec![
         triage_task(BUG, BUG_TITLE, "bug", source(false, true), 12),
-        triage_task(IDEA, "Show cohort start dates on the invoice", "feedback",
+        triage_task(IDEA, IDEA_TITLE, "feedback",
             json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/C05/p1", "channel": "C05XY34EF",
                    "channelName": "sales-floor", "author": "Karan", "text": "Learners keep asking which cohort an invoice is for.",
                    "receivedAt": ago(48), "agentName": "Slack Agent", "reason": "feedback on invoices", "confidence": 0.64}), 48),
@@ -257,35 +261,128 @@ fn page<'a>(
 
 // ------------------------------------------------------------------ behaviour
 
+fn tab(p: &Page<'_>) -> Tab {
+    p.app.borrow().as_ref().unwrap().tab
+}
+
+/// The row itself, a button named by its title.
+fn row_node<'a>(p: &'a Page<'_>, title: &'a str) -> egui_kittest::Node<'a> {
+    p.harness
+        .get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(title))
+        .next()
+        .unwrap_or_else(|| panic!("no row {title}"))
+}
+
+fn hover_row(p: &mut Page<'_>, title: &str) {
+    row_node(p, title).hover();
+    p.steps(4);
+}
+
 #[test]
-fn my_tasks_leads_with_the_triage_group() {
+fn my_tasks_leads_with_one_line_to_triage() {
     let f = my_tasks(true, true);
     let app = RefCell::new(None);
-    let p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    assert!(p.has("Triage"), "the group, and the sidebar row");
-    assert!(p.has_part("3 to triage"));
+    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
+    assert!(p.has("3 to triage"), "one line, not the group");
+    assert!(!p.has(BUG_TITLE), "the filings live on the Triage tab");
+    // Triage is not in the list below, which keeps the rest.
+    assert!(p.has("2 tasks"));
+    assert!(p.has("Rate leads by role bucket"));
+    p.harness.get_by_label("3 to triage").click();
+    p.steps(3);
+    assert!(tab(&p) == Tab::Triage);
+    assert!(p.has(BUG_TITLE));
+}
+
+#[test]
+fn triage_is_a_tab_from_the_sidebar() {
+    let f = my_tasks(true, true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
+    p.harness.get_by(|n| n.label().as_deref() == Some("Triage") && n.role() == egui::accesskit::Role::Button).click();
+    p.steps(3);
+    assert!(tab(&p) == Tab::Triage);
+    assert!(p.has("3 waiting on a yes or a no"));
     assert!(p.has(BUG_TITLE) && p.has(DM_TITLE));
     assert!(p.has_part("Slack \u{00B7} #issues-and-feedback \u{00B7} Priya \u{00B7} 12m"));
     assert!(p.has_part("Slack \u{00B7} Direct message \u{00B7} Rahul Mehta"));
     assert!(p.has("Bug") && p.has("Feature") && p.has("Feedback"));
-    // Triage is not in the list below, which keeps the rest.
-    assert!(p.has("2 tasks"));
-    assert!(p.has("Rate leads by role bucket"));
+    // A click on a row opens the task.
+    row_node(&p, BUG_TITLE).click();
+    p.steps(2);
+    assert_eq!(p.open().1.as_deref(), Some(BUG));
 }
 
 #[test]
-fn accept_keeps_it_in_the_intake_project_or_moves_it() {
+fn triage_opens_from_the_palette() {
     let f = my_tasks(true, true);
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    p.button("Accept");
+    let mut p = page(&app, &f, Tab::Home, None, (1440.0, 1100.0), false);
+    p.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+    p.steps(2);
+    p.harness.event(egui::Event::Text("Triage".into()));
+    p.steps(2);
+    p.harness.key_press(egui::Key::Enter);
+    p.steps(3);
+    assert!(tab(&p) == Tab::Triage);
+}
+
+#[test]
+fn rows_are_quiet_until_hovered() {
+    let f = my_tasks(true, true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
+    let accept = format!("Accept {BUG_TITLE}");
+    assert!(!p.has(&accept) && !p.has("Accept"), "no buttons at rest");
+    assert!(!p.has("Accept into a project"), "no split button");
+    hover_row(&mut p, BUG_TITLE);
+    assert!(p.has(&accept) && p.has(&format!("Dismiss {BUG_TITLE}")));
+    assert!(!p.has(&format!("Accept {DM_TITLE}")), "only the row pointed at");
+    p.button(&accept);
     p.seed("tasks:action", json!({"id": BUG, "status": "open"}));
     p.steps(3);
     assert!(p.has("Accepted \u{2014} it is an open task now."));
     assert_eq!(p.open(), (None, None), "a decision is not a visit");
+}
 
-    p.button("Accept into a project");
-    assert!(p.has("Keep with no project"), "a filing is standalone");
+#[test]
+fn a_and_d_decide_the_hovered_row() {
+    let f = my_tasks(true, true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
+    hover_row(&mut p, DM_TITLE);
+    p.harness.key_press(egui::Key::D);
+    p.steps(3);
+    assert!(p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")));
+    // Typing a reason with an A in it is typing, not a decision.
+    p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).focus();
+    p.steps(1);
+    p.harness.key_press(egui::Key::A);
+    p.steps(2);
+    assert!(p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")), "still asking");
+    p.harness.key_press(egui::Key::Escape);
+    p.steps(3);
+
+    hover_row(&mut p, BUG_TITLE);
+    p.harness.key_press(egui::Key::A);
+    p.steps(2);
+    p.seed("tasks:action", json!({"id": BUG, "status": "open"}));
+    p.steps(3);
+    assert!(p.has("Accepted \u{2014} it is an open task now."));
+}
+
+#[test]
+fn accept_into_is_on_the_right_click_menu() {
+    let f = my_tasks(true, true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
+    row_node(&p, BUG_TITLE).click_secondary();
+    p.steps(3);
+    for item in ["Open", "Accept", "Accept into", "Dismiss\u{2026}", "Copy title"] {
+        assert!(p.has(item), "{item}");
+    }
+    p.harness.get_by_label("Accept into").hover();
+    p.steps(3);
     assert!(p.has("Checkout redesign"));
     assert!(!p.has("Old launch"), "archived projects are not offered");
     p.button("Checkout redesign");
@@ -298,14 +395,17 @@ fn accept_keeps_it_in_the_intake_project_or_moves_it() {
 fn dismiss_asks_for_an_optional_reason() {
     let f = my_tasks(true, true);
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    p.button("Dismiss");
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
+    let dismiss = format!("Dismiss {BUG_TITLE}");
+    hover_row(&mut p, BUG_TITLE);
+    p.button(&dismiss);
     assert!(p.has(&format!("Dismiss \u{201c}{BUG_TITLE}\u{201d}?")));
     p.harness.key_press(egui::Key::Escape);
     p.steps(3);
     assert!(!p.has(&format!("Dismiss \u{201c}{BUG_TITLE}\u{201d}?")), "Escape leaves it in triage");
 
-    p.button("Dismiss");
+    hover_row(&mut p, BUG_TITLE);
+    p.button(&dismiss);
     p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).focus();
     p.steps(1);
     p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).type_text("Fixed in #4821");
@@ -318,34 +418,21 @@ fn dismiss_asks_for_an_optional_reason() {
 }
 
 #[test]
-fn the_row_menu_offers_the_same_decisions() {
-    let f = my_tasks(true, true);
+fn an_empty_triage_tab_stays_put() {
+    let mut f = my_tasks(false, true);
+    f[1] = ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 0}));
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    p.harness
-        .get_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(DM_TITLE))
-        .click_secondary();
-    p.steps(3);
-    for item in ["Open", "Accept", "Accept into", "Dismiss\u{2026}", "Copy title"] {
-        assert!(p.has(item), "{item}");
-    }
-    p.button("Dismiss\u{2026}");
-    assert!(p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")));
-}
-
-#[test]
-fn empty_triage_teaches_only_those_with_an_intake_agent() {
-    let f = my_tasks(false, true);
-    let app = RefCell::new(None);
-    let p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
+    let p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
+    assert!(tab(&p) == Tab::Triage);
     assert!(p.has("Nothing to triage."));
     assert!(p.has("Tasks your intake agents file land here."));
+    assert!(p.has("Triage"), "the sidebar row stays while you are on it");
     drop(p);
 
-    let f = my_tasks(false, false);
+    // Elsewhere, with nothing waiting, neither the row nor the line shows.
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    assert!(!p.has("Nothing to triage."));
+    assert!(!p.has("Triage") && !p.has_part("to triage"));
 }
 
 #[test]
@@ -359,6 +446,7 @@ fn source_card_quotes_the_message_for_the_owner() {
     assert!(p.has_part("Filed by Slack Agent \u{2014} looks like a bug: checkout fails for saved cards \u{00B7} 0.86"));
     assert!(p.has("Category: Bug"), "the owner can recategorise");
     assert!(p.has("Accept") && p.has("Dismiss"));
+    assert!(!p.has("Accept into a project"), "no caret beside Accept");
     assert!(p.has("Triage"), "the rail's status");
 }
 
@@ -403,6 +491,13 @@ fn accept_from_the_task_page() {
     let f = task_page_fixtures(BUG, true);
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (1440.0, 1400.0), false);
+    let accepts = p.harness.get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Accept")).count();
+    assert_eq!(accepts, 1, "one Accept");
+    // Accept into another project is in the page's ⋯ menu.
+    p.button("More actions");
+    assert!(p.has("Accept into"));
+    p.harness.key_press(egui::Key::Escape);
+    p.steps(2);
     p.button("Accept");
     p.seed("tasks:action", json!({"id": BUG, "status": "open"}));
     p.steps(3);
@@ -457,9 +552,15 @@ fn home_lists_triage_as_needing_attention() {
 const WIDTHS: [(f32, &str); 2] = [(1440.0, "1440"), (820.0, "820")];
 const DIR: &str = "docs/design-mocks/render/intake";
 
+const TRIAGE_DIR: &str = "docs/design-mocks/render/triage";
+
 fn save(p: &mut Page<'_>, name: &str, label: &str) {
-    std::fs::create_dir_all(DIR).unwrap();
-    let path = format!("{DIR}/{name}-{label}.png");
+    save_in(p, DIR, name, label);
+}
+
+fn save_in(p: &mut Page<'_>, dir: &str, name: &str, label: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = format!("{dir}/{name}-{label}.png");
     p.harness.render().expect("render").save(&path).expect("write png");
     eprintln!("wrote {path}");
 }
@@ -485,16 +586,37 @@ fn renders() {
         let f = my_tasks(true, true);
         let app = RefCell::new(None);
         let mut p = page(&app, &f, Tab::MyTasks, None, (width, 1000.0), true);
-        save(&mut p, "my-tasks-triage", label);
-        p.button("Accept into a project");
+        save_in(&mut p, TRIAGE_DIR, "my-tasks-top", label);
+        drop(p);
+
+        let app = RefCell::new(None);
+        let mut p = page(&app, &f, Tab::Triage, None, (width, 1000.0), true);
+        save_in(&mut p, TRIAGE_DIR, "triage-tab", label);
+        hover_row(&mut p, BUG_TITLE);
+        p.steps(20);
+        save_in(&mut p, TRIAGE_DIR, "triage-tab-hovered", label);
+        row_node(&p, IDEA_TITLE).click_secondary();
         p.steps(3);
-        save(&mut p, "my-tasks-accept-into", label);
+        p.harness.get_by_label("Accept into").hover();
+        p.steps(6);
+        save_in(&mut p, TRIAGE_DIR, "triage-row-menu", label);
+        drop(p);
+
+        let mut empty = my_tasks(false, true);
+        empty[1] = ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 0}));
+        let app = RefCell::new(None);
+        let mut p = page(&app, &empty, Tab::Triage, None, (width, 1000.0), true);
+        save_in(&mut p, TRIAGE_DIR, "triage-empty", label);
         drop(p);
 
         let f = task_page_fixtures(BUG, true);
         let app = RefCell::new(None);
         let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (width, 1300.0), true);
         save(&mut p, "task-source-owner", label);
+        save_in(&mut p, TRIAGE_DIR, "task-page-header", label);
+        p.button("More actions");
+        p.steps(4);
+        save_in(&mut p, TRIAGE_DIR, "task-page-more", label);
         drop(p);
 
         let f = task_page_fixtures(DM, false);

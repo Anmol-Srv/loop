@@ -1,8 +1,8 @@
 //! Triage: tasks an intake agent filed for someone, waiting on a yes or a no.
 //!
 //! Linear's Triage is the model — a compact row per item, the source it came
-//! from underneath, and the decision inline. The pieces here are shared: My
-//! Tasks draws the group, the task page draws the source card and the same
+//! from underneath, and the decision a hover away. The Triage tab draws the
+//! list, My Tasks a line that leads to it, the task page the source card and
 //! Accept / Dismiss, and every row's right-click menu offers them too (see
 //! `menus::task_items`). The requests themselves go through `menus::Tasks`,
 //! like every other task action, so the toast and the invalidation are one.
@@ -21,8 +21,6 @@ pub(super) const NOT_YOURS: &str = "Only the person it was filed for, or an admi
 
 /// Two lines — the title, then where it came from — at a list row's pitch.
 const ROW_H: f32 = 56.0;
-/// The split button's caret half.
-const CARET_W: f32 = 24.0;
 
 /// The categories an intake agent files under, wire value first.
 pub(super) const CATEGORIES: [(&str, &str); 5] =
@@ -534,101 +532,146 @@ pub(super) fn category_chip(ui: &mut egui::Ui, current: Option<&str>, editable: 
 
 // ------------------------------------------------------------------ decisions
 
-/// Accept (with the project it goes to behind a caret) and Dismiss, laid out
-/// right to left: call from a right-to-left layout. `deciding` shows the
-/// request in flight instead of the buttons.
-pub(super) fn actions(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, deciding: bool) -> Option<Pick> {
-    if deciding {
-        ui.add(egui::Spinner::new().size(text::BODY));
-        return None;
-    }
+/// The task page's decision: Accept as a secondary button, Dismiss as a ghost
+/// beside it. Accept into another project lives in the page's ⋯ menu, which
+/// draws the same items as a row's right-click. Right to left: call from a
+/// right-to-left layout.
+pub(super) fn page_actions(ui: &mut egui::Ui, t: &Value) -> Option<Pick> {
+    let hover = match str_of(t, "projectName").filter(|n| !n.is_empty()) {
+        Some(p) => format!("Make it an open task in {p}"),
+        None => "Make it an open task, in no project".to_owned(),
+    };
     let mut pick = None;
+    if w::secondary(ui, "Accept", true).on_hover_text(hover).clicked() {
+        pick = Some(Pick::Accept(None));
+    }
     if w::ghost(ui, "Dismiss").on_hover_text("Drop it, with an optional reason").clicked() {
         pick = Some(Pick::Dismiss);
     }
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let caret = caret_button(ui);
-        let here = str_of(t, "projectId");
-        let project = str_of(t, "projectName").filter(|n| !n.is_empty());
-        let (keep, hover) = match project {
-            Some(p) => (format!("Keep in {p}"), format!("Make it an open task in {p}")),
-            None => ("Keep with no project".to_owned(), "Make it an open task, in no project".to_owned()),
-        };
-        viz::click_menu(&caret, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_height(size::CONTROL - space::XS);
-                ui.add_space(space::SM);
-                w::caption(ui, "Accept into");
-            });
-            if viz::menu_item(ui, &keep, false, None) {
-                pick = Some(Pick::Accept(None));
-            }
-            let others: Vec<&(String, String)> =
-                viewer.projects.iter().filter(|(id, _)| Some(id.as_str()) != here).collect();
-            if !others.is_empty() {
-                viz::menu_rule(ui);
-            }
-            for (id, name) in others {
-                if viz::menu_item(ui, name, false, None) {
-                    pick = Some(Pick::Accept(Some((id.clone(), name.clone()))));
-                }
-            }
-        });
-        ui.add_space(1.0);
-        if w::secondary(ui, "Accept", true).on_hover_text(hover).clicked() {
-            pick = Some(Pick::Accept(None));
-        }
-    });
     pick
 }
 
-/// The caret half of Accept: opens "Accept into".
-fn caret_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(CARET_W, size::CONTROL), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Accept into a project"));
+/// A row's icon button: square, this side.
+const ICON_BTN: f32 = 26.0;
+
+/// A ghost icon button painted at `rect`: nothing at rest but the glyph, a
+/// soft fill on hover. `alpha` is the row's reveal, so the pair fades in and
+/// out with the row's hover rather than popping.
+fn icon_action(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, name: String, tip: &str, alpha: f32, accept: bool) -> egui::Response {
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.as_str()));
     let response = motion::operable_sm(ui, response);
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
-    let hot = response.hovered() || response.has_focus() || open;
+    let hot = response.hovered() || response.has_focus();
+    let fill = motion::hover_fill(ui, id.with("fill"), hot, colour::TRANSPARENT, colour::GLASS_HOVER);
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, if hot { colour::GLASS_HOVER } else { colour::GLASS });
-    p.rect_stroke(
-        rect,
-        radius::SM as f32,
-        egui::Stroke::new(1.0, if hot { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }),
-        egui::StrokeKind::Inside,
-    );
-    glyph::caret(p, rect.center(), text::BODY, 1.0, if hot { colour::TEXT } else { colour::TEXT_MUTED });
-    if response.hovered() {
+    if fill != colour::TRANSPARENT {
+        p.rect_filled(rect, radius::SM as f32, fill.gamma_multiply(alpha));
+    }
+    let ink = if hot { colour::TEXT } else { colour::TEXT_MUTED }.gamma_multiply(alpha);
+    if accept {
+        glyph::tick(p, rect.center(), text::BODY, ink);
+    } else {
+        glyph::cross(p, rect.center(), text::BODY, ink);
+    }
+    if hot {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if open {
-        response
-    } else {
-        response.on_hover_text("Accept into another project")
-    }
+    response.on_hover_text(tip)
 }
 
-// ------------------------------------------------------------------ the group
+// ------------------------------------------------------------------ My Tasks
 
-/// What the group asked for: a task to open, or a decision.
-pub(super) enum Out {
+/// "3 to triage", one quiet line at the top of My Tasks that opens the
+/// Triage tab. True when clicked.
+pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
+    let words = format!("{n} to triage");
+    let font = egui::FontId::proportional(text::BODY);
+    let galley = ui.painter().layout_no_wrap(words.clone(), font, colour::TEXT_2);
+    // Flush with the page's left column; the hover fill bleeds past it.
+    let width = text::HEADING + space::XS + galley.size().x + space::SM + text::SMALL;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, size::CONTROL), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, words.as_str()));
+    let response = motion::operable_sm(ui, response);
+    let hot = response.hovered() || response.has_focus();
+    let fill = motion::hover_fill(ui, response.id.with("hover"), hot, colour::TRANSPARENT, colour::GLASS_HOVER);
+    let p = ui.painter();
+    if fill != colour::TRANSPARENT {
+        p.rect_filled(rect.expand2(Vec2::new(space::SM, 0.0)), radius::SM as f32, fill);
+    }
+    let ink = if hot { colour::TEXT } else { colour::TEXT_2 };
+    let mut x = rect.left();
+    p.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        egui_phosphor::thin::TRAY,
+        egui::FontId::proportional(text::HEADING),
+        colour::TEXT_MUTED,
+    );
+    x += text::HEADING + space::XS;
+    p.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, ink);
+    let caret_x = rect.right() - text::SMALL / 2.0;
+    glyph::caret(p, egui::pos2(caret_x, rect.center().y), text::SMALL, 0.0, if hot { colour::TEXT } else { colour::TEXT_FAINT });
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.on_hover_text("Open Triage").clicked()
+}
+
+// ------------------------------------------------------------------ the tab
+
+/// What the list asked for: a task to open, or a decision.
+enum Out {
     Open(String),
     Pick(Value, Pick),
 }
 
-/// The Triage group at the top of My Tasks. Nothing at all for someone with
-/// no intake agent and nothing filed; the empty state only for someone who
-/// has one, so it teaches where these come from rather than advertising it.
-pub(super) fn group(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, deciding: Option<&str>, has_intake: bool) -> Option<Out> {
-    if rows.is_empty() && !has_intake {
-        return None;
+/// The Triage tab: what intake agents filed for you, newest first, waiting
+/// on a yes or a no. Stays put when the last one is decided, on the empty
+/// state, rather than bouncing you somewhere else.
+pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
+    let viewer = Viewer::of(app);
+    let net = app.net.as_mut().expect("signed in");
+    net.get_once(super::mytasks::MINE, "/api/user/tasks/mine");
+    want_projects(net);
+    let viewer = Viewer { projects: projects(net), ..viewer };
+    let loading = net.is_loading(super::mytasks::MINE);
+    let error = net.error(super::mytasks::MINE).map(str::to_owned);
+    let all = net.shared(super::mytasks::MINE);
+    let mut rows: Vec<&Value> = all
+        .as_deref()
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter(|t| str_of(t, "status") == Some("triage")).collect())
+        .unwrap_or_default();
+    rows.sort_by(|a, b| str_of(b, "createdAt").cmp(&str_of(a, "createdAt")));
+
+    let subtitle = match rows.len() {
+        0 => String::new(),
+        1 => "1 waiting on a yes or a no".to_owned(),
+        n => format!("{n} waiting on a yes or a no"),
+    };
+    shell::page_title(ui, "Triage", &subtitle, |_| {});
+
+    if let Some(err) = error {
+        w::error(ui, &format!("Could not load triage. {err} Use Refresh in the sidebar to try again."));
+        return;
     }
-    shell::section_count(ui, "Triage", rows.len());
     if rows.is_empty() {
-        w::empty(ui, "Nothing to triage.", "Tasks your intake agents file land here.");
-        return None;
+        if loading && all.is_none() {
+            w::loading(ui, "Loading triage");
+        } else {
+            w::empty(ui, "Nothing to triage.", "Tasks your intake agents file land here.");
+        }
+        return;
     }
+    let out = list(ui, &rows, &viewer, app.board.tasks.deciding.as_deref());
+    match out {
+        Some(Out::Open(id)) => app.task = Some(id),
+        Some(Out::Pick(t, p)) => app.board.tasks.pick(app.net.as_mut().unwrap(), &t, p),
+        None => {}
+    }
+}
+
+fn list(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, deciding: Option<&str>) -> Option<Out> {
     let mut out = None;
     w::card_list(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -647,12 +690,15 @@ pub(super) fn group(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, decidin
     out
 }
 
+/// One filing: category and title, then where it came from. Nothing to press
+/// at rest; hover or focus fades in a tick and a cross at the right end, and
+/// A or D decides from the keyboard. Accept into another project is on the
+/// right-click menu.
 fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out> {
     let title = str_of(t, "title").unwrap_or("Untitled");
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     let response = motion::operable_sm(ui, response);
-    let mut out = None;
 
     let mut pick = None;
     let menu_open = viz::context_menu(&response, |ui| {
@@ -660,7 +706,12 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
             pick = Some(p);
         }
     });
-    let lit = response.hovered() || response.has_focus() || menu_open;
+    // `contains_pointer`, not `hovered`: the icon buttons sit over the row,
+    // and pointing at one must not put the row out.
+    let decides = decides(t, viewer);
+    let (accept_id, dismiss_id) = (response.id.with("accept"), response.id.with("dismiss"));
+    let icon_focus = ui.memory(|m| m.has_focus(accept_id) || m.has_focus(dismiss_id));
+    let lit = response.contains_pointer() || response.has_focus() || menu_open || icon_focus;
     let tint = motion::hover_fill(ui, response.id.with("hover"), lit, colour::TRANSPARENT, colour::SURFACE_HOVER);
     if tint != colour::TRANSPARENT {
         ui.painter().rect_filled(rect, radius::SM as f32, tint);
@@ -669,19 +720,45 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let mut inner = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(space::MD, 0.0)))
-            .layout(egui::Layout::right_to_left(egui::Align::Center)),
-    );
-    inner.spacing_mut().item_spacing.x = space::SM;
-    if decides(t, viewer) {
-        pick = pick.or(actions(&mut inner, t, viewer, busy));
+    // The pair's room is kept whether or not it shows, so the title never
+    // re-truncates under the pointer.
+    let reserve = if decides { ICON_BTN * 2.0 + space::XXS + space::SM } else { 0.0 };
+    if decides {
+        let y = rect.center().y - ICON_BTN / 2.0;
+        let dismiss = egui::Rect::from_min_size(egui::pos2(rect.right() - space::SM - ICON_BTN, y), Vec2::splat(ICON_BTN));
+        let accept = dismiss.translate(Vec2::new(-(ICON_BTN + space::XXS), 0.0));
+        if busy {
+            let spin = egui::Rect::from_center_size(dismiss.center(), Vec2::splat(text::BODY));
+            ui.put(spin, egui::Spinner::new().size(text::BODY));
+        } else {
+            let alpha = motion::to(ui, response.id.with("reveal"), lit, motion::FAST);
+            if alpha > 0.0 {
+                if icon_action(ui, accept, accept_id, format!("Accept {title}"), "Accept (A)", alpha, true).clicked() {
+                    pick = Some(Pick::Accept(None));
+                }
+                if icon_action(ui, dismiss, dismiss_id, format!("Dismiss {title}"), "Dismiss (D)", alpha, false).clicked() {
+                    pick = Some(Pick::Dismiss);
+                }
+            }
+            // A and D, while the row is the one pointed at or focused — and
+            // not while a text field has the keyboard.
+            if lit && !menu_open && !ui.ctx().text_edit_focused() {
+                let (a, d) = ui.input_mut(|i| {
+                    (i.consume_key(egui::Modifiers::NONE, egui::Key::A), i.consume_key(egui::Modifiers::NONE, egui::Key::D))
+                });
+                if a {
+                    pick = Some(Pick::Accept(None));
+                } else if d {
+                    pick = Some(Pick::Dismiss);
+                }
+            }
+        }
     }
-    // Two lines at fixed heights in what the actions left: nested layouts
-    // each take a control's height and spill into the next row.
+
+    // Two lines at fixed heights: nested layouts each take a control's height
+    // and spill into the next row.
     let left = rect.left() + space::MD;
-    let right = inner.min_rect().left().min(rect.right() - space::MD) - space::SM;
+    let right = rect.right() - space::MD - reserve;
     let mut line = |top: f32, h: f32| {
         ui.new_child(
             egui::UiBuilder::new()
@@ -721,12 +798,11 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
     }
 
     match pick {
-        Some(Pick::Open) => out = str_of(t, "id").map(|id| Out::Open(id.to_owned())),
-        Some(p) => out = Some(Out::Pick(t.clone(), p)),
-        None if response.clicked() => out = str_of(t, "id").map(|id| Out::Open(id.to_owned())),
-        None => {}
+        Some(Pick::Open) => str_of(t, "id").map(|id| Out::Open(id.to_owned())),
+        Some(p) => Some(Out::Pick(t.clone(), p)),
+        None if response.clicked() => str_of(t, "id").map(|id| Out::Open(id.to_owned())),
+        None => None,
     }
-    out
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

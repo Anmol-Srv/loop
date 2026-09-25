@@ -58,8 +58,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let on_task = app.task.is_some();
     let sel = |t: Tab| app.tab == t && !on_task;
 
-    // Triage is a row of its own only while something waits in it: an
-    // attention badge, under My Tasks, which is where its group sits.
+    // Triage is a row of its own only while something waits in it — or while
+    // you are on it, so emptying it does not pull the floor out from under
+    // you. An attention badge, under My Tasks.
     let mut items = vec![
         (shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)), Tab::Home),
         (
@@ -67,8 +68,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             Tab::MyTasks,
         ),
     ];
-    if triage > 0 {
-        items.push((shell::NavItem::new(icon::TRAY, "Triage", false).badge(triage), Tab::MyTasks));
+    if triage > 0 || app.tab == Tab::Triage {
+        items.push((shell::NavItem::new(icon::TRAY, "Triage", sel(Tab::Triage)).badge(triage), Tab::Triage));
     }
     items.push((
         shell::NavItem::new(icon::SQUARES_FOUR, "Projects", sel(Tab::Projects)).count(projects_active.to_string()),
@@ -183,6 +184,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             match app.tab {
                 Tab::Home => views::home::ui(app, ui),
                 Tab::MyTasks => views::mytasks::ui(app, ui),
+                Tab::Triage => views::triage::page(app, ui),
                 Tab::Projects => views::board::ui(app, ui),
                 Tab::Agents => views::agents::ui(app, ui),
             }

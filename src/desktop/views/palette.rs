@@ -228,6 +228,7 @@ fn results(tasks: Option<&Value>, projects: Option<&Value>, query: &str, can_wri
     let mut pages = vec![
         ("Home", Target::Tab(Tab::Home)),
         ("My Tasks", Target::Tab(Tab::MyTasks)),
+        ("Triage", Target::Tab(Tab::Triage)),
         ("Projects", Target::Tab(Tab::Projects)),
         ("Agents", Target::Tab(Tab::Agents)),
     ];

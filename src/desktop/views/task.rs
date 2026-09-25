@@ -701,7 +701,7 @@ fn headline(
                 let mut pick = None;
                 viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
                 if status == "triage" && super::triage::decides(task, viewer) && !local.deciding {
-                    pick = pick.or(super::triage::actions(ui, task, viewer, local.deciding));
+                    pick = pick.or(super::triage::page_actions(ui, task));
                 }
                 if let Some((copy, next)) = action {
                     if w::primary(ui, copy, !busy).clicked() {

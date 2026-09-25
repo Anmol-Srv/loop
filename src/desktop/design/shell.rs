@@ -263,6 +263,13 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
         egui::vec2(ui.available_width(), size::NAV_ROW),
         egui::Sense::click(),
     );
+    // Named, and selected when it is the page showing: a screen reader (and a
+    // test) finds a destination by what it says.
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Button, true, item.label);
+        info.selected = Some(item.selected);
+        info
+    });
     let response = super::motion::operable(ui, response, radius::SM as f32);
 
     let r = radius::SM as f32;

@@ -24,7 +24,7 @@ use crate::desktop::App;
 
 /// The personal list. Prefixed `mytasks` so any view that moves a task can drop
 /// it with one `invalidate_prefix`.
-const MINE: &str = "mytasks:mine";
+pub(super) const MINE: &str = "mytasks:mine";
 /// The archived ones, under the Archived toggle.
 const ARCHIVED: &str = "mytasks:archived";
 /// This view owns its filters and nothing else reads them, so they live in
@@ -122,10 +122,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let open = rows.iter().filter(|t| !finished(t)).count();
     let in_projects = projects.iter().filter(|p| **p != NO_PROJECT).count();
-    let mut subtitle = format!("{open} open across {}", plural(in_projects, "project"));
-    if !triage.is_empty() {
-        subtitle += &format!(" \u{00B7} {} to triage", triage.len());
-    }
+    let subtitle = format!("{open} open across {}", plural(in_projects, "project"));
 
     let mut new_task = false;
     shell::page_title(ui, "My Tasks", &subtitle, |ui| {
@@ -146,28 +143,17 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     let mut open_task: Option<String> = None;
     let mut picked: Option<(Value, Pick)> = None;
-    if !state.archived {
-        let net = app.net.as_mut().unwrap();
-        if !triage.is_empty() {
-            super::triage::want_projects(net);
+    // Triage has a tab of its own; here it is one quiet line that goes there,
+    // so the decisions do not crowd the work already yours.
+    if !state.archived && !triage.is_empty() {
+        if super::triage::link_row(ui, triage.len()) {
+            app.tab = crate::desktop::Tab::Triage;
         }
-        let has_intake = net
-            .data(super::agents::AGENTS_KEY)
-            .and_then(Value::as_array)
-            .is_some_and(|a| a.iter().any(|a| a.get("canIntake").and_then(Value::as_bool) == Some(true)));
-        let viewer = Viewer { projects: super::triage::projects(net), ..viewer.clone() };
-        match super::triage::group(ui, &triage, &viewer, app.board.tasks.deciding.as_deref(), has_intake) {
-            Some(super::triage::Out::Open(id)) => open_task = Some(id),
-            Some(super::triage::Out::Pick(t, p)) => picked = Some((t, p)),
-            None => {}
-        }
-        if !triage.is_empty() || has_intake {
-            ui.add_space(space::XL);
-        }
+        ui.add_space(space::LG);
     }
 
     // The archived list may be empty; its toggle is still the way back.
-    // With only triage, the group above is the page.
+    // With only triage, the line above is the page.
     if rows.is_empty() && !state.archived {
         if loading && triage.is_empty() {
             w::loading(ui, "Loading your work");
