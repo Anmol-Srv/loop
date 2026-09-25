@@ -295,10 +295,54 @@ pub fn intake_tools() -> Vec<ToolDef> {
             ),
         ),
         tool(
+            "intake_attach",
+            "Attach a file that came with a message you filed or appended: a screenshot or a PDF, shown under \
+             the message on the task. PNG, JPEG, GIF, WebP or PDF, 8 MB at most, base64-encoded. sourceKey is \
+             the message it came with (the filed one if left out). The same name from the same message is \
+             attached once (409 after).",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "name": { "type": "string", "description": "File name, e.g. screenshot.png." },
+                    "mime": { "type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"] },
+                    "dataBase64": { "type": "string", "description": "The file's bytes, base64 (standard alphabet)." },
+                    "sourceKey": { "type": "string", "description": "The source.key of the message it came with." },
+                }),
+                &["taskId", "name", "mime", "dataBase64"],
+            ),
+        ),
+        tool(
             "intake_recent",
             "What you filed in the last N days (default 14), newest first: id, title, category, status and \
              source {key, url, channel}. Read it before filing so you append instead of filing a duplicate.",
             schema(json!({ "days": { "type": "integer", "minimum": 1, "maximum": 90, "default": 14 } }), &[]),
         ),
     ]
+}
+
+/// Reporting a run, for every agent: one call per pass it makes on a
+/// schedule, so its owner sees each pass and what it found.
+pub fn run_tools() -> Vec<ToolDef> {
+    let count = json!({ "type": "integer", "minimum": 0 });
+    vec![ToolDef {
+        name: "run_report",
+        description: "Report one pass you made (an intake sweep of Slack, say) when it ends, ok or not. Your \
+             owner sees each run on your page: when, the status, the counts and any error. status: ok (it \
+             finished), partial (some items failed) or failed (it did not run; error required).",
+        scope: "agent",
+        input_schema: schema(
+            json!({
+                "startedAt": { "type": "string", "format": "date-time", "description": "When the pass began; now if left out." },
+                "status": { "type": "string", "enum": ["ok", "partial", "failed"] },
+                "summary": { "type": "string", "maxLength": 500, "description": "One line on what the pass did." },
+                "counts": {
+                    "type": "object",
+                    "properties": { "filed": count, "appended": count, "alreadyFiled": count, "skipped": count },
+                },
+                "error": { "type": "string", "description": "What failed, if anything: the step and its message." },
+            }),
+            &["status"],
+        ),
+        doc: "",
+    }]
 }

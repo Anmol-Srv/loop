@@ -380,6 +380,9 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                         Vec2::new(galley.size().x + space::MD * 2.0, 24.0),
                         Sense::click(),
                     );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, *label)
+                    });
                     let response = motion::operable(ui, response, radius::SM as f32);
                     if on {
                         ui.painter()

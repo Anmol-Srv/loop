@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use super::agent_session::{self as session, Session};
 use super::agents::{state_tone, state_words, AGENTS_KEY};
 use super::menus::{task_items, Pick, Viewer};
-use super::projects::{person_option, PEOPLE_KEY, PROSE_W};
+use super::projects::{label_badge, label_picker, person_option, LABELS_KEY, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::agent::{self as face, Presence};
 use crate::desktop::design::{
     avatar, cards as c, colour, radius, shell, size, space, status_label, text, theme, viz, widgets as w,
@@ -50,6 +50,8 @@ const ATTACH_KEY: &str = "task:artifact:new";
 const NOTES_KEY: &str = "task:notes";
 const NOTE_KEY: &str = "task:note:new";
 const DETAILS_KEY: &str = "task:details";
+/// A label made from the rail; its reply joins the task's set.
+const NEW_LABEL_KEY: &str = "task:new-label";
 const REMOVE_KEY: &str = "task:artifact:remove";
 /// Hand-off, take-back, answer and review all go out under this one key: they
 /// are started from one page, one at a time.
@@ -246,6 +248,9 @@ struct Local {
     archiving: bool,
     /// This task's Accept or Dismiss is out.
     deciding: bool,
+    /// The labels just picked, shown until the save lands and the task is
+    /// read again.
+    labels: Option<Vec<String>>,
 }
 
 impl Local {
@@ -270,6 +275,7 @@ impl Local {
             pick: None,
             archiving: false,
             deciding: false,
+            labels: None,
         }
     }
 }
@@ -315,6 +321,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // Asked for on the first frame with the rest, not once `__me` has landed
     // and said whether you may write: waiting on it made this a second wave.
     net.get_once(PEOPLE_KEY, "/api/user/people");
+    if can_write {
+        net.get_once(LABELS_KEY, "/api/user/labels");
+    }
 
     let task = net.shared(TASK_KEY);
     // Only the assignee hands off, so only the assignee needs their agents.
@@ -389,6 +398,20 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     settle_move(net, local);
     settle_details(ui.ctx(), net, task_id, local);
     settle_agent(net, local);
+    // A label made from the rail exists now, so it joins the set.
+    let mut label_patch: Option<Vec<String>> = None;
+    if let Some(label) = net.data(NEW_LABEL_KEY).cloned() {
+        net.invalidate(NEW_LABEL_KEY);
+        net.invalidate(LABELS_KEY);
+        let mut picked = local.labels.clone().unwrap_or_else(|| label_ids(&task));
+        if let Some(id) = str_of(&label, "id").filter(|id| !picked.iter().any(|p| p == id)) {
+            picked.push(id.to_owned());
+            label_patch = Some(picked);
+        }
+    }
+    let label_error = net.error(NEW_LABEL_KEY).map(str::to_owned);
+    let all_labels = net.shared(LABELS_KEY);
+    let picked_labels = local.labels.clone();
 
     let delegate = task.get("delegate").filter(|d| d.is_object());
     let agents = memo(ui.ctx(), egui::Id::new("task:my-agents"), net.generation(AGENTS_KEY), || {
@@ -458,7 +481,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                     description(ui, &task);
                 }
                 manual_reason(ui, &task);
-                super::triage::source_card(ui, &task);
+                super::triage::source_card(ui, net, &task);
 
                 if let Some(d) = delegate {
                     let notes = net.shared(NOTES_KEY);
@@ -500,6 +523,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 people,
                 can_move,
                 projects: &viewer.projects,
+                all_labels: all_labels.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                picked_labels: picked_labels.as_deref(),
+                label_error: label_error.as_deref(),
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -513,7 +539,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             local.notice = None;
             start_move(net, task_id, &status, next, track, &held, local);
         }
+        Some(Ask::NewLabel(body)) => net.post(NEW_LABEL_KEY, "/api/user/labels", body),
         Some(Ask::Details(mut body)) => {
+            if let Some(ids) = body.get("labelIds").and_then(Value::as_array) {
+                local.labels = Some(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+            }
             // The rail edits one field the viewer can see, so the task as
             // shown is the version the edit is made against.
             if let Some(at) = &updated_at {
@@ -522,6 +552,14 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             save_details(net, task_id, body, false, local);
         }
         None => {}
+    }
+    if let Some(ids) = label_patch {
+        let mut body = json!({ "labelIds": ids });
+        if let Some(at) = &updated_at {
+            body["expectedUpdatedAt"] = json!(at);
+        }
+        local.labels = Some(ids);
+        save_details(net, task_id, body, false, local);
     }
     // The page's own hand-off and details edits say how they went where
     // they always have; archive and delete share every other menu's dialog.
@@ -927,6 +965,7 @@ fn settle_agent(net: &mut crate::desktop::net::Net, local: &mut Local) {
 enum Ask {
     Move(&'static str),
     Details(Value),
+    NewLabel(Value),
 }
 
 /// What the rail needs to know about the viewer and the page.
@@ -943,6 +982,19 @@ struct Rail<'a> {
     can_move: bool,
     /// Live projects: (id, name).
     projects: &'a [(String, String)],
+    /// The shared label vocabulary, for the picker.
+    all_labels: &'a [Value],
+    /// The set just picked, while its save is out.
+    picked_labels: Option<&'a [String]>,
+    label_error: Option<&'a str>,
+}
+
+/// The ids of the labels a task wears.
+fn label_ids(task: &Value) -> Vec<String> {
+    task.get("labels")
+        .and_then(Value::as_array)
+        .map(|ls| ls.iter().filter_map(|l| str_of(l, "id")).map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 /// Everything a task *is*, as a column of labelled facts — and, for anyone
@@ -1129,6 +1181,44 @@ fn rail(
                 }
             }
             None => faint(ui, "No project"),
+        }
+    });
+
+    let chosen: Vec<String> = r.picked_labels.map_or_else(|| label_ids(task), <[String]>::to_vec);
+    shell::property(ui, "Labels", |ui| {
+        if !r.can_write || r.busy {
+            // The set as it stands, or as just picked while that save is out.
+            let shown: Vec<&Value> = chosen
+                .iter()
+                .filter_map(|id| {
+                    r.all_labels
+                        .iter()
+                        .chain(task.get("labels").and_then(Value::as_array).into_iter().flatten())
+                        .find(|l| str_of(l, "id") == Some(id.as_str()))
+                })
+                .collect();
+            if shown.is_empty() {
+                faint(ui, "None");
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
+                for l in shown {
+                    label_badge(ui, l);
+                }
+            });
+            return;
+        }
+        let mut picked = chosen.clone();
+        ui.vertical(|ui| {
+            if let Some(body) = label_picker(ui, "Add labels", r.all_labels, &mut picked) {
+                ask = Some(Ask::NewLabel(body));
+            }
+            if let Some(err) = r.label_error {
+                ui.label(RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+            }
+        });
+        if picked != chosen {
+            ask = Some(Ask::Details(json!({ "labelIds": picked })));
         }
     });
 
@@ -1441,6 +1531,7 @@ fn settle_details(
     }
     local.saving = false;
     local.saving_text = false;
+    local.labels = None;
     invalidate_after_move(net);
 }
 

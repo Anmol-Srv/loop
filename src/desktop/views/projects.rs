@@ -71,10 +71,8 @@ const NAME_MIN_W: f32 = 90.0;
 /// Two label chips on a row, then a "+N". Two is what fits beside a name
 /// without the name becoming an abbreviation.
 const MAX_LABEL_CHIPS: usize = 2;
-/// What one chip is assumed to cost when reserving room for the name. Chips
-/// size to their own text, so this is a nominal: labels are short by
-/// convention ("Q4", "infra"), and over-reserving costs a few characters of
-/// name where under-reserving would clip a chip to nothing.
+/// Half the most one badge may reserve beside a name; a longer label
+/// truncates inside its badge rather than squeezing the name away.
 const LABEL_CHIP_W: f32 = 52.0;
 /// The description's floor. Below this a one-liner is cut to nothing useful,
 /// so the table would rather squeeze the window than this column.
@@ -498,25 +496,7 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
 
     // The name, then its labels. The name is what gives ground when there are
     // chips: a truncated name is still recognisable, a clipped chip is not.
-    row.at(0, |ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        let labels = array(p.get("labels"));
-        let shown = labels.len().min(MAX_LABEL_CHIPS);
-        let extra = labels.len() - shown;
-        let chips = shown + usize::from(extra > 0);
-        let width =
-            (ui.available_width() - chips as f32 * (LABEL_CHIP_W + space::XS)).max(NAME_MIN_W);
-        ui.allocate_ui(egui::vec2(width, table::ROW_H), |ui| {
-            table::strong_label(ui, str_at(p, "name"), title_ink(p));
-        });
-        for label in labels.iter().take(shown) {
-            label_badge(ui, label);
-        }
-        if extra > 0 {
-            let rest: Vec<&str> = labels.iter().skip(shown).map(|l| str_at(l, "name")).collect();
-            c::badge(ui, &format!("+{extra}"), colour::TEXT_MUTED, colour::TEXT_2).on_hover_text(rest.join(", "));
-        }
-    });
+    row.at(0, |ui| name_with_labels(ui, str_at(p, "name"), title_ink(p), &array(p.get("labels"))));
 
     // One line. The column clips, and a wrapped cell would make one row taller
     // than the rest of the table.
@@ -605,6 +585,34 @@ pub(super) fn label_colours(name: &str) -> (egui::Color32, egui::Color32) {
         "red" => (colour::DANGER, colour::DANGER),
         "purple" | "pink" => (colour::AGENT, colour::AGENT),
         _ => (colour::TEXT_MUTED, colour::TEXT_2),
+    }
+}
+
+/// A row's name and then its labels: two badges and a "+N". The name is
+/// what gives ground when there are badges — a truncated name is still
+/// recognisable, a clipped badge is not. Projects and every task table.
+pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32, labels: &[Value]) {
+    ui.spacing_mut().item_spacing.x = space::XS;
+    let shown = labels.len().min(MAX_LABEL_CHIPS);
+    let extra = labels.len() - shown;
+    // What the badges will really take, measured the way a badge lays out.
+    let badge_w = |s: &str| {
+        ui.painter().layout_no_wrap(s.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT).size().x
+            + space::SM * 2.0
+            + space::XS
+    };
+    let reserve: f32 = labels.iter().take(shown).map(|l| badge_w(str_at(l, "name")).min(LABEL_CHIP_W * 2.0)).sum::<f32>()
+        + if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
+    let width = (ui.available_width() - reserve).max(NAME_MIN_W);
+    ui.allocate_ui(egui::vec2(width, table::ROW_H), |ui| {
+        table::strong_label(ui, name, ink);
+    });
+    for label in labels.iter().take(shown) {
+        label_badge(ui, label);
+    }
+    if extra > 0 {
+        let rest: Vec<&str> = labels.iter().skip(shown).map(|l| str_at(l, "name")).collect();
+        c::badge(ui, &format!("+{extra}"), colour::TEXT_MUTED, colour::TEXT_2).on_hover_text(rest.join(", "));
     }
 }
 

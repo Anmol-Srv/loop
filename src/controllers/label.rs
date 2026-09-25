@@ -90,6 +90,34 @@ pub async fn set_on_project(
     Ok(())
 }
 
+/// Replace a task's labels with exactly this set, inside the caller's
+/// transaction so the edit and its audit row land together.
+pub async fn set_on_task(
+    tx: &mut sqlx::PgTransaction<'_>,
+    task_id: Uuid,
+    label_ids: &[Uuid],
+) -> AppResult<()> {
+    sqlx::query("DELETE FROM task_label WHERE task_id = $1")
+        .bind(task_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO task_label (task_id, label_id)
+         SELECT $1, unnest($2::uuid[]) ON CONFLICT DO NOTHING",
+    )
+    .bind(task_id)
+    .bind(label_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+            AppError::BadRequest("one of those labels does not exist".into())
+        }
+        _ => AppError::Database(e),
+    })?;
+    Ok(())
+}
+
 /// Labels keyed by project, for folding into a response — every project's for
 /// the list, one project's for the detail screen, which has no reason to read
 /// the whole table to keep a handful of rows.

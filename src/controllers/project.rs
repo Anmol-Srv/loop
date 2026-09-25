@@ -22,6 +22,8 @@ pub struct NewTask {
     pub priority: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_ids: Vec<Uuid>,
 }
 
 fn default_priority() -> i32 {
@@ -285,6 +287,7 @@ async fn insert_task(
         }
         _ => AppError::Database(e),
     })?;
+    super::label::set_on_task(tx, task.id, &t.label_ids).await?;
     record(tx, actor, TargetType::Task, task.id, Op::Create, json!(t)).await?;
     Ok(task)
 }

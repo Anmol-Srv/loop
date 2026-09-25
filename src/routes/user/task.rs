@@ -108,6 +108,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/accept", post(accept))
         .route("/api/user/tasks/{id}/dismiss", post(dismiss))
         .route("/api/user/tracks", get(tracks))
+        .route("/api/user/files/{id}", get(file))
 }
 
 /// The transition table, so a client offers only the moves the server takes.
@@ -338,4 +339,28 @@ async fn dismiss(
     session(&caller)?;
     let reason = optional_body::<DismissBody>(&body)?.reason;
     Ok(ApiResponse::ok(controllers::task::triage(&state, &caller.actor, id, false, None, reason).await?))
+}
+
+/// A filed message's file, as itself. Not JSON, so the ETag layer passes it
+/// by; the bytes never change under an id, so the client may keep them.
+async fn file(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<axum::response::Response> {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+    caller.require("read")?;
+    let (mime, name, bytes) = controllers::task::file(&state, id, caller.actor.person_id).await?;
+    let name: String = name.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').filter(|c| *c != '"').collect();
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CONTENT_DISPOSITION, format!("inline; filename=\"{name}\"")),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+            (header::CACHE_CONTROL, "private, max-age=86400".to_owned()),
+        ],
+        bytes,
+    )
+        .into_response())
 }

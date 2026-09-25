@@ -1,5 +1,6 @@
 pub mod agent_session;
 pub mod agents;
+pub mod agent_page;
 pub mod board;
 pub mod projects;
 pub mod chrome;
@@ -11,3 +12,4 @@ pub mod new_task;
 pub mod palette;
 pub mod menus;
 pub mod triage;
+pub mod mrkdwn;

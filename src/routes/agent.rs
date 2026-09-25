@@ -4,7 +4,7 @@
 //! agent credential holds none. A person's session is refused with a
 //! sentence. Errors are read by models, so they say what to do next.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -45,7 +45,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/intake", post(intake))
         .route("/api/agent/intake/recent", get(intake_recent))
         .route("/api/agent/intake/{id}/append", post(intake_append))
+        .route("/api/agent/intake/{id}/files", post(intake_attach).layer(DefaultBodyLimit::max(UPLOAD_BODY)))
 }
+
+/// The body an upload may carry: past 8 MB of file in base64, so an
+/// oversized file still reaches the handler and hears why in a sentence.
+pub const UPLOAD_BODY: usize = 24 * 1024 * 1024;
 
 /// Where agents reach this server: `PUBLIC_URL` when set, otherwise what the
 /// request came in on. Behind a proxy that sets neither header correctly,
@@ -326,4 +331,13 @@ async fn intake_recent(
     Query(q): Query<RecentQuery>,
 ) -> AppResult<ApiResponse<Vec<agent::Filed>>> {
     Ok(ApiResponse::ok(agent::intake_recent(&state, caller.agent()?, q.days).await?))
+}
+
+async fn intake_attach(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<agent::Attachment>,
+) -> AppResult<ApiResponse<agent::FileMeta>> {
+    Ok(ApiResponse::ok(agent::intake_attach(&state, caller.agent()?, id, b).await?))
 }

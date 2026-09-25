@@ -75,7 +75,7 @@ pub fn state_tone(state: &str) -> c::Tone {
     }
 }
 
-fn status_words(status: &str) -> (&'static str, c::Tone) {
+pub(super) fn status_words(status: &str) -> (&'static str, c::Tone) {
     match status {
         "connected" => ("Connected", c::Tone::Ok),
         "revoked" => ("Revoked", c::Tone::Quiet),
@@ -135,8 +135,23 @@ enum Pending {
     Intake,
 }
 
+/// An agent's page, open over the list: which agent, the tab showing, and
+/// where Back goes — `None` for the list, or the tab and task it was opened
+/// from elsewhere in the app.
+pub(super) struct Opened {
+    pub id: String,
+    pub back: Option<(Tab, Option<String>)>,
+    pub tab: usize,
+}
+
 #[derive(Default)]
 struct Local {
+    /// The agent page on screen, if one is.
+    open: Option<Opened>,
+    /// Set by `open` from another view; `follow` moves the app to it.
+    nav: bool,
+    /// An action landed: the open page fetches its agent again, in place.
+    refresh_page: bool,
     connect: Option<Connect>,
     confirm: Option<Confirm>,
     pending: Option<Pending>,
@@ -157,6 +172,42 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     LOCAL.with(|cell| render(app, ui, &mut cell.borrow_mut()));
 }
 
+/// Open an agent's page from anywhere — its name on a task, say. The page
+/// takes over on the next frame, through `follow`; Back returns to where
+/// this was called from.
+pub fn open(id: &str) {
+    LOCAL.with(|cell| {
+        let mut l = cell.borrow_mut();
+        l.open = Some(Opened { id: id.to_owned(), back: None, tab: 0 });
+        l.nav = true;
+    });
+}
+
+/// Move to a page `open` asked for, remembering where the app was. Called by
+/// the chrome once a frame, before any view draws.
+pub fn follow(app: &mut App) {
+    LOCAL.with(|cell| {
+        let mut l = cell.borrow_mut();
+        if !std::mem::take(&mut l.nav) {
+            return;
+        }
+        if let Some(o) = l.open.as_mut() {
+            o.back = Some((app.tab, app.task.take()));
+            app.tab = Tab::Agents;
+        }
+    });
+}
+
+/// Leave any agent page: the sidebar was used.
+pub fn close() {
+    LOCAL.with(|cell| cell.borrow_mut().open = None);
+}
+
+/// The agent page on screen, if any.
+pub fn opened() -> Option<String> {
+    LOCAL.with(|cell| cell.borrow().open.as_ref().map(|o| o.id.clone()))
+}
+
 /// What a card asked for.
 enum CardAct {
     Confirm(Confirm),
@@ -164,8 +215,8 @@ enum CardAct {
     Open(String),
     /// Switch intake: (id, name, on).
     Intake(String, String, bool),
-    /// The agent's intake project.
-    Project(String),
+    /// The agent's page.
+    Page(String),
 }
 
 fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
@@ -179,6 +230,41 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
 
     let list = net.shared(AGENTS_KEY);
     let all: &[Value] = list.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+
+    if let Some(opened) = local.open.as_mut() {
+        let listed = all.iter().find(|a| str_of(a, "id") == Some(opened.id.as_str())).cloned();
+        let refresh = std::mem::take(&mut local.refresh_page);
+        let asked = super::agent_page::show(ui, net, opened, listed, refresh, local.error.as_deref(), &my_seed);
+        let id = opened.id.clone();
+        match asked {
+            Some(super::agent_page::Ask::Back) => {
+                if let Some((tab, task)) = local.open.take().and_then(|o| o.back) {
+                    app.tab = tab;
+                    app.task = task;
+                }
+            }
+            Some(super::agent_page::Ask::Task(task)) => {
+                app.task = Some(task);
+                app.tab = Tab::Agents;
+            }
+            Some(super::agent_page::Ask::Card(name, act)) => {
+                let act = match act {
+                    super::agent_page::CardAsk::Continue => CardAct::Continue(id, name),
+                    super::agent_page::CardAsk::Intake(on) => CardAct::Intake(id, name, on),
+                    super::agent_page::CardAsk::Rotate => CardAct::Confirm(Confirm { id, name, revoke: false }),
+                    super::agent_page::CardAsk::Revoke => CardAct::Confirm(Confirm { id, name, revoke: true }),
+                };
+                card_act(app, local, act);
+            }
+            None => {}
+        }
+        let ctx = ui.ctx().clone();
+        let net = app.net.as_mut().expect("chrome runs signed in");
+        connect_dialog(&ctx, net, local, &my_seed, &my_first);
+        confirm_dialog(&ctx, net, local);
+        return;
+    }
+
     let live: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") != Some("revoked")).collect();
     let revoked: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") == Some("revoked")).collect();
     let mut connect = false;
@@ -223,20 +309,36 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
     }
     ui.add_space(space::XXL);
 
+    if let Some(act) = act {
+        card_act(app, local, act);
+    }
+    if connect {
+        local.error = None;
+        local.connect = Some(Connect::Details(Draft::default()));
+    }
+
+    let ctx = ui.ctx().clone();
+    let net = app.net.as_mut().expect("chrome runs signed in");
+    connect_dialog(&ctx, net, local, &my_seed, &my_first);
+    confirm_dialog(&ctx, net, local);
+}
+
+/// Carry out what a card, or the agent page's menu, asked for.
+fn card_act(app: &mut App, local: &mut Local, act: CardAct) {
     match act {
-        Some(CardAct::Confirm(ask)) => {
+        CardAct::Confirm(ask) => {
             local.error = None;
             local.confirm = Some(ask);
         }
-        Some(CardAct::Continue(id, name)) => {
+        CardAct::Continue(id, name) => {
             local.error = None;
             local.connect = Some(Connect::Hello { id, name, polled: None, heard: None });
         }
-        Some(CardAct::Open(task)) => {
+        CardAct::Open(task) => {
             app.task = Some(task);
             app.tab = Tab::Agents;
         }
-        Some(CardAct::Intake(id, name, on)) => {
+        CardAct::Intake(id, name, on) => {
             let net = app.net.as_mut().expect("chrome runs signed in");
             local.error = None;
             net.invalidate(ACTION_KEY);
@@ -248,21 +350,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
                 format!("{name} no longer creates tasks for you.")
             });
         }
-        Some(CardAct::Project(id)) => {
-            app.project = Some(id);
-            app.tab = Tab::Projects;
+        CardAct::Page(id) => {
+            local.error = None;
+            local.open = Some(Opened { id, back: None, tab: 0 });
         }
-        None => {}
     }
-    if connect {
-        local.error = None;
-        local.connect = Some(Connect::Details(Draft::default()));
-    }
-
-    let ctx = ui.ctx().clone();
-    let net = app.net.as_mut().expect("chrome runs signed in");
-    connect_dialog(&ctx, net, local, &my_seed, &my_first);
-    confirm_dialog(&ctx, net, local);
 }
 
 /// No agents yet: what one is, in a sentence, and the way to connect one.
@@ -369,7 +461,24 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
     let mut act = None;
     let mut used = 0.0;
 
-    c::surface(ui, false, |ui| {
+    // The whole card opens the agent's page. Registered before what is on it,
+    // on last frame's rect, so the menu and the task link inside stay on top
+    // and keep their own clicks.
+    let rect_id = egui::Id::new(("agents:card", id.as_str()));
+    let last: egui::Rect = ui.ctx().data(|d| d.get_temp(rect_id)).unwrap_or(egui::Rect::NOTHING);
+    let whole = ui.interact(last, rect_id.with("click"), egui::Sense::click());
+    let open_label = format!("Open {name}");
+    whole.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &open_label));
+    let whole = motion::operable(ui, whole, radius::LG as f32);
+    if whole.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if whole.clicked() {
+        act = Some(CardAct::Page(id.clone()));
+    }
+    let hot = whole.hovered() || whole.has_focus();
+
+    let frame = c::surface(ui, hot, |ui| {
         ui.set_width(ui.available_width());
         // Every card in a row as tall as the tallest.
         ui.set_min_height(floor);
@@ -472,9 +581,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                 }
 
                 if intake {
-                    if let Some(to) = intake_stats(ui, a) {
-                        act = Some(to);
-                    }
+                    intake_stats(ui, a);
                 }
 
                 // ---- activity and setup
@@ -505,15 +612,15 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
             .rect
             .height();
     });
+    ui.ctx().data_mut(|d| d.insert_temp(rect_id, frame.response.rect));
     (used, act)
 }
 
 /// What an intake agent has filed: triage, accepted, dismissed — the numbers
-/// in white, their words muted — and the way to the project it files into.
-fn intake_stats(ui: &mut egui::Ui, a: &Value) -> Option<CardAct> {
+/// in white, their words muted — and where its filings land.
+fn intake_stats(ui: &mut egui::Ui, a: &Value) {
     let stats = a.get("intakeStats").filter(|s| s.is_object());
     let n = |k: &str| stats.and_then(|s| s.get(k)).and_then(Value::as_i64).unwrap_or(0);
-    let mut act = None;
     ui.add_space(space::XS);
     let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
     ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
@@ -532,21 +639,12 @@ fn intake_stats(ui: &mut egui::Ui, a: &Value) -> Option<CardAct> {
             ui.label(RichText::new(*word).size(text::SMALL).color(colour::TEXT_MUTED));
         }
     });
-    match str_of(a, "intakeProjectId") {
-        Some(project) => {
-            let label = str_of(a, "intakeProjectName").map_or_else(|| "Open its intake project".to_owned(), |n| format!("Files into {n}"));
-            if w::link(ui, &label).on_hover_text("Open the project").clicked() {
-                act = Some(CardAct::Project(project.to_owned()));
-            }
-        }
-        None => w::caption(ui, "Its project is made with the first task it files."),
-    }
-    act
+    w::caption(ui, "Files into your Triage, each task labelled Slack.");
 }
 
 /// The three things a good setup reports, as ticks, crosses and dashes.
 /// `wrap` lays them out in a line for a card; otherwise one per row.
-fn setup_checks(ui: &mut egui::Ui, setup: &Value, wrap: bool) {
+pub(super) fn setup_checks(ui: &mut egui::Ui, setup: &Value, wrap: bool) {
     let skill = setup.get("skill").and_then(Value::as_str);
     let flag = |k: &str| setup.get(k).and_then(Value::as_bool);
     let items = [
@@ -626,6 +724,7 @@ fn settle(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
     net.invalidate(ACTION_KEY);
     // In place, so the cards stay put under the dialog while it lands.
     net.get(AGENTS_KEY, "/api/user/agents");
+    local.refresh_page = true;
     if pending == Pending::Revoke {
         // Revoking takes back every task the agent held.
         net.invalidate_prefix("task:");
@@ -667,7 +766,7 @@ pub(super) const DIALOG_W: f32 = 460.0;
 /// The connect flow is wider: its first step lays the runtimes out two by two.
 const CONNECT_W: f32 = 520.0;
 
-fn short(name: &str) -> &str {
+pub(super) fn short(name: &str) -> &str {
     name.split(" (").next().unwrap_or(name).trim()
 }
 

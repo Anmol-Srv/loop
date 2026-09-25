@@ -28,6 +28,8 @@ pub struct Job {
     seq: u64,
     /// The tag of the copy already held, sent as `If-None-Match`.
     etag: Option<String>,
+    /// A binary GET: the reply lands in `blobs`, not `results`.
+    raw: bool,
 }
 
 pub struct Reply {
@@ -37,6 +39,8 @@ pub struct Reply {
     status: u16,
     seq: u64,
     etag: Option<String>,
+    /// Set for a binary GET, in place of `result`.
+    bytes: Option<Result<Vec<u8>, String>>,
 }
 
 pub struct Net {
@@ -72,6 +76,9 @@ pub struct Net {
     /// Which reply each key's payload came from: a view that derives rows
     /// from a payload redoes the work only when this moves. A `304` leaves it.
     gens: HashMap<String, u64>,
+    /// Binary payloads (a filed message's images) by key. Never refreshed:
+    /// the bytes behind a file id do not change.
+    blobs: HashMap<String, Result<Arc<Vec<u8>>, String>>,
 }
 
 impl Net {
@@ -92,6 +99,7 @@ impl Net {
                         status: 0,
                         seq: 0,
                         etag: None,
+                        bytes: None,
                     });
                     return;
                 }
@@ -105,9 +113,15 @@ impl Net {
                 while let Some(job) = job_rx.recv().await {
                     let (client, reply_tx, repaint) = (client.clone(), reply_tx.clone(), repaint.clone());
                     tokio::spawn(async move {
-                        let (status, result, etag) =
-                            client.request_cached(job.method, &job.path, job.body, job.etag.as_deref()).await;
-                        let _ = reply_tx.send(Reply { key: job.key, result, status, seq: job.seq, etag });
+                        let reply = if job.raw {
+                            let (status, bytes) = client.get_bytes(&job.path).await;
+                            Reply { key: job.key, result: Ok(Value::Null), status, seq: job.seq, etag: None, bytes: Some(bytes) }
+                        } else {
+                            let (status, result, etag) =
+                                client.request_cached(job.method, &job.path, job.body, job.etag.as_deref()).await;
+                            Reply { key: job.key, result, status, seq: job.seq, etag, bytes: None }
+                        };
+                        let _ = reply_tx.send(reply);
                         // Wake the GUI thread; otherwise the reply sits until
                         // the next unrelated repaint.
                         repaint.request_repaint();
@@ -132,6 +146,7 @@ impl Net {
             refreshed_at: Instant::now(),
             etags: HashMap::new(),
             gens: HashMap::new(),
+            blobs: HashMap::new(),
         }
     }
 
@@ -156,6 +171,10 @@ impl Net {
     }
 
     fn dispatch(&mut self, key: &str, method: reqwest::Method, path: &str, body: Value, etag: Option<String>) {
+        self.dispatch_job(key, method, path, body, etag, false);
+    }
+
+    fn dispatch_job(&mut self, key: &str, method: reqwest::Method, path: &str, body: Value, etag: Option<String>, raw: bool) {
         self.seq += 1;
         self.latest.insert(key.to_string(), self.seq);
         self.refreshing.remove(key);
@@ -167,7 +186,27 @@ impl Net {
             body,
             seq: self.seq,
             etag,
+            raw,
         });
+    }
+
+    /// Fetch bytes once per key: a file's image. Read them with `bytes`.
+    pub fn get_bytes_once(&mut self, key: &str, path: &str) {
+        if !self.blobs.contains_key(key) && !self.is_loading(key) {
+            self.dispatch_job(key, reqwest::Method::GET, path, Value::Null, None, true);
+        }
+    }
+
+    pub fn bytes(&self, key: &str) -> Option<&Result<Arc<Vec<u8>>, String>> {
+        self.blobs.get(key)
+    }
+
+    /// `seed` for bytes: a UI test's image, without a server.
+    pub fn seed_bytes(&mut self, key: &str, bytes: Vec<u8>) {
+        self.seq += 1;
+        self.latest.insert(key.to_string(), self.seq);
+        self.inflight.insert(key.to_string(), false);
+        self.blobs.insert(key.to_string(), Ok(Arc::new(bytes)));
     }
 
     /// Issue the request only if nothing is in flight and no result is cached.
@@ -195,6 +234,10 @@ impl Net {
             }
             self.refreshing.remove(&reply.key);
             self.inflight.insert(reply.key.clone(), false);
+            if let Some(bytes) = reply.bytes {
+                self.blobs.insert(reply.key, bytes.map(Arc::new));
+                continue;
+            }
             if reply.status == 304 {
                 // Unchanged: keep what is held. If it was invalidated while the
                 // request was out there is nothing to keep, so ask in full.

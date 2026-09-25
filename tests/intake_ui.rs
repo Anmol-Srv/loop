@@ -61,7 +61,8 @@ fn source(private: bool, reader_is_owner: bool) -> Value {
 fn triage_task(id: &str, title: &str, category: &str, src: Value, minutes: i64) -> Value {
     json!({
         "id": id, "title": title, "status": "triage", "category": category, "discipline": "backend", "priority": 2,
-        "body": "Filed from Slack by Slack Agent.", "projectId": INTAKE_PROJECT, "projectName": "Slack \u{2014} Anmol",
+        "body": "Filed from Slack by Slack Agent.", "projectId": null, "projectName": null,
+        "labels": [{"id": "l-slack", "name": "Slack", "colour": "purple"}],
         "assigneePersonId": ME, "assigneeName": "Anmol Srivastava", "assigneeEmail": "anmol@airtribe.live",
         "createdAt": ago(minutes), "updatedAt": ago(minutes), "doneAt": null, "delegate": null, "source": src,
         "canArchive": true, "canDelete": true,
@@ -284,7 +285,7 @@ fn accept_keeps_it_in_the_intake_project_or_moves_it() {
     assert_eq!(p.open(), (None, None), "a decision is not a visit");
 
     p.button("Accept into a project");
-    assert!(p.has("Keep in Slack \u{2014} Anmol"));
+    assert!(p.has("Keep with no project"), "a filing is standalone");
     assert!(p.has("Checkout redesign"));
     assert!(!p.has("Old launch"), "archived projects are not offered");
     p.button("Checkout redesign");
@@ -379,7 +380,7 @@ fn a_teammate_sees_a_dm_source_without_its_words() {
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::MyTasks, Some(DM), (1440.0, 1400.0), false);
     assert!(p.has(DM_TEXT), "the owner reads their own DM");
-    assert!(p.has_part("Direct message \u{00B7} Rahul Mehta"));
+    assert!(p.has("Rahul Mehta") && p.has_part("Direct message \u{00B7} "), "who, then where");
 }
 
 #[test]
@@ -434,8 +435,8 @@ fn an_intake_agent_card_shows_what_it_filed() {
     assert!(p.has("Intake"));
     assert!(p.has("in triage") && p.has("accepted") && p.has("dismissed"));
     assert!(p.has("12") && p.has("4"));
-    p.button("Files into Slack \u{2014} Anmol");
-    assert_eq!(p.open().0.as_deref(), Some(INTAKE_PROJECT));
+    // Its filings are standalone and labelled, not a project to open.
+    assert!(p.has("Files into your Triage, each task labelled Slack."));
 }
 
 #[test]

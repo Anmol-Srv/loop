@@ -6,13 +6,15 @@ use egui::{Key, Modifiers};
 use serde_json::json;
 
 use super::board::str_at;
-use super::projects::{person_option, DEFAULT_PRIORITY, PEOPLE_KEY, PRIORITIES};
-use crate::desktop::design::{space, viz, widgets as w};
+use super::projects::{label_picker, person_option, DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES};
+use crate::desktop::design::{colour, space, text, viz, widgets as w};
 use crate::desktop::App;
 
 /// Not under `task:` or `home`: a success sweeps those, and the reply has to
 /// be read first.
 const KEY: &str = "newtask:create";
+/// A label typed into the picker; its reply joins the draft's set.
+const LABEL_KEY: &str = "newtask:label";
 
 pub struct Draft {
     title: String,
@@ -21,6 +23,8 @@ pub struct Draft {
     priority: Option<String>,
     category: Option<String>,
     project: Option<String>,
+    /// Label ids, in the order they were picked.
+    labels: Vec<String>,
     /// Focus goes to the title once, on the first frame.
     focused: bool,
     sent: bool,
@@ -45,6 +49,7 @@ pub fn open(app: &mut App) {
         priority: Some(DEFAULT_PRIORITY.to_owned()),
         category: None,
         project: None,
+        labels: Vec::new(),
         focused: false,
         sent: false,
     });
@@ -67,6 +72,18 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
     let net = app.net.as_mut().expect("chrome runs signed in");
     net.get_once(PEOPLE_KEY, "/api/user/people");
     super::triage::want_projects(net);
+    net.get_once(LABELS_KEY, "/api/user/labels");
+    if let Some(label) = net.data(LABEL_KEY).cloned() {
+        net.invalidate(LABEL_KEY);
+        net.invalidate(LABELS_KEY);
+        let id = str_at(&label, "id").to_owned();
+        if !id.is_empty() && !d.labels.contains(&id) {
+            d.labels.push(id);
+        }
+    }
+    let label_error = net.error(LABEL_KEY).map(str::to_owned);
+    let all_labels = super::board::array(net.data(LABELS_KEY));
+    let mut new_label = None;
 
     // The reply to a create sent on an earlier frame.
     if d.sent && !net.is_loading(KEY) {
@@ -111,6 +128,11 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
             viz::select(ui, "No category", &categories, &mut d.category);
             viz::select(ui, "No project", &projects, &mut d.project);
         });
+        ui.add_space(space::SM);
+        new_label = label_picker(ui, "Add labels", &all_labels, &mut d.labels);
+        if let Some(err) = &label_error {
+            ui.label(egui::RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+        }
         if let Some(err) = &error {
             ui.add_space(space::MD);
             w::error(ui, err);
@@ -125,6 +147,9 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
         });
     });
 
+    if let Some(body) = new_label {
+        net.post(LABEL_KEY, "/api/user/labels", body);
+    }
     if go {
         let body = json!({
             "title": d.title.trim(),
@@ -133,6 +158,7 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
             "priority": d.priority.as_deref().and_then(|p| p.parse::<i32>().ok()).unwrap_or(2),
             "category": d.category,
             "projectId": d.project,
+            "labelIds": d.labels,
         });
         net.invalidate(KEY);
         net.post(KEY, "/api/user/tasks", body);

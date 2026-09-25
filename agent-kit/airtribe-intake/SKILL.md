@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.1.0
+version: 1.2.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -20,7 +20,12 @@ read, or change anything there.
 
 Tools (MCP server `airtribe`; same over HTTP with your token):
 `intake_recent` (what you already filed, for dedupe) · `intake_create` (file a
-new task) · `intake_append` (add another message to a task you filed).
+new task) · `intake_append` (add another message to a task you filed) ·
+`intake_attach` (attach an image or PDF from the message to the task) ·
+`run_report` (record how the pass went — your owner reads these as your log).
+
+Tasks you file are standalone (no project) and carry a label named after the
+source ("Slack"), so the whole team can see where they came from.
 
 ## One pass
 
@@ -50,7 +55,11 @@ by the rules below. You still write the title, body and reason, and you still
 apply the hard rules that no model overrides: never file the owner's own or a
 bot's messages, DMs are `private`. If the script fails (network, missing key),
 fall back to your own judgment for this pass and say so in the pass summary.
-5. Save the state file. Reply with one line:
+5. Save the state file, then `run_report` once: `status` ok (or `partial`
+   if you stopped early on a rate limit, `failed` if you couldn't read the
+   source at all), a one-line `summary`, `counts` {filed, appended,
+   alreadyFiled, skipped} and `error` when something failed.
+6. Reply with one line:
    `filed N · appended N · already filed N · skipped N` (and nothing else
    unless something failed).
 
@@ -117,27 +126,39 @@ Where it came from changes the bar:
   clear (outage, customer blocked, a deadline); otherwise leave it out.
 - `source`: `kind` "slack"; `key` `<team>:<channel id>:<ts>`; `url` the
   permalink; `channel` the channel id; `channelName` e.g. "#issues-and-feedback"
-  or "DM"; `author` the display name; `text` the original message (trimmed to
-  2,000 chars); `receivedAt` ISO time of the message; `private` true for DMs
-  and group DMs.
+  or "DM"; `author` the display name; `text` the original message in Slack
+  formatting (trimmed to 4,000 chars) with user and channel references
+  resolved — replace `<@U123>` with `<@U123|Priya Menon>` and keep
+  `<#C123|issues-and-feedback>` — so the dashboard can show names;
+  `receivedAt` ISO time of the message; `private` true for DMs and group DMs.
+- **Attachments**: after `intake_create` (or `intake_append`) succeeds, for each
+  image (png, jpeg, gif, webp) or PDF attached to that message, download it
+  with the Composio Slack file tool (find it with `COMPOSIO_SEARCH_TOOLS`,
+  e.g. a "download file" or "get file" action) and send it with
+  `intake_attach` {taskId, name, mime, dataBase64, sourceKey: the message's
+  key}. Skip files over 8 MB and anything else (videos, archives) — mention
+  them in the body instead. A failed download never blocks filing the task.
 
 ## Slack
 
 Use the Composio MCP server's Slack tools (find exact slugs with
 `COMPOSIO_SEARCH_TOOLS` if a call fails). Read-only calls only.
 
-- **Intake channels** (from your state file's `channels`): fetch conversation
-  history newer than that channel's cursor; for messages with thread replies
-  newer than the cursor, fetch the thread replies too.
-- **Mentions**: search messages for `<@OWNER_ID>` newer than the mentions
-  cursor (search copes with channels you don't list). Skip hits in intake
-  channels — they are already covered.
-- **DMs**: list conversations of type `im,mpim`; for each whose latest message
-  is newer than its cursor, fetch history since the cursor.
+- **Everything through search** (one `SLACK_SEARCH_MESSAGES` call per place,
+  `sort: timestamp`, `count` up to 50, then filter to `ts` newer than that
+  place's cursor): intake channels with `in:#<channel name>`, mentions with
+  `<@OWNER_ID>`, and DMs/group DMs with `to:me`. Search results carry the
+  channel, author, text, permalink, thread and files — no need to list
+  conversations or page through history (Slack caps history calls for apps
+  like this one to about one a minute). Skip mention hits that are in an
+  intake channel (already covered) and `to:me` hits your owner sent.
+- **Thread context**: only when deciding whether a reply belongs to a filed
+  task and the search hit alone isn't clear, fetch that one thread's replies.
+- If more than 50 new messages arrived in one place, handle the newest 50,
+  set that cursor to the newest handled, and note it in the pass summary.
 - **Permalink**: `https://<workspace>.slack.com/archives/<channel id>/p<ts with
   the dot removed>`; for a thread reply add `?thread_ts=<parent ts>&cid=<channel id>`.
-- Slack rate limits are tight for history calls: prefer one history call per
-  conversation per pass, and search for mentions. On a rate-limit error, save
+- Slack rate limits are tight for history calls: search, never bulk history. On a rate-limit error, save
   state and stop; the next pass continues from the cursors.
 
 ## Where you are up to

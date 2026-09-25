@@ -11,3 +11,4 @@ pub mod home;
 pub mod label;
 pub mod note;
 pub mod repo;
+pub mod agent_overview;

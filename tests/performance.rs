@@ -139,12 +139,12 @@ async fn team_capacity_counts_every_kind_of_blocker_correctly(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn counts_are_my_live_tasks_and_active_projects(pool: PgPool) {
+async fn counts_are_my_live_tasks_and_live_projects(pool: PgPool) {
     let (token, me) = person(&pool, "a@airtribe.live", "backend").await;
     let (_, other) = person(&pool, "b@airtribe.live", "backend").await;
     let ph = phase(&pool, "p", "active").await;
     phase(&pool, "q", "active").await;
-    phase(&pool, "r", "paused").await;
+    phase(&pool, "r", "paused").await; // listed on the Projects page, so counted
 
     task(&pool, ph, "open", false, Some(me), &[]).await;
     task(&pool, ph, "completed", false, Some(me), &[]).await; // unshipped is still mine
@@ -154,7 +154,7 @@ async fn counts_are_my_live_tasks_and_active_projects(pool: PgPool) {
     task(&pool, ph, "triage", false, Some(me), &[]).await; // counted apart, not as open
 
     let body = json(&pool, "/api/user/counts", &token).await;
-    assert_eq!(body["data"], serde_json::json!({ "myOpen": 2, "activeProjects": 2, "triage": 1 }));
+    assert_eq!(body["data"], serde_json::json!({ "myOpen": 2, "activeProjects": 3, "triage": 1 }));
 }
 
 #[sqlx::test]

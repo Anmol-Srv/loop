@@ -339,6 +339,29 @@ pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<
         .ok_or_else(|| AppError::NotFound("task not found".into()))
 }
 
+/// A file that came with a filed message: its type, name and bytes, for
+/// whoever may read the message it came with (`file_visible`).
+pub async fn file(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<(String, String, Vec<u8>)> {
+    let (mime, name, bytes, visible, owner): (String, String, Vec<u8>, bool, Option<String>) =
+        sqlx::query_as(&format!(
+            "SELECT f.mime, f.name, f.bytes, {}, (SELECT name FROM person WHERE id = t.assignee_person_id)
+               FROM task_file f JOIN task t ON t.id = f.task_id WHERE f.id = $1",
+            crate::models::task::file_visible("$2")
+        ))
+        .bind(id)
+        .bind(viewer)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("That file is no longer here.".into()))?;
+    if !visible {
+        let owner = owner.as_deref().and_then(|n| n.split_whitespace().next()).unwrap_or("its owner");
+        return Err(AppError::Forbidden(format!(
+            "This file came with a direct message; only {owner} and admins can open it."
+        )));
+    }
+    Ok((mime, name, bytes))
+}
+
 /// Everything assigned to one person. Unfiltered by status on purpose — the
 /// caller decides whether finished work still belongs on their screen.
 /// Every task in the workspace, filtered. The dashboard's table reads this.
@@ -574,6 +597,9 @@ pub struct TaskDetails {
     /// it into that project's first phase. Only for `can_manage` holders.
     #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<Uuid>>,
+    /// Absent leaves the labels alone; a list replaces them, `[]` clears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_ids: Option<Vec<Uuid>>,
     /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
     /// stays out of the audit patch — and out of a replayed proposal, which is
     /// approved against the row as it is then.
@@ -679,6 +705,9 @@ pub async fn update_details(
     .bind(moved.flatten())
     .fetch_one(&mut *tx)
     .await?;
+    if let Some(labels) = &details.label_ids {
+        crate::controllers::label::set_on_task(&mut tx, id, labels).await?;
+    }
 
     record(&mut tx, actor, TargetType::Task, id, Op::Update, patch).await?;
     tx.commit().await?;

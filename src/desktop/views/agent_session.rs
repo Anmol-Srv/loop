@@ -128,12 +128,27 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         face::avatar(ui, &seed, face::MD, presence, agent);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(
-                RichText::new(agent)
-                    .size(text::BODY)
-                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
-            );
+            let name = RichText::new(agent)
+                .size(text::BODY)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT);
+            // The agent's page is its owner's (and admins'), so only they get
+            // a way into it.
+            match str_of(d, "id").filter(|_| s.private) {
+                Some(id) => {
+                    let r = ui
+                        .add(egui::Label::new(name).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("Open {short}\u{2019}s page"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, format!("Open {agent}")));
+                    if r.clicked() {
+                        super::agents::open(id);
+                    }
+                }
+                None => {
+                    ui.label(name);
+                }
+            }
             let mut who = format!("{owner_first}\u{2019}s agent");
             if let Some(rt) = str_of(d, "runtime") {
                 who += &format!(" \u{00B7} {}", runtime_label(rt));
@@ -268,7 +283,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
 }
 
 /// "Hermes" out of "Hermes (Anmol's Mac)": the name a sentence can carry.
-fn short_name(name: &str) -> &str {
+pub(super) fn short_name(name: &str) -> &str {
     name.split(" (").next().unwrap_or(name).trim()
 }
 
@@ -358,24 +373,26 @@ fn approved(entries: &[&Value], i: usize, state: &str) -> bool {
 
 // ----------------------------------------------------------------- timeline
 
-enum Node<'a> {
+pub(super) enum Node<'a> {
     /// A person's disc: their answers, instructions, the hand-off.
     Person(&'a str),
     Mark(Mark),
 }
 
 #[derive(Clone, Copy)]
-enum Mark {
+pub(super) enum Mark {
     Progress,
     Question,
     Submitted,
     Approved,
     Changes,
+    /// An intake agent filed a task from something it read.
+    Filed,
 }
 
 /// One timeline entry: the node in the rail, who and what beside it, then
 /// whatever `body` adds. Returns the node's rect, for the rail's hairline.
-fn entry(
+pub(super) fn entry(
     ui: &mut egui::Ui,
     node: Node,
     who: &str,
@@ -431,6 +448,7 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
                 Mark::Submitted => (colour::AGENT, colour::AGENT_BG),
                 Mark::Approved => (colour::OK, colour::OK_BG),
                 Mark::Changes => (colour::WARN, colour::WARN_BG),
+                Mark::Filed => (colour::INFO, colour::INFO_BG),
             };
             p.circle_filled(c, NODE / 2.0, fill);
             p.circle_stroke(c, NODE / 2.0 - 0.5, egui::Stroke::new(1.0, ink.gamma_multiply(0.35)));
@@ -444,12 +462,13 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
                 Mark::Submitted => glyph::arrow_up(p, c, NODE * 0.7, ink),
                 Mark::Approved => glyph::tick(p, c, NODE * 0.55, ink),
                 Mark::Changes => glyph::back(p, c, NODE * 0.7, ink),
+                Mark::Filed => glyph::hash(p, c, NODE * 0.55, ink),
             }
         }
     }
 }
 
-fn prose(ui: &mut egui::Ui, body: &str, ink: egui::Color32) {
+pub(super) fn prose(ui: &mut egui::Ui, body: &str, ink: egui::Color32) {
     for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
         if i > 0 {
             ui.add_space(space::XS);

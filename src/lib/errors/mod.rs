@@ -16,6 +16,10 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
+    TooLarge(String),
+    #[error("{0}")]
+    UnsupportedType(String),
+    #[error("{0}")]
     Internal(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
@@ -31,6 +35,8 @@ impl AppError {
             AppError::Unauthorized(_) => "UNAUTHORIZED",
             AppError::Forbidden(_) => "FORBIDDEN",
             AppError::Conflict(_) => "CONFLICT",
+            AppError::TooLarge(_) => "PAYLOAD_TOO_LARGE",
+            AppError::UnsupportedType(_) => "UNSUPPORTED_MEDIA_TYPE",
             AppError::Internal(_) | AppError::Database(_) => "INTERNAL_ERROR",
         }
     }
@@ -42,6 +48,8 @@ impl AppError {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::UnsupportedType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::Internal(_) | AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

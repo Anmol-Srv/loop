@@ -618,7 +618,7 @@ async fn mcp_handshake_as_real_clients_do_it(pool: PgPool) {
     let mut names: Vec<&str> =
         tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort();
-    assert_eq!(names, ["agent_inbox", "agent_tasks", "events_ack", "task_ack", "task_ask", "task_attach",
+    assert_eq!(names, ["agent_inbox", "agent_tasks", "events_ack", "run_report", "task_ack", "task_ask", "task_attach",
         "task_context", "task_log", "task_note", "task_now", "task_submit", "task_update"]);
 
     let r = rpc(&pool, &token, "POST", call(2, "tools/call", json!({ "name": "agent_inbox", "arguments": {} }))).await.json();

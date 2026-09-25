@@ -204,10 +204,14 @@ pub struct TaskRow {
     /// questions, answers, instructions, the step log: `sees_agent_private`.
     pub can_see_agent_private: bool,
     /// Where an intake agent found it: `{kind, url, channel, channelName,
-    /// author, text, receivedAt, reason, confidence, private}`, or null. A
-    /// direct message's author and text are only for `sees_agent_private`;
-    /// everyone else reads "From a direct message".
+    /// author, text, receivedAt, reason, confidence, private, files}`, or
+    /// null. A direct message's author and text are only for
+    /// `sees_agent_private`; everyone else reads "From a direct message".
+    /// `files` is `[{id, name, mime, size, width, height}]`, each one
+    /// withheld on the same rule as the message it came with.
     pub source: Option<serde_json::Value>,
+    /// `[{id, name, colour}]`, by name; the shared label vocabulary.
+    pub labels: serde_json::Value,
 }
 
 #[derive(Debug, Default)]
@@ -313,8 +317,13 @@ pub fn task_row_select(viewer: &str) -> String {
                         'agentName', (SELECT a.name FROM agent a WHERE a.id = s.agent_id),
                         'author', CASE WHEN NOT s.private OR {private} THEN s.author END,
                         'text', CASE WHEN NOT s.private OR {private} THEN s.text
-                                     ELSE 'From a direct message' END)
-                   FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source
+                                     ELSE 'From a direct message' END,
+                        'files', {files})
+                   FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source,
+                coalesce((SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'colour', l.colour)
+                                          ORDER BY l.name)
+                            FROM task_label tl JOIN label l ON l.id = tl.label_id
+                           WHERE tl.task_id = t.id), '[]') AS labels
            FROM task t
            LEFT JOIN phase ph ON ph.id = t.phase_id
            LEFT JOIN project pr ON pr.id = ph.project_id
@@ -322,6 +331,24 @@ pub fn task_row_select(viewer: &str) -> String {
         cols = task_columns_t(),
         can = can_manage(viewer),
         private = sees_agent_private(viewer),
+        files = format!(
+            "coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
+                                'size', f.size, 'width', f.width, 'height', f.height) ORDER BY f.created_at, f.name)
+                         FROM task_file f WHERE f.task_id = t.id AND {}), '[]')",
+            file_visible(viewer)
+        ),
         RESOLVED = BLOCKER_RESOLVED,
+    )
+}
+
+/// Whether the viewer at `viewer` may read file `f` of task `t`: it is
+/// withheld exactly when the message it came with is — a direct message's
+/// files are the owner's and admins'. One rule for the list and the bytes.
+pub fn file_visible(viewer: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM task_source fs
+                      WHERE fs.task_id = f.task_id AND fs.source_key = f.source_key AND fs.private
+                        AND NOT {})",
+        sees_agent_private(viewer)
     )
 }

@@ -119,8 +119,11 @@ pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
     .bind(person_id)
     .fetch_one(&state.db)
     .await?;
+    // The same set the Projects page lists (every live project, whatever its
+    // status), so the badge matches what a click shows. The field keeps its
+    // old name so the clients need no change.
     let active_projects =
-        sqlx::query_scalar("SELECT count(*) FROM project WHERE status = 'active' AND archived_at IS NULL")
+        sqlx::query_scalar("SELECT count(*) FROM project WHERE archived_at IS NULL")
         .fetch_one(&state.db)
         .await?;
     Ok(Counts { my_open, active_projects, triage })

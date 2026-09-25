@@ -1,5 +1,5 @@
-//! Intake: an agent filing tasks for its owner. Capability, the intake
-//! project, dedupe (a constraint, not a check), triage moves, DM privacy,
+//! Intake: an agent filing tasks for its owner. Capability, standalone
+//! filings with the source's label, dedupe (a constraint, not a check), triage moves, DM privacy,
 //! the recent listing and the MCP tools — each as the server enforces it.
 
 use axum::body::Body;
@@ -138,27 +138,32 @@ async fn intake_needs_the_capability_and_the_owner_toggles_it(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn the_first_intake_makes_the_project_once_and_archiving_makes_a_new_one(pool: PgPool) {
+async fn a_filing_is_standalone_and_wears_its_sources_label(pool: PgPool) {
     let w = world(&pool, true).await;
     let a = file(&pool, &w, "m1").await;
     let b = file(&pool, &w, "m2").await;
-    assert_eq!(a["projectId"], b["projectId"], "one intake project");
-    assert_eq!(a["projectName"], "Slack \u{2014} Anmol");
-    let project = ok(&pool, "GET", &format!("/api/user/projects/{}", a["projectId"].as_str().unwrap()), &w.other, Value::Null).await;
-    assert_eq!(project["key"], "intake-anmol-slack");
-    assert_eq!(project["description"], "Tasks Slack Agent filed from Slack for Anmol.");
+    for t in [&a, &b] {
+        assert!(t["projectId"].is_null(), "no hidden intake project: {t}");
+        assert!(t["phaseId"].is_null());
+        assert_eq!(t["labels"].as_array().unwrap().len(), 1);
+        assert_eq!(t["labels"][0]["name"], "Slack");
+        assert_eq!(t["labels"][0]["colour"], "purple");
+    }
+    assert_eq!(a["labels"][0]["id"], b["labels"][0]["id"], "one Slack label, made once");
+    let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM project").fetch_one(&pool).await.unwrap();
+    assert_eq!(projects, 0);
     let agents = ok(&pool, "GET", "/api/user/agents", &w.owner, Value::Null).await;
-    assert_eq!(agents[0]["intakeProjectId"], a["projectId"]);
+    assert!(agents[0]["intakeProjectId"].is_null());
     assert_eq!(agents[0]["intakeStats"]["triage"], 2);
+    // Everyone sees the label.
+    let seen = ok(&pool, "GET", &format!("/api/user/tasks/{}", a["id"].as_str().unwrap()), &w.other, Value::Null).await;
+    assert_eq!(seen["labels"][0]["name"], "Slack");
 
-    // The owner created it, so they may archive it; the next intake starts afresh.
-    ok(&pool, "POST", &format!("/api/user/projects/{}/archive", a["projectId"].as_str().unwrap()), &w.owner, Value::Null).await;
-    let agents = ok(&pool, "GET", "/api/user/agents", &w.owner, Value::Null).await;
-    assert!(agents[0]["intakeProjectId"].is_null(), "an archived intake project is not linked");
-    let c = file(&pool, &w, "m3").await;
-    assert_ne!(c["projectId"], a["projectId"]);
-    let fresh = ok(&pool, "GET", &format!("/api/user/projects/{}", c["projectId"].as_str().unwrap()), &w.owner, Value::Null).await;
-    assert_eq!(fresh["key"], "intake-anmol-slack-2");
+    // Accepted without a project it stays standalone, label and all.
+    let row = ok(&pool, "POST", &format!("/api/user/tasks/{}/accept", a["id"].as_str().unwrap()), &w.owner, Value::Null).await;
+    assert_eq!(row["status"], "open");
+    assert!(row["projectId"].is_null());
+    assert_eq!(row["labels"][0]["name"], "Slack");
 }
 
 #[sqlx::test]

@@ -14,6 +14,9 @@ use crate::desktop::{views, App, Tab};
 pub const COUNTS: &str = "sidebar:counts";
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
+    // An agent's page asked for from another view (its name on a task).
+    views::agents::follow(app);
+
     // ⌘K from anywhere, before any view reads the keyboard this frame.
     if ui.ctx().input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
         if app.palette.open {
@@ -159,6 +162,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     match clicked {
         Some((0, i)) => {
+            views::agents::close();
             app.tab = destinations[i.min(destinations.len() - 1)];
             app.task = None;
             if app.tab != Tab::Projects {

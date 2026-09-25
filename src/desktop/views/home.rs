@@ -925,7 +925,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
     row.at(0, |ui| w::dot(ui, status_colour(status)));
 
     row.at(1, |ui| {
-        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), super::board::title_ink(t));
+        let labels = t.get("labels").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        super::projects::name_with_labels(ui, str_at(t, "title").unwrap_or_default(), super::board::title_ink(t), labels);
         // The blocker rides behind the title rather than in its own column:
         // it is a footnote on the task, not a property every row has. Keyed
         // on the counts, not the status — a blocker can resolve while the

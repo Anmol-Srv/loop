@@ -24,11 +24,14 @@ use egui::{pos2, vec2, Color32, Pos2, Rect, Response, RichText, Sense, Stroke, S
 use super::tokens::{colour, radius, size, space, text};
 use super::{avatar, glyph, motion, theme, widgets};
 
-/// The four avatar sizes: a table cell, a rail row, a page header, a card.
+/// The avatar sizes: a table cell, a rail row, a page header, a card, and
+/// the agent's own page.
 pub const XS: f32 = 16.0;
 pub const SM: f32 = 20.0;
 pub const MD: f32 = 28.0;
 pub const LG: f32 = 40.0;
+/// An agent's own page: the face that heads it.
+pub const XL: f32 = 56.0;
 
 /// One turn of the working arc. Slow on purpose: it says "still going", not
 /// "hurry".

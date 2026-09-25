@@ -130,6 +130,28 @@ impl Client {
         }
     }
 
+    /// A binary GET (a filed message's image), with the status beside it. A
+    /// failure carries the envelope's sentence.
+    pub async fn get_bytes(&self, path: &str) -> (u16, Result<Vec<u8>, String>) {
+        let response = match self.http.get(format!("{}{}", self.base_url, path)).bearer_auth(&self.token).send().await {
+            Ok(r) => r,
+            Err(e) => return (0, Err(format!("request failed: {e}"))),
+        };
+        let status = response.status().as_u16();
+        let ok = response.status().is_success();
+        let bytes = match response.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => return (status, Err(format!("bad response body: {e}"))),
+        };
+        if ok {
+            return (status, Ok(bytes));
+        }
+        let message = serde_json::from_slice(&bytes)
+            .map_err(|_| format!("request failed ({status})"))
+            .and_then(|json| unwrap_envelope(json).map(|_| String::new()));
+        (status, Err(message.unwrap_or_else(|e| e)))
+    }
+
     pub async fn send(&self, method: reqwest::Method, path: &str, body: Value) -> Result<Value, String> {
         self.request(method, path, body).await.1
     }

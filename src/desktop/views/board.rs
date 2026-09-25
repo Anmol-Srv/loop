@@ -1646,8 +1646,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         num_at(t, "blockersDone") < num_at(t, "blockersTotal") && status != "blocked";
 
     row.at(0, |ui| {
+        super::projects::name_with_labels(ui, str_at(t, "title"), title_ink(t), &array(t.get("labels")));
         ui.spacing_mut().item_spacing.x = space::SM;
-        table::strong_label(ui, str_at(t, "title"), title_ink(t));
         // Blockers beat the status column: a task marked in progress that
         // waits on someone else is not in progress, and the chip beside its
         // title is what says so.

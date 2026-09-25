@@ -303,7 +303,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         // Finished work stays legible and stops competing: the rows above it
         // are the ones with something to decide.
         let ink = if done || super::board::archived(t) { colour::TEXT_MUTED } else { colour::TEXT };
-        table::strong_label(ui, str_at(t, "title").unwrap_or_default(), ink);
+        let labels = t.get("labels").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        super::projects::name_with_labels(ui, str_at(t, "title").unwrap_or_default(), ink, labels);
         // You are the owner of every row here, so the mark rides on the title.
         super::home::agent_marker(ui, t);
         // Blocked rides behind the title rather than replacing the status:

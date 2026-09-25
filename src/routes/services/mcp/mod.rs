@@ -40,7 +40,14 @@ const DOC_URI_PREFIX: &str = "acp://docs/";
 const SKILL_URI: &str = "acp://skill";
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/services/mcp", post(handle).get(no_stream).delete(no_stream))
+    // intake_attach carries a file in base64, like the upload route.
+    Router::new().route(
+        "/api/services/mcp",
+        post(handle)
+            .get(no_stream)
+            .delete(no_stream)
+            .layer(axum::extract::DefaultBodyLimit::max(crate::routes::agent::UPLOAD_BODY)),
+    )
 }
 
 /// No server-initiated stream and no sessions to end: `405` is how the
@@ -143,6 +150,7 @@ async fn visible(state: &AppState, caller: &Caller) -> Vec<ToolDef> {
         return tools::for_scopes(&caller.scopes);
     };
     let mut tools = tools::agent_tools();
+    tools.extend(tools::run_tools());
     // Read per request, so the owner's toggle takes effect on the next call.
     let intake: bool = sqlx::query_scalar("SELECT can_intake FROM agent WHERE id = $1")
         .bind(agent)
@@ -369,9 +377,11 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
                     .await?,
             )
         }
+        "intake_attach" => to_value(agent::intake_attach(state, me, task()?, parse(args, "intake_attach")?).await?),
         "intake_recent" => to_value(
             agent::intake_recent(state, me, args.get("days").and_then(Value::as_i64).unwrap_or(14)).await?,
         ),
+        "run_report" => to_value(controllers::agent_overview::report(state, me, parse(args, "run_report")?).await?),
         "events_ack" => {
             let through = args
                 .get("through")

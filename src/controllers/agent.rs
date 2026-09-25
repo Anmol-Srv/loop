@@ -118,7 +118,7 @@ pub struct Minted {
     pub prompt: String,
 }
 
-async fn one(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> AppResult<Agent> {
+pub(crate) async fn one(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> AppResult<Agent> {
     Ok(sqlx::query_as(&format!("{} WHERE a.id = $1", agent_select()))
         .bind(id)
         .fetch_one(db)
@@ -1217,18 +1217,15 @@ pub struct Intake {
 struct Intaker {
     name: String,
     owner: Uuid,
-    owner_name: String,
-    owner_email: String,
-    project: Option<Uuid>,
 }
 
 /// The agent, locked, if it may file. Locking it serialises one agent's
-/// intakes, so two first filings cannot make two intake projects.
+/// intakes, so a message raced in twice is refused by the pre-check rather
+/// than the constraint.
 async fn intaker(tx: &mut PgTransaction<'_>, agent: Uuid) -> AppResult<Intaker> {
-    let (name, owner, owner_name, owner_email, can_intake, project): (String, Uuid, String, String, bool, Option<Uuid>) =
+    let (name, owner, owner_name, can_intake): (String, Uuid, String, bool) =
         sqlx::query_as(
-            "SELECT a.name, a.owner_id, p.name, p.email, a.can_intake,
-                    (SELECT pr.id FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
+            "SELECT a.name, a.owner_id, p.name, a.can_intake
                FROM agent a JOIN person p ON p.id = a.owner_id
               WHERE a.id = $1 FOR UPDATE OF a",
         )
@@ -1241,7 +1238,7 @@ async fn intaker(tx: &mut PgTransaction<'_>, agent: Uuid) -> AppResult<Intaker> 
              Ask them to enable \"Can create tasks for me\" on your agent card, then try again."
         )));
     }
-    Ok(Intaker { name, owner, owner_name, owner_email, project })
+    Ok(Intaker { name, owner })
 }
 
 fn dedupe_conflict(e: sqlx::Error, key: &str) -> AppError {
@@ -1263,8 +1260,8 @@ async fn seen(tx: &mut PgTransaction<'_>, agent: Uuid, key: &str) -> AppResult<O
 }
 
 /// File a task for the owner from something the agent read. It lands in
-/// triage, assigned to the owner, in the agent's intake project — made on
-/// the first filing, and again if that one has been archived or deleted.
+/// triage, assigned to the owner, standalone, wearing its source's label
+/// ("Slack") so everyone can see where it came from.
 pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskRow> {
     let title = i.title.trim();
     if title.is_empty() {
@@ -1299,18 +1296,11 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     }
 
     let actor = Actor { label: format!("{} (agent)", who.name), person_id: Some(who.owner), can_apply: true };
-    let project = match who.project {
-        Some(p) => p,
-        None => intake_project(&mut tx, &actor, agent, &who, &kind).await?,
-    };
-    let phase = task::first_phase(&mut tx, project).await?;
-
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO task (phase_id, title, body, priority, status, category,
+        "INSERT INTO task (title, body, priority, status, category,
                            assignee_kind, assignee_person_id, created_by)
-         VALUES ($1, $2, $3, $4, 'triage', $5, 'human', $6, $6) RETURNING id",
+         VALUES ($1, $2, $3, 'triage', $4, 'human', $5, $5) RETURNING id",
     )
-    .bind(phase)
     .bind(title)
     .bind(i.body.trim())
     .bind(priority)
@@ -1340,13 +1330,24 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     .execute(&mut *tx)
     .await
     .map_err(|e| dedupe_conflict(e, &key))?;
+    // The label named for the source, made once: the migration that retired
+    // intake projects gave the old filings the same one.
+    sqlx::query(
+        "WITH l AS (INSERT INTO label (name, colour) VALUES ($2, 'purple')
+                     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id)
+         INSERT INTO task_label (task_id, label_id) SELECT $1, id FROM l",
+    )
+    .bind(id)
+    .bind(source_label(&kind))
+    .execute(&mut *tx)
+    .await?;
     crate::models::change::record(
         &mut tx,
         &actor,
         crate::models::change::TargetType::Task,
         id,
         crate::models::change::Op::Create,
-        json!({ "phase_id": phase, "title": title, "status": "triage", "category": i.category,
+        json!({ "phase_id": null, "title": title, "status": "triage", "category": i.category,
                 "priority": priority, "source": { "kind": kind, "key": key } }),
     )
     .await?;
@@ -1354,57 +1355,13 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     task::get(state, id, Some(who.owner)).await
 }
 
-/// "Slack — Anmol", keyed `intake-anmol-slack`. Written here rather than
-/// through `project::create` so it lands in the intake's transaction: a
-/// refused filing leaves no project behind.
-async fn intake_project(
-    tx: &mut PgTransaction<'_>,
-    actor: &Actor,
-    agent: Uuid,
-    who: &Intaker,
-    kind: &str,
-) -> AppResult<Uuid> {
-    let source: String = kind.chars().take(1).flat_map(char::to_uppercase).chain(kind.chars().skip(1)).collect();
-    let first = who.owner_name.split_whitespace().next().unwrap_or(&who.owner_name);
-    let name = format!("{source} \u{2014} {first}");
-    let handle = who.owner_email.split('@').next().unwrap_or_default();
-    let base = project::slug(&format!("intake-{handle}-{kind}"));
-    let description = format!("Tasks {} filed from {source} for {}.", who.name, who.owner_name);
-    // The first free key: an archived intake project keeps its own.
-    let taken: Vec<String> = sqlx::query_scalar("SELECT key FROM project WHERE key = $1 OR key LIKE $1 || '-%'")
-        .bind(&base)
-        .fetch_all(&mut **tx)
-        .await?;
-    let key = std::iter::once(base.clone())
-        .chain((2..).map(|n| format!("{base}-{n}")))
-        .find(|k| !taken.contains(k))
-        .expect("an unbounded range has a free key");
-
-    let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO project (key, name, description, created_by) VALUES ($1, $2, $3, $4) RETURNING id",
-    )
-    .bind(&key)
-    .bind(&name)
-    .bind(&description)
-    .bind(who.owner)
-    .fetch_one(&mut **tx)
-    .await?;
-    task::first_phase(tx, id).await?;
-    crate::models::change::record(
-        tx,
-        actor,
-        crate::models::change::TargetType::Project,
-        id,
-        crate::models::change::Op::Create,
-        json!({ "key": key, "name": name, "description": description, "intake_agent": agent }),
-    )
-    .await?;
-    sqlx::query("UPDATE agent SET intake_project_id = $2 WHERE id = $1")
-        .bind(agent)
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
-    Ok(id)
+/// The label a source's filings wear: "Slack", "GitHub", "Email". The
+/// migration spells the same rule in SQL.
+fn source_label(kind: &str) -> String {
+    match kind {
+        "github" => "GitHub".to_owned(),
+        _ => kind.chars().take(1).flat_map(char::to_uppercase).chain(kind.chars().skip(1)).collect(),
+    }
 }
 
 /// Another message about a task this agent filed: a note with the permalink,
@@ -1494,4 +1451,173 @@ pub async fn intake_recent(state: &AppState, agent: Uuid, days: i64) -> AppResul
     .bind(days.clamp(1, 90) as i32)
     .fetch_all(&mut *tx)
     .await?)
+}
+
+/// The largest file an agent may attach: a phone screenshot is ~3 MB.
+pub const FILE_LIMIT: usize = 8 * 1024 * 1024;
+
+/// What an attached file is called on the wire, beside its task's source.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMeta {
+    pub id: Uuid,
+    pub name: String,
+    pub mime: String,
+    pub size: i32,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub name: String,
+    pub mime: String,
+    pub data_base64: String,
+    /// The message it came with; the task's original message when absent.
+    #[serde(default)]
+    pub source_key: Option<String>,
+}
+
+/// Whether the bytes are what the mime says, and their size in pixels when
+/// the header says so cheaply.
+///
+/// ponytail: PNG, GIF and JPEG dimensions only; WebP and PDF come back
+/// without, and the app sizes those once it has decoded them.
+fn sniff(mime: &str, b: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
+    let be16 = |i: usize| b.get(i..i + 2).map(|s| u16::from_be_bytes([s[0], s[1]]) as i32);
+    let le16 = |i: usize| b.get(i..i + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as i32);
+    let be32 = |i: usize| b.get(i..i + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as i32);
+    match mime {
+        "image/png" if b.starts_with(b"\x89PNG\r\n\x1a\n") => Some((be32(16), be32(20))),
+        "image/gif" if b.starts_with(b"GIF8") => Some((le16(6), le16(8))),
+        "image/webp" if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" => Some((None, None)),
+        "application/pdf" if b.starts_with(b"%PDF") => Some((None, None)),
+        "image/jpeg" if b.starts_with(&[0xFF, 0xD8, 0xFF]) => {
+            // Walk the segments to the frame header (SOF0–SOF15 but DHT,
+            // JPG and DAC), which holds height then width.
+            let mut i = 2;
+            while i + 9 < b.len() && b[i] == 0xFF {
+                let marker = b[i + 1];
+                if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+                    return Some((be16(i + 7), be16(i + 5)));
+                }
+                i += 2 + be16(i + 2)? as usize;
+            }
+            Some((None, None))
+        }
+        _ => None,
+    }
+}
+
+/// Attach a file that came with a message this agent filed: a screenshot, a
+/// PDF. Only on tasks it filed; the same name from the same message once.
+pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Attachment) -> AppResult<FileMeta> {
+    use base64::Engine;
+    let name = a.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("a file needs a name, e.g. screenshot.png".into()));
+    }
+    let mime = a.mime.trim().to_lowercase();
+    const TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"];
+    if !TYPES.contains(&mime.as_str()) {
+        return Err(AppError::UnsupportedType(format!(
+            "{name} is {mime}; only PNG, JPEG, GIF and WebP images and PDFs can be attached. Link anything else in the task instead."
+        )));
+    }
+    let too_big = |bytes: usize| {
+        AppError::TooLarge(format!(
+            "{name} is {:.1} MB; files are limited to 8 MB each. Link it from the task instead.",
+            bytes as f64 / (1024.0 * 1024.0)
+        ))
+    };
+    let data: String = a.data_base64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| AppError::BadRequest(format!("dataBase64 is not valid base64 ({e}); send the file's bytes base64-encoded")))?;
+    if bytes.is_empty() {
+        return Err(AppError::BadRequest(format!("{name} is empty")));
+    }
+    if bytes.len() > FILE_LIMIT {
+        return Err(too_big(bytes.len()));
+    }
+    let (width, height) = sniff(&mime, &bytes).ok_or_else(|| {
+        AppError::UnsupportedType(format!("{name} does not look like {mime}; send its real type"))
+    })?;
+
+    let mut tx = state.db.begin().await?;
+    intaker(&mut tx, agent).await?;
+    let original: Option<String> = sqlx::query_scalar(
+        "SELECT source_key FROM task_source WHERE task_id = $1 AND agent_id = $2 AND NOT appended",
+    )
+    .bind(task_id)
+    .bind(agent)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(original) = original else {
+        return Err(AppError::Forbidden(format!(
+            "task {task_id} was not filed by you; you can only attach files to tasks you filed (see intake_recent)"
+        )));
+    };
+    let key = a.source_key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()).unwrap_or(original);
+    let known: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM task_source WHERE task_id = $1 AND agent_id = $2 AND source_key = $3)",
+    )
+    .bind(task_id)
+    .bind(agent)
+    .bind(&key)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !known {
+        return Err(AppError::BadRequest(format!(
+            "sourceKey {key} is not a message you filed or appended on this task; append it first, or leave sourceKey out"
+        )));
+    }
+    let made: Option<FileMeta> = sqlx::query_as(
+        "INSERT INTO task_file (task_id, source_key, name, mime, size, bytes, width, height)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (task_id, source_key, name) DO NOTHING
+         RETURNING id, name, mime, size, width, height",
+    )
+    .bind(task_id)
+    .bind(&key)
+    .bind(name)
+    .bind(&mime)
+    .bind(bytes.len() as i32)
+    .bind(&bytes)
+    .bind(width)
+    .bind(height)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(made) = made else {
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM task_file WHERE task_id = $1 AND source_key = $2 AND name = $3")
+            .bind(task_id)
+            .bind(&key)
+            .bind(name)
+            .fetch_one(&mut *tx)
+            .await?;
+        return Err(AppError::Conflict(format!(
+            "{name} from that message is already attached (file {id}); nothing was added."
+        )));
+    };
+    tx.commit().await?;
+    Ok(made)
+}
+
+#[cfg(test)]
+mod sniff_tests {
+    use super::sniff;
+
+    #[test]
+    fn reads_sizes_from_headers_and_refuses_liars() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&[0, 0, 1, 0x40, 0, 0, 0, 0xF0]);
+        assert_eq!(sniff("image/png", &png), Some((Some(320), Some(240))));
+        assert_eq!(sniff("image/gif", b"GIF89a\x10\x00\x20\x00"), Some((Some(16), Some(32))));
+        // SOI, an APP0 of length 4, then SOF0: precision, height 2, width 3.
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 11, 8, 0, 2, 0, 3, 1, 0, 0, 0];
+        assert_eq!(sniff("image/jpeg", &jpeg), Some((Some(3), Some(2))));
+        assert_eq!(sniff("image/png", b"<html>"), None);
+        assert_eq!(sniff("application/pdf", b"%PDF-1.7"), Some((None, None)));
+    }
 }
