@@ -21,7 +21,8 @@ pub enum Assignee {
 pub async fn create(
     state: &AppState,
     actor: &Actor,
-    phase_id: Uuid,
+    phase_id: Option<Uuid>,
+    project_id: Option<Uuid>,
     title: String,
     body: String,
     priority: i32,
@@ -35,7 +36,7 @@ pub async fn create(
 
     let id = Uuid::new_v4();
     let patch = json!({
-        "phase_id": phase_id, "title": title, "body": body,
+        "phase_id": phase_id, "project_id": project_id, "title": title, "body": body,
         "priority": priority
     });
 
@@ -45,6 +46,11 @@ pub async fn create(
     }
 
     let mut tx = state.db.begin().await?;
+    // Neither: a standalone task. A project alone: its first phase.
+    let phase_id = match (phase_id, project_id) {
+        (None, Some(project)) => Some(destination(&mut tx, project, "").await?),
+        (phase, _) => phase,
+    };
 
     let task: Task = sqlx::query_as(&format!(
         "INSERT INTO task (id, phase_id, title, body, priority, created_by)
@@ -77,7 +83,7 @@ pub async fn create(
 pub async fn search(state: &AppState, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let tasks = sqlx::query_as(&format!(
         "SELECT {} FROM task t
-         JOIN phase p ON p.id = t.phase_id
+         LEFT JOIN phase p ON p.id = t.phase_id
          LEFT JOIN person per ON per.id = t.assignee_person_id
          WHERE ($1::uuid IS NULL OR p.project_id = $1)
            AND ($2::uuid IS NULL OR t.phase_id = $2)
@@ -564,6 +570,10 @@ pub struct TaskDetails {
     /// Absent leaves it alone, `null` clears it, a value sets it.
     #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
     pub category: Option<Option<String>>,
+    /// Absent leaves it where it is, `null` makes it standalone, an id moves
+    /// it into that project's first phase. Only for `can_manage` holders.
+    #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Option<Uuid>>,
     /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
     /// stays out of the audit patch — and out of a replayed proposal, which is
     /// approved against the row as it is then.
@@ -617,6 +627,16 @@ pub async fn update_details(
         .await?
         .ok_or_else(|| AppError::NotFound("task not found".into()))?;
     stale_check(details.expected_updated_at, updated_at, "task")?;
+    let moved = match details.project_id {
+        None => None,
+        Some(project) => {
+            manage(&mut tx, actor, id, "move").await?;
+            Some(match project {
+                Some(p) => Some(destination(&mut tx, p, "").await?),
+                None => None,
+            })
+        }
+    };
 
     let assignee = details.assignee_id.unwrap_or(assignee);
     let department: Option<String> = match assignee {
@@ -642,6 +662,7 @@ pub async fn update_details(
             status             = $6,
             done_at            = CASE WHEN $7 THEN coalesce(done_at, now()) ELSE NULL END,
             category           = CASE WHEN $8 THEN $9 ELSE category END,
+            phase_id           = CASE WHEN $10 THEN $11 ELSE phase_id END,
             updated_at         = now()
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
@@ -654,6 +675,8 @@ pub async fn update_details(
     .bind(finished)
     .bind(details.category.is_some())
     .bind(details.category.flatten())
+    .bind(moved.is_some())
+    .bind(moved.flatten())
     .fetch_one(&mut *tx)
     .await?;
 
@@ -700,21 +723,7 @@ pub async fn triage(
     transition(&mut tx, actor, id, to.into(), None, None).await?;
 
     if let (true, Some(project)) = (accept, project_id) {
-        let archived: Option<bool> =
-            sqlx::query_scalar("SELECT archived_at IS NOT NULL FROM project WHERE id = $1")
-                .bind(project)
-                .fetch_optional(&mut *tx)
-                .await?;
-        match archived {
-            None => return Err(AppError::NotFound("That project does not exist.".into())),
-            Some(true) => {
-                return Err(AppError::BadRequest(
-                    "That project is archived \u{2014} pick a live project, or accept it where it is.".into(),
-                ))
-            }
-            Some(false) => {}
-        }
-        let phase = first_phase(&mut tx, project).await?;
+        let phase = destination(&mut tx, project, ", or accept it where it is").await?;
         sqlx::query("UPDATE task SET phase_id = $2, updated_at = now() WHERE id = $1")
             .bind(id)
             .bind(phase)
@@ -728,6 +737,22 @@ pub async fn triage(
     }
     tx.commit().await?;
     get(state, id, actor.person_id).await
+}
+
+/// The phase a task moved or filed into `project` lands in, refusing a project
+/// that is gone or archived. `hint` ends the archived message.
+pub(crate) async fn destination(tx: &mut PgTransaction<'_>, project: Uuid, hint: &str) -> AppResult<Uuid> {
+    let archived: Option<bool> = sqlx::query_scalar("SELECT archived_at IS NOT NULL FROM project WHERE id = $1")
+        .bind(project)
+        .fetch_optional(&mut **tx)
+        .await?;
+    match archived {
+        None => Err(AppError::NotFound("That project does not exist.".into())),
+        Some(true) => Err(AppError::BadRequest(format!(
+            "That project is archived \u{2014} pick a live project{hint}."
+        ))),
+        Some(false) => first_phase(tx, project).await,
+    }
 }
 
 /// A project's first phase by position, made if it has none: the phase that
@@ -781,8 +806,8 @@ async fn manage(tx: &mut PgTransaction<'_>, actor: &Actor, id: Uuid, verb: &str)
     ) = sqlx::query_as(&format!(
         "SELECT {}, t.created_by, tc.name, pr.created_by, pc.name, pr.archived_at IS NOT NULL
            FROM task t
-           JOIN phase ph ON ph.id = t.phase_id
-           JOIN project pr ON pr.id = ph.project_id
+           LEFT JOIN phase ph ON ph.id = t.phase_id
+           LEFT JOIN project pr ON pr.id = ph.project_id
            LEFT JOIN person tc ON tc.id = t.created_by
            LEFT JOIN person pc ON pc.id = pr.created_by
           WHERE t.id = $1
@@ -814,7 +839,7 @@ pub(crate) async fn refuse_held(tx: &mut PgTransaction<'_>, scope: HeldIn) -> Ap
     };
     let held: Option<(String, String)> = sqlx::query_as(&format!(
         "SELECT t.title, a.name FROM task t
-           JOIN phase ph ON ph.id = t.phase_id
+           LEFT JOIN phase ph ON ph.id = t.phase_id
            JOIN agent a ON a.id = t.delegate_agent_id
           WHERE (t.id = $1 OR ph.project_id = $2) AND {HELD}
           LIMIT 1"

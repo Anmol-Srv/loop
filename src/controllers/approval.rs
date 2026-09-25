@@ -208,7 +208,8 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
         ("task", "create") => match task::create(
             state,
             &Actor { person_id: change.on_behalf_of, ..actor.clone() },
-            uuid_at("phase_id")?,
+            p.get("phase_id").and_then(Value::as_str).and_then(|s| s.parse().ok()),
+            p.get("project_id").and_then(Value::as_str).and_then(|s| s.parse().ok()),
             str_at("title")?,
             str_at("body")?,
             i32_at("priority")?,

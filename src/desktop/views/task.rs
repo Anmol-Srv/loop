@@ -340,6 +340,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             if w::link(ui, name).clicked() {
                 open_project = Some(id.to_owned());
             }
+        } else if task.is_some() {
+            faint(ui, "\u{00B7}");
+            faint(ui, "No project");
         }
     });
     if leave {
@@ -400,7 +403,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             .unwrap_or_default()
     });
     let handoff = Handoff { mine, delegated: super::menus::held(&task), finished: super::menus::finished(&task), agents: &agents };
-    if status == "triage" {
+    // Who may move it between projects: `canArchive` is the same rule.
+    let can_move = can_write && task.get("canArchive").and_then(Value::as_bool).unwrap_or(false);
+    if status == "triage" || can_move {
         super::triage::want_projects(net);
     }
     let viewer = Viewer {
@@ -493,6 +498,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 can_write,
                 busy,
                 people,
+                can_move,
+                projects: &viewer.projects,
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -932,6 +939,10 @@ struct Rail<'a> {
     can_write: bool,
     busy: bool,
     people: &'a [Value],
+    /// Whether the viewer may move it into another project or out of one.
+    can_move: bool,
+    /// Live projects: (id, name).
+    projects: &'a [(String, String)],
 }
 
 /// Everything a task *is*, as a column of labelled facts — and, for anyone
@@ -1094,13 +1105,30 @@ fn rail(
     });
 
     shell::property(ui, "Project", |ui| {
-        match str_of(task, "projectName").filter(|p| !p.is_empty()) {
+        let name = str_of(task, "projectName").filter(|p| !p.is_empty());
+        if r.can_move && !r.busy {
+            // The breadcrumb still links to it; here it is a move.
+            let here = str_of(task, "projectId");
+            let mut options: Vec<(String, String)> = Vec::new();
+            if here.is_some() {
+                options.push((UNASSIGN.to_owned(), "No project".to_owned()));
+            }
+            options.extend(r.projects.iter().filter(|(id, _)| Some(id.as_str()) != here).cloned());
+            let mut slot: Option<String> = None;
+            viz::value_select(ui, name.unwrap_or("No project"), &options, &mut slot);
+            if let Some(picked) = slot {
+                let to = if picked == UNASSIGN { Value::Null } else { json!(picked) };
+                ask = Some(Ask::Details(json!({ "projectId": to })));
+            }
+            return;
+        }
+        match name {
             Some(name) => {
                 if w::link(ui, name).clicked() {
                     *open_project = str_of(task, "projectId").map(str::to_owned);
                 }
             }
-            None => faint(ui, "\u{2014}"),
+            None => faint(ui, "No project"),
         }
     });
 
@@ -1128,7 +1156,8 @@ fn rail(
     ask
 }
 
-/// The assignee menu's "nobody" row. Not a uuid, so it cannot collide with one.
+/// The assignee menu's "nobody" row, and the project menu's "No project". Not
+/// a uuid, so it cannot collide with one.
 const UNASSIGN: &str = "none";
 
 /// P0 shouts and P4 whispers, in the same chip vocabulary as status — the rail

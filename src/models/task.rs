@@ -141,7 +141,8 @@ pub const DEPARTMENTS: [&str; 3] = ["design", "frontend", "backend"];
 #[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: Uuid,
-    pub phase_id: Uuid,
+    /// None for a standalone task: one in no project.
+    pub phase_id: Option<Uuid>,
     pub title: String,
     pub body: String,
     pub status: String,
@@ -181,9 +182,10 @@ pub struct TaskRow {
     #[sqlx(flatten)]
     #[serde(flatten)]
     pub task: Task,
-    pub project_id: Uuid,
-    pub project_name: String,
-    pub phase_name: String,
+    /// All three None for a standalone task.
+    pub project_id: Option<Uuid>,
+    pub project_name: Option<String>,
+    pub phase_name: Option<String>,
     /// The person holding it, by name and address, so a row never has to
     /// look an id up to say who.
     pub assignee_name: Option<String>,
@@ -222,7 +224,7 @@ pub struct TaskFilter {
 }
 
 /// Who may archive, restore or delete a task: whoever created it, whoever
-/// created its project, or an admin. SQL over `t` and `pr`, for the person
+/// created its project (a standalone task has none), or an admin. SQL over `t` and `pr`, for the person
 /// bound at `viewer` — selected into every `TaskRow` and checked by the
 /// controller before it acts, so the app and the server ask one question.
 pub fn can_manage(viewer: &str) -> String {
@@ -244,9 +246,10 @@ pub fn sees_agent_private(viewer: &str) -> String {
 
 /// A task that is neither archived nor in an archived project, as SQL over
 /// `t` alone, for the queries that do not join the project.
-pub const LIVE: &str = "(t.archived_at IS NULL AND t.phase_id NOT IN
-    (SELECT ph.id FROM phase ph JOIN project pr ON pr.id = ph.project_id
-      WHERE pr.archived_at IS NOT NULL))";
+/// A standalone task (no phase) is archived only by its own flag.
+pub const LIVE: &str = "(t.archived_at IS NULL AND NOT EXISTS
+    (SELECT 1 FROM phase ph JOIN project pr ON pr.id = ph.project_id
+      WHERE ph.id = t.phase_id AND pr.archived_at IS NOT NULL))";
 
 /// An agent still holds the task: it has to be taken back before the task can
 /// be archived or deleted. The delegate stays on a finished task as history.
@@ -313,8 +316,8 @@ pub fn task_row_select(viewer: &str) -> String {
                                      ELSE 'From a direct message' END)
                    FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source
            FROM task t
-           JOIN phase ph ON ph.id = t.phase_id
-           JOIN project pr ON pr.id = ph.project_id
+           LEFT JOIN phase ph ON ph.id = t.phase_id
+           LEFT JOIN project pr ON pr.id = ph.project_id
            LEFT JOIN person own ON own.id = t.assignee_person_id",
         cols = task_columns_t(),
         can = can_manage(viewer),

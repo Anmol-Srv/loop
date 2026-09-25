@@ -27,6 +27,8 @@ pub const RUNTIMES: [&str; 4] = ["hermes", "claude-code", "codex", "other"];
 /// Compiled in, so the skill an agent downloads always matches the server it
 /// talks to.
 pub const SKILL: &str = include_str!("../../agent-kit/airtribe-agent/SKILL.md");
+/// The intake skill, served only to agents allowed to file tasks.
+pub const INTAKE_SKILL: &str = include_str!("../../agent-kit/airtribe-intake/SKILL.md");
 
 /// The skill's `version:` line. The inbox names it, so a changed skill changes
 /// the inbox and wakes every connected agent to fetch the new one.
@@ -362,9 +364,19 @@ pub async fn hello(
     me(state, id, server).await
 }
 
-pub async fn skill(state: &AppState, id: Uuid, server: &str) -> AppResult<String> {
+pub async fn skill(state: &AppState, id: Uuid, name: Option<&str>, server: &str) -> AppResult<String> {
     let who = identity(state, id).await?;
-    Ok(render(SKILL, server, &who.agent.handle, &who.agent.name, &who.owner_name))
+    let template = match name {
+        None | Some("agent") => SKILL,
+        Some("intake") if who.agent.can_intake => INTAKE_SKILL,
+        Some("intake") => {
+            return Err(AppError::Forbidden(
+                "the intake skill is for agents your owner lets create tasks; ask them to turn that on".into(),
+            ))
+        }
+        Some(other) => return Err(AppError::NotFound(format!("no skill called '{other}'; try 'agent' or 'intake'"))),
+    };
+    Ok(render(template, server, &who.agent.handle, &who.agent.name, &who.owner_name))
 }
 
 pub async fn onboarding(state: &AppState, id: Uuid, runtime: Option<&str>, server: &str) -> AppResult<String> {
@@ -413,19 +425,33 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
     let track = if department == Some("design") { "design" } else { "eng" };
     let allowed = next_statuses(department, &row.task.status);
 
-    let project = project::get(state, row.project_id, None).await?;
-    let resources = artifact::list(state, None, "project".into(), row.project_id).await?;
-    // Each repo with the folder its owner keeps it in: the agent works on the
-    // owner's Mac, so the owner's path is the one that means anything here.
-    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
-    let repos: Vec<Value> = repo::list(state, Some(owner_id), row.project_id)
-        .await?
-        .into_iter()
-        .map(|r| json!({ "name": r.name, "url": r.url, "localPath": r.my_path }))
-        .collect();
+    // A standalone task has no project: `project` is null.
+    let project = match row.project_id {
+        None => Value::Null,
+        Some(project_id) => {
+            let project = project::get(state, project_id, None).await?;
+            let resources = artifact::list(state, None, "project".into(), project_id).await?;
+            // Each repo with the folder its owner keeps it in: the agent works on the
+            // owner's Mac, so the owner's path is the one that means anything here.
+            let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
+                .bind(id)
+                .fetch_one(&state.db)
+                .await?;
+            let repos: Vec<Value> = repo::list(state, Some(owner_id), project_id)
+                .await?
+                .into_iter()
+                .map(|r| json!({ "name": r.name, "url": r.url, "localPath": r.my_path }))
+                .collect();
+            json!({
+                "id": project.id,
+                "name": project.name,
+                "description": project.description,
+                "labels": project.labels,
+                "resources": resources,
+                "repos": repos,
+            })
+        }
+    };
     let owner: Option<(Uuid, String, String, String)> = sqlx::query_as(
         "SELECT id, name, email, department FROM person WHERE id = $1",
     )
@@ -464,14 +490,7 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
         "task": row,
         "track": track,
         "allowedNext": allowed,
-        "project": {
-            "id": project.id,
-            "name": project.name,
-            "description": project.description,
-            "labels": project.labels,
-            "resources": resources,
-            "repos": repos,
-        },
+        "project": project,
         "owner": owner.map(|(id, name, email, department)| json!({
             "id": id, "name": name, "email": email, "department": department,
         })),
@@ -1140,8 +1159,8 @@ pub async fn active(state: &AppState) -> AppResult<Vec<Active>> {
            FROM task t
            JOIN agent a ON a.id = t.delegate_agent_id
            JOIN person p ON p.id = a.owner_id
-           JOIN phase ph ON ph.id = t.phase_id
-           JOIN project pr ON pr.id = ph.project_id
+           LEFT JOIN phase ph ON ph.id = t.phase_id
+           LEFT JOIN project pr ON pr.id = ph.project_id
           WHERE t.agent_state IN ('acknowledged', 'working', 'needs_input', 'in_review')
             AND t.done_at IS NULL AND t.status <> 'dropped' AND a.revoked_at IS NULL
             AND t.archived_at IS NULL AND pr.archived_at IS NULL

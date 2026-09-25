@@ -34,6 +34,7 @@ enum Target {
     Project(String),
     Tab(Tab),
     CreateProject,
+    NewTask,
 }
 
 struct Hit {
@@ -188,6 +189,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             app.task = None;
             app.board.creating = Some(Default::default());
         }
+        Target::NewTask => super::new_task::open(app),
     }
 }
 
@@ -231,6 +233,7 @@ fn results(tasks: Option<&Value>, projects: Option<&Value>, query: &str, can_wri
     ];
     // Offered only to someone who could submit the form it opens.
     if can_write {
+        pages.push(("New task", Target::NewTask));
         pages.push(("Create project", Target::CreateProject));
     }
     for (name, target) in pages.into_iter().filter(|(n, _)| viz::matches(query, &[n])) {

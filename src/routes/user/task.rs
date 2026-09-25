@@ -27,6 +27,17 @@ pub struct CreateTaskBody {
     pub priority: i32,
 }
 
+/// A task made on its own: standalone, or with `projectId` into that
+/// project's first phase.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewTaskBody {
+    #[serde(flatten)]
+    pub task: controllers::project::NewTask,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTaskBody {
@@ -82,7 +93,7 @@ pub struct ArchivedQuery {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/phases/{phase_id}/tasks", post(create))
-        .route("/api/user/tasks", get(search))
+        .route("/api/user/tasks", get(search).post(create_direct))
         // The two literal paths are declared before `{id}` for a human reader;
         // the router prefers a static segment over a parameter regardless.
         .route("/api/user/tasks/mine", get(mine))
@@ -113,10 +124,20 @@ async fn create(
 ) -> AppResult<ApiResponse<Outcome<Task>>> {
     caller.can_mutate()?;
     let task = controllers::task::create(
-        &state, &caller.actor, phase_id, body.title, body.body, body.priority,
+        &state, &caller.actor, Some(phase_id), None, body.title, body.body, body.priority,
     )
     .await?;
     Ok(ApiResponse::ok(task))
+}
+
+async fn create_direct(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(body): Json<NewTaskBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    caller.can_mutate()?;
+    let task = controllers::project::add_task(&state, &caller.actor, body.project_id, body.task).await?;
+    Ok(ApiResponse::ok(controllers::task::get(&state, task.id, caller.actor.person_id).await?))
 }
 
 async fn search(

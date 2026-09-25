@@ -1,6 +1,7 @@
 # task_create
 
-Creates a task inside a phase.
+Creates a task inside a phase, in a project's first phase, or standalone (in
+no project) when neither `phaseId` nor `projectId` is given.
 
 **What happens depends on your scope.** With `write` the task is created and
 returned. With only `propose` **nothing is created**: the full intent is
@@ -11,7 +12,8 @@ approve or reject. Do not assume the task exists after a proposed call.
 
 | Name | Type | Required | Notes |
 |---|---|---|---|
-| `phaseId` | uuid | yes | The phase to create the task in. |
+| `phaseId` | uuid | no | The phase to create the task in. |
+| `projectId` | uuid | no | Without `phaseId`: the project's first phase. Must be live. |
 | `title` | string | yes | Non-empty. |
 | `body` | string | no | Defaults to empty. |
 | `priority` | integer | no | 0 (highest) to 4. Defaults to 2. |

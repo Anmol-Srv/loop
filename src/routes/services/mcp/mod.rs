@@ -192,7 +192,7 @@ fn resource_list(caller: &Caller) -> Vec<Value> {
 async fn read_resource(state: &AppState, caller: &Caller, headers: &HeaderMap, params: &Value) -> AppResult<Value> {
     let uri = str_arg(params, "uri")?;
     if let (SKILL_URI, Some(agent)) = (uri.as_str(), caller.agent_id) {
-        let text = controllers::agent::skill(state, agent, &crate::routes::agent::server_url(headers)).await?;
+        let text = controllers::agent::skill(state, agent, None, &crate::routes::agent::server_url(headers)).await?;
         return Ok(json!({ "contents": [{ "uri": uri, "mimeType": "text/markdown", "text": text }] }));
     }
     let name = uri
@@ -249,7 +249,8 @@ async fn call_tool(state: &AppState, caller: &Caller, name: &str, args: &Value) 
             controllers::task::create(
                 state,
                 actor,
-                uuid_arg(&args, "phaseId")?,
+                opt_uuid_arg(&args, "phaseId")?,
+                opt_uuid_arg(&args, "projectId")?,
                 str_arg(&args, "title")?,
                 opt_str_arg(&args, "body").unwrap_or_default(),
                 args.get("priority").and_then(Value::as_i64).unwrap_or(2) as i32,

@@ -7,6 +7,7 @@ pub mod login;
 pub mod task;
 pub mod home;
 pub mod mytasks;
+pub mod new_task;
 pub mod palette;
 pub mod menus;
 pub mod triage;

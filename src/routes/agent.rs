@@ -254,8 +254,18 @@ async fn inbox(State(state): State<AppState>, caller: Caller) -> AppResult<Respo
     Ok(text("text/plain; charset=utf-8", agent::inbox(&state, caller.agent()?).await?))
 }
 
-async fn skill(State(state): State<AppState>, caller: Caller, headers: HeaderMap) -> AppResult<Response> {
-    let body = agent::skill(&state, caller.agent()?, &server_url(&headers)).await?;
+#[derive(Deserialize)]
+pub struct SkillQuery {
+    pub name: Option<String>,
+}
+
+async fn skill(
+    State(state): State<AppState>,
+    caller: Caller,
+    headers: HeaderMap,
+    Query(q): Query<SkillQuery>,
+) -> AppResult<Response> {
+    let body = agent::skill(&state, caller.agent()?, q.name.as_deref(), &server_url(&headers)).await?;
     Ok(text("text/markdown; charset=utf-8", body))
 }
 

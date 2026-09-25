@@ -20,6 +20,8 @@ pub struct NewTask {
     pub assignee_id: Option<Uuid>,
     #[serde(default = "default_priority")]
     pub priority: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 fn default_priority() -> i32 {
@@ -202,7 +204,7 @@ pub async fn create(
     .fetch_one(&mut *tx)
     .await?;
     for t in &tasks {
-        insert_task(&mut tx, actor, phase_id, t).await?;
+        insert_task(&mut tx, actor, Some(phase_id), t).await?;
     }
     // The form's one repository, named after the project it is the code for.
     if let Some(url) = &repo_url {
@@ -215,7 +217,8 @@ pub async fn create(
     Ok(Outcome::Applied { entity: project })
 }
 
-/// Add one task to a project after the fact, into its default phase.
+/// Add one task into a project's default phase, or with no project a
+/// standalone task.
 ///
 /// Projects made before phases were hidden may have several; the first by
 /// position is the one that means "the work", and a project with none gets
@@ -223,36 +226,15 @@ pub async fn create(
 pub async fn add_task(
     state: &AppState,
     actor: &Actor,
-    project_id: Uuid,
+    project_id: Option<Uuid>,
     task: NewTask,
 ) -> AppResult<Task> {
     check_task(&task)?;
     let mut tx = state.db.begin().await?;
-
-    let phase_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM phase WHERE project_id = $1 ORDER BY position LIMIT 1",
-    )
-    .bind(project_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let phase_id = match phase_id {
-        Some(id) => id,
-        None => sqlx::query_scalar(
-            "INSERT INTO phase (project_id, position, name, status)
-             VALUES ($1, 0, $2, 'active') RETURNING id",
-        )
-        .bind(project_id)
-        .bind(DEFAULT_PHASE)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
-                AppError::NotFound("project not found".into())
-            }
-            _ => AppError::Database(e),
-        })?,
+    let phase_id = match project_id {
+        Some(p) => Some(super::task::destination(&mut tx, p, "").await?),
+        None => None,
     };
-
     let created = insert_task(&mut tx, actor, phase_id, &task).await?;
     tx.commit().await?;
     Ok(created)
@@ -265,6 +247,9 @@ fn check_task(t: &NewTask) -> AppResult<()> {
     if !(0..=4).contains(&t.priority) {
         return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
     }
+    if let Some(c) = &t.category {
+        super::task::check_category(c)?;
+    }
     Ok(())
 }
 
@@ -275,14 +260,14 @@ fn check_task(t: &NewTask) -> AppResult<()> {
 async fn insert_task(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: &Actor,
-    phase_id: Uuid,
+    phase_id: Option<Uuid>,
     t: &NewTask,
 ) -> AppResult<Task> {
     let task: Task = sqlx::query_as(&format!(
         "INSERT INTO task (phase_id, title, body, priority,
-                           assignee_kind, assignee_person_id, created_by)
+                           assignee_kind, assignee_person_id, created_by, category)
          VALUES ($1, $2, $3, $4,
-                 CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END, $5, $6)
+                 CASE WHEN $5::uuid IS NULL THEN NULL ELSE 'human' END, $5, $6, $7)
          RETURNING {TASK_COLUMNS}"
     ))
     .bind(phase_id)
@@ -291,6 +276,7 @@ async fn insert_task(
     .bind(t.priority)
     .bind(t.assignee_id)
     .bind(actor.person_id)
+    .bind(&t.category)
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {

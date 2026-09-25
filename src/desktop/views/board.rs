@@ -115,6 +115,8 @@ pub struct State {
     pub notice: Option<(String, bool)>,
     /// Task actions picked from a menu, on any page.
     pub tasks: super::menus::Tasks,
+    /// The New task dialog, from any page.
+    pub new_task: super::new_task::State,
 }
 
 /// What one project page remembers between frames.

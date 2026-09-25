@@ -23,6 +23,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
+    views::new_task::shortcut(app, ui.ctx());
+
     // The counts ride on every tab, so they are their own small fetch rather
     // than a read of Home's payload, which every other tab would then wait on.
     // Open means still yours to act on: not finished on either track, and not
@@ -183,6 +185,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 
+    views::new_task::ui(app, ui.ctx());
     // After every page, so a task's confirm dialog sits over whichever one
     // asked. A task deleted from its own page leaves it.
     let net = app.net.as_mut().expect("chrome runs signed in");

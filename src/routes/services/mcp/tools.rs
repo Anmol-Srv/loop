@@ -75,17 +75,19 @@ pub fn all() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "task_create",
-            description: "Create a task in a phase. With only the 'propose' scope this queues a \
+            description: "Create a task: in a phase, in a project's first phase (projectId), or \
+                          standalone with neither. With only the 'propose' scope this queues a \
                           pending change instead of creating anything.",
             scope: "propose",
             input_schema: schema(
                 json!({
                     "phaseId": uuid,
+                    "projectId": uuid,
                     "title": { "type": "string" },
                     "body": { "type": "string" },
                     "priority": { "type": "integer", "minimum": 0, "maximum": 4, "default": 2 },
                 }),
-                &["phaseId", "title"],
+                &["title"],
             ),
             doc: include_str!("docs/task_create.md"),
         },

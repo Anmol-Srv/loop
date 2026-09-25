@@ -139,7 +139,7 @@ async fn add_task(
     Json(body): Json<NewTask>,
 ) -> AppResult<ApiResponse<Task>> {
     caller.can_mutate()?;
-    Ok(ApiResponse::ok(controllers::project::add_task(&state, &caller.actor, id, body).await?))
+    Ok(ApiResponse::ok(controllers::project::add_task(&state, &caller.actor, Some(id), body).await?))
 }
 
 /// The flow strip: done/total for the project and for each discipline in it.

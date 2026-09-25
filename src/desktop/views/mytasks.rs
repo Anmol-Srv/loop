@@ -121,12 +121,21 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let projects: Vec<&str> = projects.iter().map(String::as_str).collect();
 
     let open = rows.iter().filter(|t| !finished(t)).count();
-    let mut subtitle = format!("{open} open across {}", plural(projects.len(), "project"));
+    let in_projects = projects.iter().filter(|p| **p != NO_PROJECT).count();
+    let mut subtitle = format!("{open} open across {}", plural(in_projects, "project"));
     if !triage.is_empty() {
         subtitle += &format!(" \u{00B7} {} to triage", triage.len());
     }
 
-    shell::page_title(ui, "My Tasks", &subtitle, |_| {});
+    let mut new_task = false;
+    shell::page_title(ui, "My Tasks", &subtitle, |ui| {
+        if viewer.can_write {
+            new_task = super::new_task::button(ui);
+        }
+    });
+    if new_task {
+        super::new_task::open(app);
+    }
 
     if let Some(err) = &error {
         w::error(
@@ -323,7 +332,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         }
     });
 
-    row.muted(4, project_of(t));
+    // A standalone task reads "—", faint, like every empty cell.
+    row.muted(4, str_at(t, "projectName").unwrap_or_default());
     row.muted(5, &age(str_at(t, "createdAt").unwrap_or_default()));
 }
 
@@ -352,12 +362,15 @@ fn finished(t: &Value) -> bool {
     t.get("doneAt").is_some_and(|v| !v.is_null()) || str_at(t, "status") == Some("dropped")
 }
 
-/// The group a task is filed under. A task always has a project; the fallback
-/// only exists so a malformed row still lands somewhere visible.
+/// What a standalone task is filed under in the project filter.
+const NO_PROJECT: &str = "No project";
+
+/// The project filter's value for a task: its project, or "No project" for a
+/// standalone one.
 fn project_of<'a>(t: &'a Value) -> &'a str {
     match str_at(t, "projectName") {
         Some(name) if !name.is_empty() => name,
-        _ => "No project",
+        _ => NO_PROJECT,
     }
 }
 

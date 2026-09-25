@@ -241,7 +241,12 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         },
     );
     let filtered = state != State::default();
+    let mut new_task = false;
     shell::section_count_with(ui, "Tasks", shown.len(), |ui| {
+        if viewer.can_write {
+            new_task = super::new_task::button(ui);
+            ui.add_space(space::SM);
+        }
         if filtered {
             w::caption(ui, &format!("filtered from {}", t.live));
         }
@@ -278,6 +283,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         None => {}
     }
 
+    if new_task {
+        super::new_task::open(app);
+    }
     match go {
         Some(Target::Task(id)) => app.task = Some(id),
         Some(Target::Project(id)) => {
