@@ -9,7 +9,10 @@ use acp_server::{
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "acp-admin", about = "Bootstrap administration for the control plane")]
+#[command(
+    name = "acp-admin",
+    about = "Bootstrap administration for the control plane"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -76,26 +79,27 @@ async fn main() {
     let cli = Cli::parse();
 
     let config = Config::from_env().expect("missing DATABASE_URL");
-    let pool = db::connect(&config.database_url).await.expect("cannot connect to Postgres");
+    let pool = db::connect(&config.database_url)
+        .await
+        .expect("cannot connect to Postgres");
     let state = db::AppState { db: pool };
 
     match cli.command {
-        Command::AddPerson { email, name } => match people::add_person(&state, &email, &name).await {
+        Command::AddPerson { email, name } => match people::add_person(&state, &email, &name).await
+        {
             Ok(_) => println!("person ready: {}", email.trim().to_lowercase()),
             Err(e) => die(e),
         },
-        Command::Session { email } => {
-            match token::mint_session(&state, &email).await {
-                Ok((raw, row)) => {
-                    println!("session for {} (expires {})", row.label, row.expires_at);
-                    println!("{raw}");
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
+        Command::Session { email } => match token::mint_session(&state, &email).await {
+            Ok((raw, row)) => {
+                println!("session for {} (expires {})", row.label, row.expires_at);
+                println!("{raw}");
             }
-        }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
         Command::SetPassword { email, password } => {
             match people::set_password_directly(&state, &email, &password).await {
                 Ok(()) => println!("password set for {email}; their sessions have ended"),
@@ -103,7 +107,11 @@ async fn main() {
             }
         }
         Command::SetDepartment { email, department } => {
-            let actor = Actor { label: "acp-admin".into(), person_id: None, can_apply: true };
+            let actor = Actor {
+                label: "acp-admin".into(),
+                person_id: None,
+                can_apply: true,
+            };
             let moved = match people::id_of(&state, &email).await {
                 Ok(id) => people::set_department(&state, &actor, id, &department).await,
                 Err(e) => Err(e),
@@ -119,21 +127,34 @@ async fn main() {
                 Err(e) => Err(e),
             };
             match changed {
-                Ok((p, ended)) => println!("{} is now {}; {ended} session(s) ended", p.email, p.role),
+                Ok((p, ended)) => {
+                    println!("{} is now {}; {ended} session(s) ended", p.email, p.role)
+                }
                 Err(e) => die(e),
             }
         }
-        Command::Mint { handle, owner, name, runtime } => {
+        Command::Mint {
+            handle,
+            owner,
+            name,
+            runtime,
+        } => {
             // Where the agent will reach the server; this binary has no request
             // to read it from.
-            let server = std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+            let server =
+                std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
             let made = match people::id_of(&state, &owner).await {
-                Ok(id) => agent::create(&state, id, &handle, &name, &runtime, false, &server).await,
+                Ok(id) => {
+                    agent::create(&state, id, &handle, &name, &runtime, true, false, &server).await
+                }
                 Err(e) => Err(e),
             };
             match made {
                 Ok(m) => {
-                    println!("agent '{}' for {owner}. Paste this to the agent, once:\n", m.agent.handle);
+                    println!(
+                        "agent '{}' for {owner}. Paste this to the agent, once:\n",
+                        m.agent.handle
+                    );
                     println!("{}", m.prompt);
                 }
                 Err(e) => die(e),

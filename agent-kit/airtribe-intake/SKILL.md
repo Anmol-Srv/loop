@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.2.0
+version: 1.3.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -152,8 +152,13 @@ Use the Composio MCP server's Slack tools (find exact slugs with
   conversations or page through history (Slack caps history calls for apps
   like this one to about one a minute). Skip mention hits that are in an
   intake channel (already covered) and `to:me` hits your owner sent.
-- **Thread context**: only when deciding whether a reply belongs to a filed
-  task and the search hit alone isn't clear, fetch that one thread's replies.
+- **Thread context**: when a message you are about to file (or append) is a
+  thread reply, fetch that thread once (the Composio Slack "conversation
+  replies"/thread tool) and send the earlier messages as `source.thread`
+  (oldest first, up to 30: `{author, text, ts, receivedAt}`, names resolved
+  like `text`) — whoever works the task reads the whole conversation, not
+  just the last line. Use the same fetch to decide whether a reply belongs
+  to a task you already filed.
 - If more than 50 new messages arrived in one place, handle the newest 50,
   set that cursor to the newest handled, and note it in the pass summary.
 - **Permalink**: `https://<workspace>.slack.com/archives/<channel id>/p<ts with

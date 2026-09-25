@@ -26,26 +26,40 @@ pub struct CreateBody {
     pub name: String,
     #[serde(default = "default_runtime")]
     pub runtime: String,
+    /// Does it take tasks its owner hands off.
+    #[serde(default = "yes", rename = "canWork")]
+    pub can_work: bool,
     /// May it file tasks for its owner (intake).
     #[serde(default, rename = "canIntake")]
     pub can_intake: bool,
 }
 
+/// Either role, or both; a missing one stays as it is.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchBody {
-    pub can_intake: bool,
+    #[serde(default)]
+    pub can_work: Option<bool>,
+    #[serde(default)]
+    pub can_intake: Option<bool>,
 }
 
 fn default_runtime() -> String {
     "other".into()
 }
 
+fn yes() -> bool {
+    true
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/agents", post(create).get(list))
         .route("/api/user/agents/active", get(active))
-        .route("/api/user/agents/{id}", axum::routing::delete(revoke).patch(update))
+        .route(
+            "/api/user/agents/{id}",
+            axum::routing::delete(revoke).patch(update),
+        )
         .route("/api/user/agents/{id}/rotate", post(rotate))
         .route("/api/user/tasks/{id}/handoff", post(hand_off))
         .route("/api/user/tasks/{id}/takeback", post(take_back))
@@ -59,7 +73,9 @@ pub fn routes() -> Router<AppState> {
 /// an agent could mint itself a sibling.
 fn person(caller: &Caller) -> AppResult<Uuid> {
     if caller.kind != "session" {
-        return Err(AppError::Forbidden("only a signed-in person can do this".into()));
+        return Err(AppError::Forbidden(
+            "only a signed-in person can do this".into(),
+        ));
     }
     caller.person_id()
 }
@@ -72,28 +88,45 @@ async fn create(
 ) -> AppResult<ApiResponse<Minted>> {
     let owner = person(&caller)?;
     Ok(ApiResponse::ok(
-        agent::create(&state, owner, &body.handle, &body.name, &body.runtime, body.can_intake, &server_url(&headers)).await?,
+        agent::create(
+            &state,
+            owner,
+            &body.handle,
+            &body.name,
+            &body.runtime,
+            body.can_work,
+            body.can_intake,
+            &server_url(&headers),
+        )
+        .await?,
     ))
 }
 
 async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Agent>>> {
-    Ok(ApiResponse::ok(agent::list(&state, person(&caller)?).await?))
+    Ok(ApiResponse::ok(
+        agent::list(&state, person(&caller)?).await?,
+    ))
 }
 
 /// Every agent at work on the team, for anyone signed in.
-async fn active(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Active>>> {
+async fn active(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Vec<Active>>> {
     person(&caller)?;
     Ok(ApiResponse::ok(agent::active(&state).await?))
 }
 
-/// The owner switching intake on or off.
+/// The owner switching an agent's roles (work, intake) on or off.
 async fn update(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     caller: Caller,
     Json(body): Json<PatchBody>,
 ) -> AppResult<ApiResponse<Agent>> {
-    Ok(ApiResponse::ok(agent::set_intake(&state, person(&caller)?, id, body.can_intake).await?))
+    Ok(ApiResponse::ok(
+        agent::set_roles(&state, person(&caller)?, id, body.can_work, body.can_intake).await?,
+    ))
 }
 
 async fn rotate(
@@ -102,7 +135,9 @@ async fn rotate(
     caller: Caller,
     headers: HeaderMap,
 ) -> AppResult<ApiResponse<Minted>> {
-    Ok(ApiResponse::ok(agent::rotate(&state, person(&caller)?, id, &server_url(&headers)).await?))
+    Ok(ApiResponse::ok(
+        agent::rotate(&state, person(&caller)?, id, &server_url(&headers)).await?,
+    ))
 }
 
 async fn revoke(
@@ -110,7 +145,9 @@ async fn revoke(
     Path(id): Path<Uuid>,
     caller: Caller,
 ) -> AppResult<ApiResponse<Agent>> {
-    Ok(ApiResponse::ok(agent::revoke(&state, person(&caller)?, id).await?))
+    Ok(ApiResponse::ok(
+        agent::revoke(&state, person(&caller)?, id).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -125,7 +162,9 @@ async fn hand_off(
     caller: Caller,
     Json(body): Json<HandOffBody>,
 ) -> AppResult<ApiResponse<TaskRow>> {
-    Ok(ApiResponse::ok(agent::hand_off(&state, person(&caller)?, id, body.agent_id).await?))
+    Ok(ApiResponse::ok(
+        agent::hand_off(&state, person(&caller)?, id, body.agent_id).await?,
+    ))
 }
 
 async fn take_back(
@@ -133,7 +172,9 @@ async fn take_back(
     Path(id): Path<Uuid>,
     caller: Caller,
 ) -> AppResult<ApiResponse<TaskRow>> {
-    Ok(ApiResponse::ok(agent::take_back(&state, person(&caller)?, id).await?))
+    Ok(ApiResponse::ok(
+        agent::take_back(&state, person(&caller)?, id).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -147,7 +188,9 @@ async fn answer(
     caller: Caller,
     Json(body): Json<AnswerBody>,
 ) -> AppResult<ApiResponse<Note>> {
-    Ok(ApiResponse::ok(agent::answer(&state, person(&caller)?, id, &body.body).await?))
+    Ok(ApiResponse::ok(
+        agent::answer(&state, person(&caller)?, id, &body.body).await?,
+    ))
 }
 
 async fn instruct(
@@ -156,7 +199,9 @@ async fn instruct(
     caller: Caller,
     Json(body): Json<AnswerBody>,
 ) -> AppResult<ApiResponse<Note>> {
-    Ok(ApiResponse::ok(agent::instruct(&state, person(&caller)?, id, &body.body).await?))
+    Ok(ApiResponse::ok(
+        agent::instruct(&state, person(&caller)?, id, &body.body).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -177,7 +222,11 @@ async fn review(
     let approve = match body.decision.as_str() {
         "approve" => true,
         "changes" => false,
-        _ => return Err(AppError::BadRequest("decision is 'approve' or 'changes'".into())),
+        _ => {
+            return Err(AppError::BadRequest(
+                "decision is 'approve' or 'changes'".into(),
+            ))
+        }
     };
     Ok(ApiResponse::ok(
         agent::review(&state, &caller.actor, me, id, approve, body.body.as_deref()).await?,

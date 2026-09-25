@@ -171,6 +171,12 @@ pub struct Task {
     /// bug, feature, feedback, question or chore; set at intake or by any
     /// writer later.
     pub category: Option<String>,
+    /// A folder from the assignee's own list, by name, to work in when this
+    /// task has no project (or its project has no folder for them). `None`
+    /// leaves it to their default. The name, not an id — folders are per
+    /// person, and `controllers::agent::context` resolves it against
+    /// whoever the task is delegated to, the only place that person is known.
+    pub folder_name: Option<String>,
 }
 
 /// A task plus the names a list needs to render a row, and a count of how many
@@ -204,8 +210,9 @@ pub struct TaskRow {
     /// questions, answers, instructions, the step log: `sees_agent_private`.
     pub can_see_agent_private: bool,
     /// Where an intake agent found it: `{kind, url, channel, channelName,
-    /// author, text, receivedAt, reason, confidence, private, files}`, or
-    /// null. A direct message's author and text are only for
+    /// author, text, thread, receivedAt, reason, confidence, private, files}`,
+    /// or null. `thread` is the earlier messages, oldest first:
+    /// `[{author, text, ts, receivedAt}]`. A direct message's author, text and thread are only for
     /// `sees_agent_private`; everyone else reads "From a direct message".
     /// `files` is `[{id, name, mime, size, width, height}]`, each one
     /// withheld on the same rule as the message it came with.
@@ -228,9 +235,10 @@ pub struct TaskFilter {
 }
 
 /// Who may archive, restore or delete a task: whoever created it, whoever
-/// created its project (a standalone task has none), or an admin. SQL over `t` and `pr`, for the person
-/// bound at `viewer` — selected into every `TaskRow` and checked by the
-/// controller before it acts, so the app and the server ask one question.
+/// created its project (a standalone task has none), or an admin. SQL over `t`
+/// and `pr`, for the person bound at `viewer` — selected into every `TaskRow`
+/// and checked by the controller before it acts, so the app and the server
+/// ask one question.
 pub fn can_manage(viewer: &str) -> String {
     format!(
         "(coalesce(t.created_by = {viewer} OR pr.created_by = {viewer}, false)
@@ -266,7 +274,7 @@ macro_rules! plain_task_columns {
         "id, phase_id, title, body, status, priority, \
          assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
          claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at, \
-         review_target, archived_at, category"
+         review_target, archived_at, category, folder_name"
     };
 }
 
@@ -318,6 +326,7 @@ pub fn task_row_select(viewer: &str) -> String {
                         'author', CASE WHEN NOT s.private OR {private} THEN s.author END,
                         'text', CASE WHEN NOT s.private OR {private} THEN s.text
                                      ELSE 'From a direct message' END,
+                        'thread', CASE WHEN NOT s.private OR {private} THEN s.thread ELSE '[]' END,
                         'files', {files})
                    FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source,
                 coalesce((SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'colour', l.colour)

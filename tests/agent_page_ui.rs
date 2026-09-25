@@ -294,6 +294,7 @@ fn page<'a>(
                 login: views::login::State::default(),
                 board: views::board::State::default(),
                 palette: views::palette::State::default(),
+                settings: views::settings::State::default(),
             });
             return;
         }

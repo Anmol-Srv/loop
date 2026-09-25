@@ -38,7 +38,8 @@ use super::menus::{task_items, Pick, Viewer};
 use super::projects::{label_badge, label_picker, person_option, LABELS_KEY, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::agent::{self as face, Presence};
 use crate::desktop::design::{
-    avatar, cards as c, colour, radius, shell, size, space, status_label, text, theme, viz, widgets as w,
+    avatar, cards as c, colour, radius, shell, size, space, status_label, text, theme, viz,
+    widgets as w,
 };
 use crate::desktop::net::memo;
 use crate::desktop::{App, Tab};
@@ -197,7 +198,14 @@ struct Prompt {
 
 impl Prompt {
     fn new(then: Option<&'static str>, kinds: Vec<Kind>) -> Self {
-        Self { then, kinds, kind: None, value: String::new(), title: String::new(), reason: None }
+        Self {
+            then,
+            kinds,
+            kind: None,
+            value: String::new(),
+            title: String::new(),
+            reason: None,
+        }
     }
 
     fn default_kind(&self) -> Kind {
@@ -205,7 +213,10 @@ impl Prompt {
     }
 
     fn chosen(&self) -> Kind {
-        self.kind.as_deref().and_then(Kind::from_api).unwrap_or_else(|| self.default_kind())
+        self.kind
+            .as_deref()
+            .and_then(Kind::from_api)
+            .unwrap_or_else(|| self.default_kind())
     }
 }
 
@@ -285,7 +296,9 @@ thread_local! {
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
-    let Some(task_id) = app.task.clone() else { return };
+    let Some(task_id) = app.task.clone() else {
+        return;
+    };
 
     LOCAL.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -323,11 +336,14 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     net.get_once(PEOPLE_KEY, "/api/user/people");
     if can_write {
         net.get_once(LABELS_KEY, "/api/user/labels");
+        super::settings::want_folders(net);
     }
 
     let task = net.shared(TASK_KEY);
     // Only the assignee hands off, so only the assignee needs their agents.
-    let mine_early = task.as_ref().is_some_and(|t| !me.is_empty() && str_of(t, "assigneePersonId") == Some(me.as_str()));
+    let mine_early = task
+        .as_ref()
+        .is_some_and(|t| !me.is_empty() && str_of(t, "assigneePersonId") == Some(me.as_str()));
     if mine_early {
         net.get_once(AGENTS_KEY, "/api/user/agents");
     }
@@ -342,7 +358,10 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             leave = true;
         }
         let project = task.as_ref().and_then(|t| {
-            Some((str_of(t, "projectName").filter(|n| !n.is_empty())?, str_of(t, "projectId")?))
+            Some((
+                str_of(t, "projectName").filter(|n| !n.is_empty())?,
+                str_of(t, "projectId")?,
+            ))
         });
         if let Some((name, id)) = project {
             faint(ui, "\u{00B7}");
@@ -373,7 +392,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         } else if net.is_loading(TASK_KEY) {
             w::loading(ui, "Loading task");
         } else {
-            w::empty(ui, "That task is no longer here", "Use Back to return to the board.");
+            w::empty(
+                ui,
+                "That task is no longer here",
+                "Use Back to return to the board.",
+            );
         }
         return;
     };
@@ -383,14 +406,23 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let track = Track::of(str_of(&task, "discipline"));
     let can_act = admin || mine;
     // Nothing leaves triage but Accept and Dismiss, which the title carries.
-    let moves = if status == "triage" { Vec::new() } else { legal_moves(net.data(TRACKS_KEY), track, &status) };
+    let moves = if status == "triage" {
+        Vec::new()
+    } else {
+        legal_moves(net.data(TRACKS_KEY), track, &status)
+    };
     let updated_at = str_of(&task, "updatedAt").map(str::to_owned);
     // Read out of the cache before the closures borrow `net` mutably: the whole
     // question the gate asks of the list is "is the required kind already here?".
     let held: Vec<String> = net
         .data(ARTIFACTS_KEY)
         .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(|r| str_of(r, "kind")).map(str::to_owned).collect())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| str_of(r, "kind"))
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default();
 
     // Fold in the reply to a move started on an earlier frame. Done here, where
@@ -411,23 +443,40 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     }
     let label_error = net.error(NEW_LABEL_KEY).map(str::to_owned);
     let all_labels = net.shared(LABELS_KEY);
+    let all_folders = net.shared(super::settings::FOLDERS_KEY);
     let picked_labels = local.labels.clone();
 
     let delegate = task.get("delegate").filter(|d| d.is_object());
-    let agents = memo(ui.ctx(), egui::Id::new("task:my-agents"), net.generation(AGENTS_KEY), || {
-        net.data(AGENTS_KEY)
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter(|a| str_of(a, "status") != Some("revoked"))
-                    .filter_map(|a| Some((str_of(a, "id")?.to_owned(), str_of(a, "name")?.to_owned())))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    });
-    let handoff = Handoff { mine, delegated: super::menus::held(&task), finished: super::menus::finished(&task), agents: &agents };
+    let agents = memo(
+        ui.ctx(),
+        egui::Id::new("task:my-agents"),
+        net.generation(AGENTS_KEY),
+        || {
+            net.data(AGENTS_KEY)
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|a| super::agents::takes_work(a))
+                        .filter_map(|a| {
+                            Some((str_of(a, "id")?.to_owned(), str_of(a, "name")?.to_owned()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        },
+    );
+    let handoff = Handoff {
+        mine,
+        delegated: super::menus::held(&task),
+        finished: super::menus::finished(&task),
+        agents: &agents,
+    };
     // Who may move it between projects: `canArchive` is the same rule.
-    let can_move = can_write && task.get("canArchive").and_then(Value::as_bool).unwrap_or(false);
+    let can_move = can_write
+        && task
+            .get("canArchive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     if status == "triage" || can_move {
         super::triage::want_projects(net);
     }
@@ -437,6 +486,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         admin,
         agents: agents.to_vec(),
         projects: super::triage::projects(net),
+        folders: super::settings::folders(net),
     };
 
     // The rail cannot hold `net` — the content column has it — so it reports
@@ -444,10 +494,16 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let mut from_rail: Option<Ask> = None;
     let busy = local.patching || local.attaching || local.saving || local.agent_busy.is_some();
     let people = net.shared(PEOPLE_KEY).filter(|_| can_write);
-    let people: &[Value] = people.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let people: &[Value] = people
+        .as_deref()
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
     // Who may read the owner's conversation with the agent. The server says;
     // without its word, the owner and admins are exactly who it names.
-    let private = task.get("canSeeAgentPrivate").and_then(Value::as_bool).unwrap_or(mine || admin);
+    let private = task
+        .get("canSeeAgentPrivate")
+        .and_then(Value::as_bool)
+        .unwrap_or(mine || admin);
 
     // The project's repositories as the viewer sees them, for the session's
     // missing-folder hint. Only asked for when there is a session to hint in,
@@ -472,8 +528,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         |ui, part| match part {
             shell::Part::Header => {
                 editing = headline(
-                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held, &handoff,
-                    &viewer, local,
+                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held,
+                    &handoff, &viewer, local,
                 );
             }
             shell::Part::Body => {
@@ -490,9 +546,15 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                         task_id,
                         task: &task,
                         delegate: d,
-                        notes: notes.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                        notes: notes
+                            .as_deref()
+                            .and_then(Value::as_array)
+                            .map_or(&[], Vec::as_slice),
                         notes_loaded: notes.is_some() || net.error(NOTES_KEY).is_some(),
-                        evidence: evidence.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                        evidence: evidence
+                            .as_deref()
+                            .and_then(Value::as_array)
+                            .map_or(&[], Vec::as_slice),
                         mine,
                         private,
                         busy: local.agent_busy.is_some(),
@@ -523,9 +585,16 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 people,
                 can_move,
                 projects: &viewer.projects,
-                all_labels: all_labels.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice),
+                all_labels: all_labels
+                    .as_deref()
+                    .and_then(Value::as_array)
+                    .map_or(&[], Vec::as_slice),
                 picked_labels: picked_labels.as_deref(),
                 label_error: label_error.as_deref(),
+                folders: all_folders
+                    .as_deref()
+                    .and_then(Value::as_array)
+                    .map_or(&[], Vec::as_slice),
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -542,7 +611,12 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         Some(Ask::NewLabel(body)) => net.post(NEW_LABEL_KEY, "/api/user/labels", body),
         Some(Ask::Details(mut body)) => {
             if let Some(ids) = body.get("labelIds").and_then(Value::as_array) {
-                local.labels = Some(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect());
+                local.labels = Some(
+                    ids.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                );
             }
             // The rail edits one field the viewer can see, so the task as
             // shown is the version the edit is made against.
@@ -564,7 +638,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // The page's own hand-off and details edits say how they went where
     // they always have; archive and delete share every other menu's dialog.
     match local.pick.take() {
-        Some(Pick::Handoff(id, name)) => agent_action(net, task_id, AgentAsk::Handoff(id, name), local),
+        Some(Pick::Handoff(id, name)) => {
+            agent_action(net, task_id, AgentAsk::Handoff(id, name), local)
+        }
         Some(Pick::TakeBack) => agent_action(net, task_id, AgentAsk::TakeBack, local),
         Some(Pick::Priority(p)) => {
             let mut body = json!({ "priority": p });
@@ -655,10 +731,16 @@ fn headline(
         let mut cancel = false;
         ui.horizontal(|ui| {
             let ready = !title.trim().is_empty() && !busy;
-            let label = if local.saving_text { "Saving\u{2026}" } else { "Save" };
+            let label = if local.saving_text {
+                "Saving\u{2026}"
+            } else {
+                "Save"
+            };
             let response = w::primary(ui, label, ready);
             if title.trim().is_empty() {
-                response.clone().on_disabled_hover_text("A task needs a title.");
+                response
+                    .clone()
+                    .on_disabled_hover_text("A task needs a title.");
             }
             save = response.clicked();
             ui.add_space(space::XS);
@@ -681,7 +763,11 @@ fn headline(
             } else {
                 // After a refused save the draft is re-sent against the task as
                 // it now stands: the person has read the message and chosen.
-                if let Some(at) = d.updated_at.clone().or_else(|| str_of(task, "updatedAt").map(str::to_owned)) {
+                if let Some(at) = d
+                    .updated_at
+                    .clone()
+                    .or_else(|| str_of(task, "updatedAt").map(str::to_owned))
+                {
                     body["expectedUpdatedAt"] = json!(at);
                 }
                 save_details(net, task_id, body, true, local);
@@ -725,7 +811,9 @@ fn headline(
                     // Offered to set only where it means something: a task
                     // that has one, or one an intake agent filed.
                     let editable = can_write && !busy;
-                    if category.is_some() || (editable && task.get("source").is_some_and(|s| s.is_object())) {
+                    if category.is_some()
+                        || (editable && task.get("source").is_some_and(|s| s.is_object()))
+                    {
                         if let Some(c) = super::triage::category_chip(ui, category, editable) {
                             recategorise = Some(c);
                         }
@@ -778,8 +866,13 @@ fn headline(
     }
     if status == "triage" && !super::triage::decides(task, viewer) {
         ui.add_space(space::MD);
-        let who = str_of(task, "assigneeName").and_then(|n| n.split_whitespace().next()).unwrap_or("its owner");
-        w::caption(ui, &format!("In triage \u{2014} waiting on {who} to accept or dismiss it."));
+        let who = str_of(task, "assigneeName")
+            .and_then(|n| n.split_whitespace().next())
+            .unwrap_or("its owner");
+        w::caption(
+            ui,
+            &format!("In triage \u{2014} waiting on {who} to accept or dismiss it."),
+        );
     }
 
     prompt_panel(ui, net, task_id, local);
@@ -818,7 +911,12 @@ fn description(ui: &mut egui::Ui, task: &Value) {
     }
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
+        for (i, para) in body
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .enumerate()
+        {
             if i > 0 {
                 ui.add_space(space::MD);
             }
@@ -831,7 +929,10 @@ fn description(ui: &mut egui::Ui, task: &Value) {
 /// rather than on evidence should say so wherever the task is read — quietly,
 /// but in the same breath as the description.
 fn manual_reason(ui: &mut egui::Ui, task: &Value) {
-    let Some(reason) = str_of(task, "manualReason").map(str::trim).filter(|r| !r.is_empty()) else {
+    let Some(reason) = str_of(task, "manualReason")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    else {
         return;
     };
     ui.add_space(space::SM);
@@ -887,7 +988,9 @@ fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAs
         return None;
     }
     if h.delegated {
-        return w::secondary(ui, "Take back", !busy).clicked().then_some(AgentAsk::TakeBack);
+        return w::secondary(ui, "Take back", !busy)
+            .clicked()
+            .then_some(AgentAsk::TakeBack);
     }
     match h.agents {
         [] => None,
@@ -896,8 +999,9 @@ fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAs
                 [(_, name)] => format!("Hand off to {name}"),
                 _ => "Hand off".to_owned(),
             };
-            w::secondary(ui, &label, false)
-                .on_disabled_hover_text("This task is finished \u{2014} there is nothing left to hand off.");
+            w::secondary(ui, &label, false).on_disabled_hover_text(
+                "This task is finished \u{2014} there is nothing left to hand off.",
+            );
             None
         }
         [(id, name)] => w::secondary(ui, &format!("Hand off to {name}"), !busy)
@@ -910,19 +1014,44 @@ fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAs
                 viz::select(ui, "Hand off to\u{2026}", &options, &mut slot);
             });
             let id = slot?;
-            let name = many.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()).unwrap_or_default();
+            let name = many
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_default();
             Some(AgentAsk::Handoff(id, name))
         }
     }
 }
 
-fn agent_action(net: &mut crate::desktop::net::Net, task_id: &str, ask: AgentAsk, local: &mut Local) {
+fn agent_action(
+    net: &mut crate::desktop::net::Net,
+    task_id: &str,
+    ask: AgentAsk,
+    local: &mut Local,
+) {
     let base = format!("/api/user/tasks/{task_id}");
     let (path, body, done) = match ask {
-        AgentAsk::Handoff(id, name) => (format!("{base}/handoff"), json!({ "agentId": id }), format!("Handed off to {name}.")),
-        AgentAsk::TakeBack => (format!("{base}/takeback"), json!({}), "Taken back \u{2014} the agent no longer has this task.".to_owned()),
-        AgentAsk::Answer(body) => (format!("{base}/answer"), json!({ "body": body }), "Answer sent.".to_owned()),
-        AgentAsk::Approve => (format!("{base}/review"), json!({ "decision": "approve" }), "Approved.".to_owned()),
+        AgentAsk::Handoff(id, name) => (
+            format!("{base}/handoff"),
+            json!({ "agentId": id }),
+            format!("Handed off to {name}."),
+        ),
+        AgentAsk::TakeBack => (
+            format!("{base}/takeback"),
+            json!({}),
+            "Taken back \u{2014} the agent no longer has this task.".to_owned(),
+        ),
+        AgentAsk::Answer(body) => (
+            format!("{base}/answer"),
+            json!({ "body": body }),
+            "Answer sent.".to_owned(),
+        ),
+        AgentAsk::Approve => (
+            format!("{base}/review"),
+            json!({ "decision": "approve" }),
+            "Approved.".to_owned(),
+        ),
         AgentAsk::Changes(body) => (
             format!("{base}/review"),
             json!({ "decision": "changes", "body": body }),
@@ -987,13 +1116,20 @@ struct Rail<'a> {
     /// The set just picked, while its save is out.
     picked_labels: Option<&'a [String]>,
     label_error: Option<&'a str>,
+    /// The viewer's own folders, for the picker a project-less task offers.
+    folders: &'a [Value],
 }
 
 /// The ids of the labels a task wears.
 fn label_ids(task: &Value) -> Vec<String> {
     task.get("labels")
         .and_then(Value::as_array)
-        .map(|ls| ls.iter().filter_map(|l| str_of(l, "id")).map(str::to_owned).collect())
+        .map(|ls| {
+            ls.iter()
+                .filter_map(|l| str_of(l, "id"))
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1020,8 +1156,11 @@ fn rail(
         }
         // Every move the server allows from here in one menu, the current
         // state resting at the top — and nothing it would refuse.
-        let options: Vec<(String, String)> =
-            r.moves.iter().map(|s| ((*s).to_owned(), status_label(s).to_owned())).collect();
+        let options: Vec<(String, String)> = r
+            .moves
+            .iter()
+            .map(|s| ((*s).to_owned(), status_label(s).to_owned()))
+            .collect();
         let mut slot: Option<String> = None;
         viz::value_select(ui, status_label(status), &options, &mut slot);
         if let Some(next) = slot.as_deref() {
@@ -1080,13 +1219,19 @@ fn rail(
             options.push((UNASSIGN.to_owned(), "Unassigned".to_owned()));
         }
         options.extend(
-            r.people.iter().map(person_option).filter(|(id, _)| Some(id.as_str()) != current),
+            r.people
+                .iter()
+                .map(person_option)
+                .filter(|(id, _)| Some(id.as_str()) != current),
         );
         let mut slot: Option<String> = None;
         viz::value_select(ui, name.unwrap_or("Unassigned"), &options, &mut slot);
         let Some(picked) = slot else { return };
 
-        let person = r.people.iter().find(|p| str_of(p, "id") == Some(picked.as_str()));
+        let person = r
+            .people
+            .iter()
+            .find(|p| str_of(p, "id") == Some(picked.as_str()));
         let id = person.map(|_| picked.clone());
         let to = Track::of(person.and_then(|p| str_of(p, "department")));
         if to != r.track && !to.states().contains(&status) {
@@ -1107,7 +1252,11 @@ fn rail(
         let mut done = false;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = space::XS;
-            ui.label(RichText::new(question).size(text::SMALL).color(colour::TEXT_2));
+            ui.label(
+                RichText::new(question)
+                    .size(text::SMALL)
+                    .color(colour::TEXT_2),
+            );
             ui.horizontal(|ui| {
                 if w::secondary(ui, "Reassign", !r.busy).clicked() {
                     ask = Some(Ask::Details(json!({ "assigneeId": id })));
@@ -1129,10 +1278,21 @@ fn rail(
         shell::property(ui, "Delegate", |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let name = str_of(d, "name").unwrap_or("Agent");
-            let seed = str_of(task, "assigneeEmail").or_else(|| str_of(task, "assigneeName")).unwrap_or(name);
+            let seed = str_of(task, "assigneeEmail")
+                .or_else(|| str_of(task, "assigneeName"))
+                .unwrap_or(name);
             // Still: the session's header carries the one moving ring.
-            face::avatar_still(ui, seed, face::SM, Presence::of(state, str_of(d, "lastSeenAt")), name);
-            ui.add(egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT)).truncate());
+            face::avatar_still(
+                ui,
+                seed,
+                face::SM,
+                Presence::of(state, str_of(d, "lastSeenAt")),
+                name,
+            );
+            ui.add(
+                egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT))
+                    .truncate(),
+            );
         });
         shell::property(ui, "Agent state", |ui| {
             c::chip(ui, state_words(state), state_tone(state), true);
@@ -1165,11 +1325,20 @@ fn rail(
             if here.is_some() {
                 options.push((UNASSIGN.to_owned(), "No project".to_owned()));
             }
-            options.extend(r.projects.iter().filter(|(id, _)| Some(id.as_str()) != here).cloned());
+            options.extend(
+                r.projects
+                    .iter()
+                    .filter(|(id, _)| Some(id.as_str()) != here)
+                    .cloned(),
+            );
             let mut slot: Option<String> = None;
             viz::value_select(ui, name.unwrap_or("No project"), &options, &mut slot);
             if let Some(picked) = slot {
-                let to = if picked == UNASSIGN { Value::Null } else { json!(picked) };
+                let to = if picked == UNASSIGN {
+                    Value::Null
+                } else {
+                    json!(picked)
+                };
                 ask = Some(Ask::Details(json!({ "projectId": to })));
             }
             return;
@@ -1184,7 +1353,56 @@ fn rail(
         }
     });
 
-    let chosen: Vec<String> = r.picked_labels.map_or_else(|| label_ids(task), <[String]>::to_vec);
+    // A project's repo already says where to work; this is only for a task
+    // that has none.
+    if str_of(task, "projectId").is_none() {
+        shell::property(ui, "Folder", |ui| {
+            let pinned = str_of(task, "folderName");
+            let default_name = super::settings::default_name(r.folders);
+            let resting = match (pinned, default_name) {
+                (Some(n), _) => n.to_owned(),
+                (None, Some(d)) => format!("{d} (default)"),
+                (None, None) => "No folder set".to_owned(),
+            };
+            if !r.can_write || r.busy {
+                if pinned.is_some() || default_name.is_some() {
+                    value(ui, &resting);
+                } else {
+                    faint(ui, "No folder set");
+                }
+                return;
+            }
+            let mut options: Vec<(String, String)> = Vec::new();
+            if pinned.is_some() {
+                let label = match default_name {
+                    Some(d) => format!("Use default ({d})"),
+                    None => "Use default".to_owned(),
+                };
+                options.push((UNASSIGN.to_owned(), label));
+            }
+            options.extend(
+                r.folders
+                    .iter()
+                    .filter_map(|f| str_of(f, "name"))
+                    .filter(|n| Some(*n) != pinned)
+                    .map(|n| (n.to_owned(), n.to_owned())),
+            );
+            let mut slot: Option<String> = None;
+            viz::value_select(ui, &resting, &options, &mut slot);
+            if let Some(picked) = slot {
+                let to = if picked == UNASSIGN {
+                    Value::Null
+                } else {
+                    json!(picked)
+                };
+                ask = Some(Ask::Details(json!({ "folderName": to })));
+            }
+        });
+    }
+
+    let chosen: Vec<String> = r
+        .picked_labels
+        .map_or_else(|| label_ids(task), <[String]>::to_vec);
     shell::property(ui, "Labels", |ui| {
         if !r.can_write || r.busy {
             // The set as it stands, or as just picked while that save is out.
@@ -1193,7 +1411,12 @@ fn rail(
                 .filter_map(|id| {
                     r.all_labels
                         .iter()
-                        .chain(task.get("labels").and_then(Value::as_array).into_iter().flatten())
+                        .chain(
+                            task.get("labels")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten(),
+                        )
                         .find(|l| str_of(l, "id") == Some(id.as_str()))
                 })
                 .collect();
@@ -1214,7 +1437,11 @@ fn rail(
                 ask = Some(Ask::NewLabel(body));
             }
             if let Some(err) = r.label_error {
-                ui.label(RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+                ui.label(
+                    RichText::new(format!("Could not make that label: {err}"))
+                        .size(text::CAPTION)
+                        .color(colour::DANGER),
+                );
             }
         });
         if picked != chosen {
@@ -1299,8 +1526,22 @@ impl Track {
     /// flow does not have.
     fn states(self) -> &'static [&'static str] {
         match self {
-            Track::Eng => &["open", "in_progress", "blocked", "completed", "shipped", "dropped"],
-            Track::Design => &["open", "in_progress", "blocked", "handoff", "completed", "dropped"],
+            Track::Eng => &[
+                "open",
+                "in_progress",
+                "blocked",
+                "completed",
+                "shipped",
+                "dropped",
+            ],
+            Track::Design => &[
+                "open",
+                "in_progress",
+                "blocked",
+                "handoff",
+                "completed",
+                "dropped",
+            ],
         }
     }
 
@@ -1370,7 +1611,10 @@ fn primary_move(track: Track, status: &str) -> Option<(&'static str, &'static st
 /// The one move on each track the server will not let you make on your word
 /// alone. Everything else is a state change; this is a claim about the world.
 fn needs_evidence(track: Track, next: &str) -> bool {
-    matches!((track, next), (Track::Eng, "completed") | (Track::Design, "handoff"))
+    matches!(
+        (track, next),
+        (Track::Eng, "completed") | (Track::Design, "handoff")
+    )
 }
 
 /// Shipping is the exception to "only the assignee moves it": whoever put the
@@ -1415,7 +1659,9 @@ fn settle_move(net: &mut crate::desktop::net::Net, local: &mut Local) {
     if !local.patching || net.is_loading(PATCH_KEY) {
         return;
     }
-    let Some(result) = net.peek(PATCH_KEY) else { return };
+    let Some(result) = net.peek(PATCH_KEY) else {
+        return;
+    };
     local.notice = Some(match result {
         Ok(v) if str_of(v, "status") == Some("proposed") => (
             "Awaiting approval: you do not hold write on this project, so the \
@@ -1451,7 +1697,10 @@ fn start_move(
 ) {
     local.move_from = from.to_owned();
     if needs_evidence(track, next)
-        && !track.evidence().iter().any(|k| held.iter().any(|h| h == k.api()))
+        && !track
+            .evidence()
+            .iter()
+            .any(|k| held.iter().any(|h| h == k.api()))
     {
         local.prompt = Some(Prompt::new(Some(next), track.evidence().to_vec()));
     } else {
@@ -1487,7 +1736,11 @@ fn save_details(
 ) {
     local.notice = None;
     net.invalidate(DETAILS_KEY);
-    net.patch(DETAILS_KEY, &format!("/api/user/tasks/{task_id}/details"), body);
+    net.patch(
+        DETAILS_KEY,
+        &format!("/api/user/tasks/{task_id}/details"),
+        body,
+    );
     local.saving = true;
     local.saving_text = text;
 }
@@ -1583,7 +1836,9 @@ fn prompt_panel(
         }
     }
 
-    let Some(prompt) = local.prompt.as_mut() else { return };
+    let Some(prompt) = local.prompt.as_mut() else {
+        return;
+    };
     let (attach_verb, manual_verb) = prompt_verbs(prompt.then);
     let busy = local.attaching || local.patching;
 
@@ -1596,7 +1851,13 @@ fn prompt_panel(
         ui.set_width(ui.available_width());
 
         if let Some(reason) = prompt.reason.as_mut() {
-            w::field(ui, "Why it is done without a link", reason, false, "Pairing, a verbal sign-off, a deploy someone else made\u{2026}");
+            w::field(
+                ui,
+                "Why it is done without a link",
+                reason,
+                false,
+                "Pairing, a verbal sign-off, a deploy someone else made\u{2026}",
+            );
             ui.add_space(space::LG);
             let ready = !reason.trim().is_empty() && !busy;
             ui.horizontal(|ui| {
@@ -1744,7 +2005,11 @@ fn resources(
         return;
     };
     if rows.is_empty() {
-        w::empty(ui, "No resources yet \u{2014} PRs, docs and Figma files live here.", "");
+        w::empty(
+            ui,
+            "No resources yet \u{2014} PRs, docs and Figma files live here.",
+            "",
+        );
         return;
     }
 
@@ -1761,7 +2026,12 @@ fn resources(
         local.confirm_remove = None;
         local.resource_error = None;
         net.invalidate(REMOVE_KEY);
-        net.send(REMOVE_KEY, reqwest::Method::DELETE, &format!("/api/user/artifacts/{id}"), Value::Null);
+        net.send(
+            REMOVE_KEY,
+            reqwest::Method::DELETE,
+            &format!("/api/user/artifacts/{id}"),
+            Value::Null,
+        );
         local.removing = true;
     }
 }
@@ -1781,7 +2051,9 @@ fn resource_row(
     let id = str_of(row, "id").unwrap_or_default().to_owned();
     let kind = str_of(row, "kind").unwrap_or("link");
     let url = str_of(row, "url").unwrap_or_default();
-    let title = str_of(row, "title").map(str::trim).filter(|t| !t.is_empty());
+    let title = str_of(row, "title")
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
     let confirming = local.confirm_remove.as_deref() == Some(id.as_str());
     let mut removed = None;
 
@@ -1803,7 +2075,10 @@ fn resource_row(
                 // under the pointer is one the keyboard can never reach, and
                 // the project page's resources show it the same way. Only
                 // whoever added it may remove it; the server says who that is.
-                if can_write && row["canRemove"].as_bool() == Some(true) && w::ghost(ui, "Remove").clicked() {
+                if can_write
+                    && row["canRemove"].as_bool() == Some(true)
+                    && w::ghost(ui, "Remove").clicked()
+                {
                     local.confirm_remove = Some(id.clone());
                 }
                 if let Some(who) = super::board::added_by(row) {
@@ -1813,20 +2088,29 @@ fn resource_row(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 c::chip(ui, kind_label(kind), kind_tone(kind), false);
                 if kind == "commit" {
-                    w::mono_caption(ui, url);
+                    // "mycohort-api · 6f54d7d", not the whole address: the
+                    // raw URL ran under the right-hand side of the row.
+                    let short = link_label(url).unwrap_or_else(|| host_path(url).to_owned());
+                    let fitted = elide(ui, &short, ui.available_width());
+                    ui.label(RichText::new(fitted).size(text::SMALL).monospace().color(colour::TEXT));
                     if let Some(title) = title {
                         let fitted = elide(ui, title, ui.available_width());
-                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT));
+                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED));
                     }
                     return;
                 }
-                let place = host_path(url);
+                let short = link_label(url);
+                let place = short.as_deref().unwrap_or_else(|| host_path(url));
                 let name = elide(ui, title.unwrap_or(place), ui.available_width());
                 ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT));
                 // An untitled link already shows its address as its name.
                 if title.is_some() {
                     let fitted = elide(ui, place, ui.available_width());
-                    ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(fitted)
+                            .size(text::SMALL)
+                            .color(colour::TEXT_MUTED),
+                    );
                 }
             });
         });
@@ -1854,11 +2138,26 @@ fn resource_row(
     removed
 }
 
+/// A GitHub commit or pull request named the way people say it:
+/// "mycohort-api · 6f54d7d", "mycohort-api #4821". `None` for anything else.
+pub(super) fn link_label(url: &str) -> Option<String> {
+    let rest = host_path(url).strip_prefix("github.com/")?;
+    let mut parts = rest.split('/');
+    let (_org, repo, what, id) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    match what {
+        "commit" => Some(format!("{repo} \u{b7} {}", id.chars().take(7).collect::<String>())),
+        "pull" => Some(format!("{repo} #{id}")),
+        _ => None,
+    }
+}
+
 /// "github.com/airtribe/mycohort-api/pull/4821" from the full URL: where a
 /// link goes, without the scheme nobody reads.
 fn host_path(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    rest.strip_prefix("www.").unwrap_or(rest).trim_end_matches('/')
+    rest.strip_prefix("www.")
+        .unwrap_or(rest)
+        .trim_end_matches('/')
 }
 
 // --------------------------------------------------------------------- notes
@@ -1888,17 +2187,25 @@ fn notes(
     }
 
     let all = net.shared(NOTES_KEY);
-    let all: &[Value] = all.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let all: &[Value] = all
+        .as_deref()
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
     // With an agent on the task, its updates, questions and report are the
     // session's timeline; the thread keeps what people said to each other.
-    let rows: Vec<&Value> =
-        all.iter().filter(|n| !with_session || !str_of(n, "kind").is_some_and(session::session_kind)).collect();
+    let rows: Vec<&Value> = all
+        .iter()
+        .filter(|n| !with_session || !str_of(n, "kind").is_some_and(session::session_kind))
+        .collect();
     shell::section_count(ui, "Notes", rows.len());
 
     if let Some(err) = net.error(NOTES_KEY) {
         failed(ui, "Could not load notes", err);
     } else if rows.is_empty() {
-        w::caption(ui, "No notes yet \u{2014} questions, decisions and heads-ups for the team go here.");
+        w::caption(
+            ui,
+            "No notes yet \u{2014} questions, decisions and heads-ups for the team go here.",
+        );
     } else {
         ui.scope(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
@@ -1909,7 +2216,9 @@ fn notes(
                 // An agent's entry is signed with the agent's name and mark;
                 // a person's with theirs.
                 let agent = row.get("agent").and_then(|a| str_of(a, "name"));
-                let author = agent.or_else(|| str_of(row, "authorName")).unwrap_or("Someone");
+                let author = agent
+                    .or_else(|| str_of(row, "authorName"))
+                    .unwrap_or("Someone");
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::SM;
                     if agent.is_some() {
@@ -1923,7 +2232,9 @@ fn notes(
                     }
                     if let Some(at) = str_of(row, "createdAt") {
                         ui.label(
-                            RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_MUTED),
+                            RichText::new(ago(at))
+                                .size(text::SMALL)
+                                .color(colour::TEXT_MUTED),
                         );
                     }
                 });
@@ -1964,10 +2275,16 @@ fn notes(
         // a disabled button has no fill, so on the left its label floated a
         // padding's width in from the box's edge.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            let label = if local.posting_note { "Posting\u{2026}" } else { "Post" };
+            let label = if local.posting_note {
+                "Posting\u{2026}"
+            } else {
+                "Post"
+            };
             let response = w::primary(ui, label, ready);
             if local.note.trim().is_empty() {
-                response.clone().on_disabled_hover_text("Write a note first.");
+                response
+                    .clone()
+                    .on_disabled_hover_text("Write a note first.");
             }
             if response.clicked() {
                 send = true;
@@ -2010,7 +2327,11 @@ fn failed(ui: &mut egui::Ui, what: &str, err: &str) {
 /// the whole value is on the hover text either way.
 fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
     let font = egui::FontId::proportional(text::SMALL);
-    let full = ui.painter().layout_no_wrap(s.to_owned(), font, colour::TEXT).size().x;
+    let full = ui
+        .painter()
+        .layout_no_wrap(s.to_owned(), font, colour::TEXT)
+        .size()
+        .x;
     if full <= width || full <= 0.0 {
         return s.to_owned();
     }
@@ -2050,7 +2371,10 @@ pub(super) fn ago(raw: &str) -> String {
 /// long", and the wrong one to "which Tuesday".
 pub(super) fn exact(raw: &str) -> String {
     match DateTime::parse_from_rfc3339(raw) {
-        Ok(t) => t.with_timezone(&chrono::Local).format("%-d %b %Y, %H:%M").to_string(),
+        Ok(t) => t
+            .with_timezone(&chrono::Local)
+            .format("%-d %b %Y, %H:%M")
+            .to_string(),
         Err(_) => String::new(),
     }
 }
@@ -2060,5 +2384,23 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
+    }
+}
+
+#[cfg(test)]
+mod link_label_tests {
+    use super::link_label;
+
+    #[test]
+    fn names_commits_and_prs() {
+        assert_eq!(
+            link_label("https://github.com/airtribe-live/mycohort-api/commit/6f54d7dd1e2a").as_deref(),
+            Some("mycohort-api \u{b7} 6f54d7d")
+        );
+        assert_eq!(
+            link_label("https://github.com/airtribe-live/mycohort-api/pull/4821").as_deref(),
+            Some("mycohort-api #4821")
+        );
+        assert_eq!(link_label("https://figma.com/design/abc"), None);
     }
 }

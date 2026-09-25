@@ -368,8 +368,11 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         egui::FontFamily::Name(if active { theme::SEMIBOLD } else { theme::MEDIUM }.into()),
     );
     let ink = if active { colour::TEXT } else { colour::TEXT_2 };
-    let galley = truncated(ui, label, font, ink, MAX_LABEL_W);
     let caret_w = if caret { CARET_COL } else { 0.0 };
+    // Never wider than the space it is given: in a narrow properties rail a
+    // long project name must truncate, not push the rail past the window.
+    let room = (ui.available_width() - space::MD * 2.0 - caret_w).max(space::XL);
+    let galley = truncated(ui, label, font, ink, MAX_LABEL_W.min(room));
     // `interact_size.x` is egui's own "narrowest an interactive widget may
     // be". Honouring it is what lets a form make every control in a row one
     // width by setting a single value in its scope, instead of each control
@@ -1051,6 +1054,86 @@ pub fn toolbar(ui: &mut Ui, controls: impl FnOnce(&mut Ui)) {
         controls(ui);
     });
     ui.add_space(space::MD);
+}
+
+/// A grouped icon-and-label switch — "List | Board" and the like. One frame,
+/// `HEIGHT` tall like every other toolbar control, so it sits beside the
+/// filters as one strip rather than a control of its own height.
+///
+/// Each item is `(glyph, name)`; the accessible name is "`name` view" —
+/// screen readers and the test harness both need more than the bare word a
+/// caption gets away with.
+pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize) -> Option<usize> {
+    let mut picked = None;
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::SM)
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XXS;
+                for (i, (icon, name)) in items.iter().enumerate() {
+                    let on = i == selected;
+                    let ink = if on { colour::TEXT } else { colour::TEXT_MUTED };
+                    let font = egui::FontId::proportional(text::SMALL);
+                    let galley = ui.painter().layout_no_wrap((*name).to_owned(), font, ink);
+                    let h = HEIGHT - 6.0;
+                    let w = size::ICON_COL + galley.size().x + space::MD;
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+                    let accessible = format!("{name} view");
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            on,
+                            &accessible,
+                        )
+                    });
+                    let response = motion::operable(ui, response, radius::SM as f32);
+
+                    let fill = if on {
+                        colour::SURFACE_ACTIVE
+                    } else {
+                        motion::hover_fill(
+                            ui,
+                            response.id.with("fill"),
+                            response.hovered() || response.has_focus(),
+                            Color32::TRANSPARENT,
+                            colour::SURFACE_HOVER,
+                        )
+                    };
+                    if fill != Color32::TRANSPARENT {
+                        ui.painter().rect_filled(rect, radius::SM as f32, fill);
+                    }
+
+                    let p = ui.painter();
+                    let mut x = rect.left() + space::SM;
+                    p.text(
+                        egui::pos2(x, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        *icon,
+                        egui::FontId::proportional(text::HEADING),
+                        ink,
+                    );
+                    x += size::ICON_COL;
+                    p.galley(
+                        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+                        galley,
+                        ink,
+                    );
+
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        picked = Some(i);
+                    }
+                }
+            });
+        });
+    picked
 }
 
 /// The filter bar's search box.

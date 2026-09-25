@@ -18,6 +18,7 @@ pub enum Tab {
     Triage,
     Projects,
     Agents,
+    Settings,
 }
 
 pub struct App {
@@ -31,6 +32,7 @@ pub struct App {
     pub login: views::login::State,
     pub board: views::board::State,
     pub palette: views::palette::State,
+    pub settings: views::settings::State,
 }
 
 impl App {
@@ -50,6 +52,7 @@ impl App {
             login: views::login::State::default(),
             board: views::board::State::default(),
             palette: views::palette::State::default(),
+            settings: views::settings::State::default(),
         };
 
         if let Some(token) = creds::load() {

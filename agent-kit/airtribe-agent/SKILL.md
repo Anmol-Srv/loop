@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.4.0
+version: 1.5.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -88,17 +88,22 @@ the same call unchanged.
 
 `task_context` lists the project's repositories: a name, the remote `url`, and
 `localPath` — the folder where **your owner** keeps that repo on this machine.
+A task with no project — or whose project gives you no `localPath` — carries a
+top-level `folder` instead: `{name, path, source}`, `source` being `"pinned"`
+(the task named this folder) or `"default"` (your owner's default). It may be
+absent, meaning your owner has set up no folder for this either.
 
-- Work in `localPath`. Pick the repo that matches the task (a backend task
-  goes in the API repo, a UI task in the web repo; the names say which). Make
-  your branch there, following your owner's usual workflow for that repo.
-- If the repo you need has no `localPath`, or the folder doesn't exist or is a
-  different repo (`git remote get-url origin` disagrees with `url`), don't
-  clone it somewhere or guess another folder: ask your owner (`task_ask`) to
-  set the folder on the project, and work on nothing that needs the code
-  meanwhile.
-- If the project lists no repositories and the task needs code, ask which
-  repository and folder to use.
+- With a project repo: work in `localPath`. Pick the repo that matches the
+  task (a backend task goes in the API repo, a UI task in the web repo; the
+  names say which). Make your branch there, following your owner's usual
+  workflow for that repo.
+- With `folder` instead: work in `folder.path`.
+- Only if neither is there — no `localPath` and no `folder` — or the folder
+  doesn't exist or is a different repo (`git remote get-url origin` disagrees
+  with `url`), ask your owner (`task_ask`) for the folder to use (on the
+  project, or in their Settings if the task has none) and work on nothing that
+  needs the code meanwhile. Never clone it somewhere else or guess another
+  folder.
 
 ## Doing the work — by kind of task
 

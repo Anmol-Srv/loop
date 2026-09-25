@@ -38,7 +38,11 @@ fn ago(minutes: i64) -> String {
 }
 
 fn me(person: &str) -> Value {
-    let (name, email) = if person == ME { ("Anmol Srivastava", "anmol@airtribe.live") } else { ("Priya Nair", "priya@airtribe.live") };
+    let (name, email) = if person == ME {
+        ("Anmol Srivastava", "anmol@airtribe.live")
+    } else {
+        ("Priya Nair", "priya@airtribe.live")
+    };
     json!({"personId": person, "email": email, "name": name, "role": "member", "scopes": ["read", "write"]})
 }
 
@@ -57,20 +61,31 @@ fn files() -> Value {
 fn task(id: &str, owner_view: bool) -> Value {
     let (src, title) = if id == DM {
         let (text, author, files) = if owner_view {
-            (json!("Could we get a CSV of the roster? I copy it by hand every Monday."), json!("Rahul Mehta"), files())
+            (
+                json!("Could we get a CSV of the roster? I copy it by hand every Monday."),
+                json!("Rahul Mehta"),
+                files(),
+            )
         } else {
             (json!("From a direct message"), Value::Null, json!([]))
         };
-        (json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/D04/p1", "channel": "D04AB12CD", "private": true,
+        (
+            json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/D04/p1", "channel": "D04AB12CD", "private": true,
                 "author": author, "text": text, "receivedAt": ago(95), "agentName": "Slack Agent",
                 "reason": "a feature ask sent to you directly", "confidence": 0.71, "files": files}),
-         "Export cohort roster as CSV")
+            "Export cohort roster as CSV",
+        )
     } else {
-        (json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/C04/p2", "channel": "C04AB12CD",
-                "channelName": "issues-and-feedback", "author": "Priya Nair", "text": MESSAGE, "receivedAt": ago(12),
-                "agentName": "Slack Agent", "reason": "looks like a bug: saved-card checkout fails", "confidence": 0.86,
-                "files": files()}),
-         "Checkout fails for saved cards")
+        (
+            json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/C04/p2", "channel": "C04AB12CD",
+            "channelName": "issues-and-feedback", "author": "Priya Nair", "text": MESSAGE, "receivedAt": ago(12),
+            "agentName": "Slack Agent", "reason": "looks like a bug: saved-card checkout fails", "confidence": 0.86,
+            "files": files(), "thread": [
+                {"author": "Rahul Mehta", "text": "Is *checkout* down for anyone else?", "ts": "1.1", "receivedAt": ago(40)},
+                {"author": "Priya Nair", "text": "Only saved cards, new ones go through \u{2014} digging in", "ts": "1.2", "receivedAt": ago(25)},
+            ]}),
+            "Checkout fails for saved cards",
+        )
     };
     json!({
         "id": id, "title": title, "status": "triage", "category": "bug", "discipline": "backend", "priority": 1,
@@ -84,7 +99,13 @@ fn task(id: &str, owner_view: bool) -> Value {
 /// A real PNG: a soft two-tone screenshot stand-in.
 fn png(w: u32, h: u32, tint: [u8; 3]) -> Vec<u8> {
     let img = image::RgbImage::from_fn(w, h, |x, y| {
-        let band = if y < h / 8 { 40 } else if (x / 40 + y / 40) % 2 == 0 { 30 } else { 24 };
+        let band = if y < h / 8 {
+            40
+        } else if (x / 40 + y / 40) % 2 == 0 {
+            30
+        } else {
+            24
+        };
         image::Rgb([band + tint[0] / 6, band + tint[1] / 6, band + tint[2] / 6])
     });
     let mut out = Cursor::new(Vec::new());
@@ -97,12 +118,21 @@ type Fixtures = Vec<(&'static str, Value)>;
 fn base(viewer: Value) -> Fixtures {
     vec![
         ("__me", viewer),
-        ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 1})),
+        (
+            "sidebar:counts",
+            json!({"myOpen": 2, "activeProjects": 3, "triage": 1}),
+        ),
         ("__tracks", json!({})),
         ("board:people", json!([])),
-        ("board:projects", json!([{"id": "p1", "name": "Lead Rating", "status": "active"}])),
-        ("projects:labels", json!([slack_label(), {"id": "l-bug", "name": "bug", "colour": "red"},
-                                   {"id": "l-infra", "name": "infra", "colour": "blue"}])),
+        (
+            "board:projects",
+            json!([{"id": "p1", "name": "Lead Rating", "status": "active"}]),
+        ),
+        (
+            "projects:labels",
+            json!([slack_label(), {"id": "l-bug", "name": "bug", "colour": "red"},
+                                   {"id": "l-infra", "name": "infra", "colour": "blue"}]),
+        ),
     ]
 }
 
@@ -143,11 +173,16 @@ impl Page<'_> {
         self.harness.query_all_by_label(label).next().is_some()
     }
     fn has_part(&self, label: &str) -> bool {
-        self.harness.query_all_by_label_contains(label).next().is_some()
+        self.harness
+            .query_all_by_label_contains(label)
+            .next()
+            .is_some()
     }
     fn button(&mut self, label: &str) {
         self.harness
-            .get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label))
+            .get_all_by(|n| {
+                n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label)
+            })
             .next()
             .unwrap_or_else(|| panic!("no button {label}"))
             .click();
@@ -165,14 +200,24 @@ fn silent_server() -> &'static str {
     })
 }
 
-fn page<'a>(app: &'a RefCell<Option<App>>, fixtures: &'a Fixtures, tab: Tab, task: Option<&'a str>, size: (f32, f32), gpu: bool) -> Page<'a> {
-    let builder = Harness::builder().with_size(egui::vec2(size.0, size.1)).with_pixels_per_point(2.0);
+fn page<'a>(
+    app: &'a RefCell<Option<App>>,
+    fixtures: &'a Fixtures,
+    tab: Tab,
+    task: Option<&'a str>,
+    size: (f32, f32),
+    gpu: bool,
+) -> Page<'a> {
+    let builder = Harness::builder()
+        .with_size(egui::vec2(size.0, size.1))
+        .with_pixels_per_point(2.0);
     let builder = if gpu { builder.wgpu() } else { builder };
     let mut harness = builder.build_ui(move |ui| {
         let mut slot = app.borrow_mut();
         if slot.is_none() {
             theme::install(ui.ctx());
-            ui.ctx().all_styles_mut(|s| s.animation_time = egui::Style::default().animation_time);
+            ui.ctx()
+                .all_styles_mut(|s| s.animation_time = egui::Style::default().animation_time);
             ui.ctx().set_zoom_factor(1.15);
             let mut net = Net::spawn(silent_server().into(), "test".into(), ui.ctx().clone());
             net.seed_bytes(&format!("file:{SHOT_1}"), png(1280, 800, [120, 160, 240]));
@@ -186,6 +231,7 @@ fn page<'a>(app: &'a RefCell<Option<App>>, fixtures: &'a Fixtures, tab: Tab, tas
                 login: views::login::State::default(),
                 board: views::board::State::default(),
                 palette: views::palette::State::default(),
+                settings: views::settings::State::default(),
             });
             return;
         }
@@ -213,14 +259,61 @@ fn the_message_is_rendered_from_mrkdwn() {
         "Checkout is failing for anyone paying with a saved card \u{2014} it spins, then says payment method invalid.\n\
          Started this morning, see the incident and ask @someone."
     ), "bold, code, a labelled link and an unresolved mention");
-    assert!(p.has("new cards go through") && p.has("only saved cards fail"), "bullets");
-    assert!(p.has("POST /api/checkout/confirm 422\n{\"error\":\"payment_method_invalid\"}"), "the fence, verbatim");
+    assert!(
+        p.has("new cards go through") && p.has("only saved cards fail"),
+        "bullets"
+    );
+    assert!(
+        p.has("POST /api/checkout/confirm 422\n{\"error\":\"payment_method_invalid\"}"),
+        "the fence, verbatim"
+    );
     assert!(p.has("cc #payments maybe a Stripe thing"));
-    assert!(!p.has_part("<@U04PRIYA>") && !p.has_part("*Checkout"), "no raw markup");
+    assert!(
+        !p.has_part("<@U04PRIYA>") && !p.has_part("*Checkout"),
+        "no raw markup"
+    );
     // Who, where, when.
     assert!(p.has("Priya Nair"));
     assert!(p.has_part("#issues-and-feedback \u{00B7} 12 minutes ago"));
     assert!(p.has("Open in Slack"));
+}
+
+#[test]
+fn the_earlier_thread_is_a_closed_disclosure_until_opened() {
+    let f = task_page(BUG, true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (1440.0, 1600.0), false);
+    assert!(
+        p.has("Earlier in the thread (2)"),
+        "the disclosure names how many"
+    );
+    assert!(
+        !p.has("Is checkout down for anyone else?"),
+        "closed by default"
+    );
+    assert!(!p.has("Rahul Mehta"));
+
+    p.button("Earlier in the thread (2)");
+    assert!(
+        p.has("Is checkout down for anyone else?"),
+        "mrkdwn rendered, oldest first"
+    );
+    assert!(p.has("Only saved cards, new ones go through \u{2014} digging in"));
+    assert!(p.has("Rahul Mehta") && p.has("40 minutes ago") && p.has("25 minutes ago"));
+    assert!(
+        p.has_part("Checkout is failing"),
+        "the filed message is still there"
+    );
+
+    p.button("Earlier in the thread (2)");
+    assert!(!p.has("Is checkout down for anyone else?"), "closes again");
+    drop(p);
+
+    // No thread (a teammate on a DM, or a lone message): no disclosure.
+    let f = task_page(DM, false);
+    let app = RefCell::new(None);
+    let p = page(&app, &f, Tab::MyTasks, Some(DM), (1440.0, 1400.0), false);
+    assert!(!p.has_part("Earlier in the thread"));
 }
 
 #[test]
@@ -229,11 +322,19 @@ fn images_are_thumbnails_that_open_full_size() {
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (1440.0, 1600.0), false);
     assert!(p.has("Open image checkout-error.png") && p.has("Open image network-tab.png"));
-    assert!(p.has("Open stripe-receipt.pdf"), "a PDF is a file chip, not a thumbnail");
+    assert!(
+        p.has("Open stripe-receipt.pdf"),
+        "a PDF is a file chip, not a thumbnail"
+    );
 
     p.button("Open image checkout-error.png");
     assert!(p.has("checkout-error.png"), "the lightbox names the image");
-    assert!(p.harness.query_all_by(|n| n.role() == egui::accesskit::Role::Image && n.label().as_deref() == Some("checkout-error.png")).next().is_some());
+    assert!(p
+        .harness
+        .query_all_by(|n| n.role() == egui::accesskit::Role::Image
+            && n.label().as_deref() == Some("checkout-error.png"))
+        .next()
+        .is_some());
     p.button("Close");
     assert!(!p.has("Close"), "closed");
     let open = p.app.borrow().as_ref().unwrap().task.clone();
@@ -246,7 +347,10 @@ fn a_teammate_sees_no_words_and_no_files_from_a_dm() {
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::MyTasks, Some(DM), (1440.0, 1400.0), false);
     assert!(p.has("From a direct message \u{2014} only Anmol can read it."));
-    assert!(!p.has("From a direct message"), "the server's stand-in is not quoted as if it were the message");
+    assert!(
+        !p.has("From a direct message"),
+        "the server's stand-in is not quoted as if it were the message"
+    );
     assert!(!p.has_part("Open image") && !p.has_part("Open stripe"));
     assert!(!p.has("Open in Slack"));
     drop(p);
@@ -256,7 +360,10 @@ fn a_teammate_sees_no_words_and_no_files_from_a_dm() {
     let p = page(&app, &f, Tab::MyTasks, Some(DM), (1440.0, 1400.0), false);
     assert!(p.has("Rahul Mehta"));
     assert!(p.has("Could we get a CSV of the roster? I copy it by hand every Monday."));
-    assert!(p.has("Open image checkout-error.png"), "the owner sees their DM's files");
+    assert!(
+        p.has("Open image checkout-error.png"),
+        "the owner sees their DM's files"
+    );
 }
 
 #[test]
@@ -267,7 +374,10 @@ fn rows_wear_label_badges_and_the_rail_edits_them() {
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1000.0), false);
     assert!(p.has("Slack"), "the source's label on the filed task");
-    assert!(p.has("bug") && p.has("infra") && p.has("+1"), "two badges, then +N");
+    assert!(
+        p.has("bug") && p.has("infra") && p.has("+1"),
+        "two badges, then +N"
+    );
     assert!(!p.has("Q4"));
     drop(p);
 
@@ -286,7 +396,11 @@ const DIR: &str = "docs/design-mocks/render/slack-source";
 fn save(p: &mut Page<'_>, name: &str, label: &str) {
     std::fs::create_dir_all(DIR).unwrap();
     let path = format!("{DIR}/{name}-{label}.png");
-    p.harness.render().expect("render").save(&path).expect("write png");
+    p.harness
+        .render()
+        .expect("render")
+        .save(&path)
+        .expect("write png");
     eprintln!("wrote {path}");
 }
 
@@ -299,6 +413,11 @@ fn renders() {
         let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (width, 1700.0), true);
         p.steps(4);
         save(&mut p, "task-source", label);
+        p.button("Earlier in the thread (2)");
+        p.steps(20);
+        save(&mut p, "task-source-thread", label);
+        p.button("Earlier in the thread (2)");
+        p.steps(20);
         p.button("Open image checkout-error.png");
         p.steps(20);
         save(&mut p, "lightbox", label);

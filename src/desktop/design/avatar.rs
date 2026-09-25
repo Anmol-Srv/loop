@@ -60,7 +60,15 @@ fn from_hue(hue: f32, sat: f32, val: f32) -> Color32 {
 /// A person's colour. An agent wears its owner's, so whose it is reads at a
 /// glance.
 pub fn tint(seed: &str) -> Color32 {
-    from_hue(hue_of(seed), 0.42, 0.72)
+    tint_pair(seed).0
+}
+
+/// The same colour, plus a second hue for the agent globe's gradient — rotated
+/// warmer rather than picked separately, so the pair always reads as one
+/// person's two-tone rather than two people's single tones.
+pub fn tint_pair(seed: &str) -> (Color32, Color32) {
+    let hue = hue_of(seed);
+    (from_hue(hue, 0.42, 0.72), from_hue((hue + 55.0) % 360.0, 0.48, 0.78))
 }
 
 /// The avatar.

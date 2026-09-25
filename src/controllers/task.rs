@@ -597,6 +597,11 @@ pub struct TaskDetails {
     /// it into that project's first phase. Only for `can_manage` holders.
     #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Option<Uuid>>,
+    /// A folder from the assignee's own list, by name, to work in when this
+    /// task has no project. Absent leaves it alone, `null` unpins it back to
+    /// their default, a name pins it — whether or not that name exists yet.
+    #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
+    pub folder_name: Option<Option<String>>,
     /// Absent leaves the labels alone; a list replaces them, `[]` clears.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_ids: Option<Vec<Uuid>>,
@@ -633,6 +638,11 @@ pub async fn update_details(
     }
     if let Some(Some(c)) = &details.category {
         check_category(c)?;
+    }
+    if let Some(Some(f)) = &details.folder_name {
+        if f.trim().is_empty() || f.chars().count() > 80 {
+            return Err(AppError::BadRequest("a folder name must be 1 to 80 characters".into()));
+        }
     }
 
     let patch = json!({ "details": details });
@@ -689,6 +699,7 @@ pub async fn update_details(
             done_at            = CASE WHEN $7 THEN coalesce(done_at, now()) ELSE NULL END,
             category           = CASE WHEN $8 THEN $9 ELSE category END,
             phase_id           = CASE WHEN $10 THEN $11 ELSE phase_id END,
+            folder_name        = CASE WHEN $12 THEN $13 ELSE folder_name END,
             updated_at         = now()
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
@@ -703,6 +714,8 @@ pub async fn update_details(
     .bind(details.category.flatten())
     .bind(moved.is_some())
     .bind(moved.flatten())
+    .bind(details.folder_name.is_some())
+    .bind(details.folder_name.clone().flatten().map(|s| s.trim().to_owned()))
     .fetch_one(&mut *tx)
     .await?;
     if let Some(labels) = &details.label_ids {

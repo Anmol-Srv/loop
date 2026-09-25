@@ -77,7 +77,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ));
     items.push((shell::NavItem::new(icon::ROBOT, "Agents", sel(Tab::Agents)), Tab::Agents));
     let destinations: Vec<Tab> = items.iter().map(|(_, t)| *t).collect();
-    let groups = vec![shell::NavGroup { label: "WORKSPACE", items: items.into_iter().map(|(i, _)| i).collect() }];
+    let groups = vec![
+        shell::NavGroup { label: "WORKSPACE", items: items.into_iter().map(|(i, _)| i).collect() },
+        // No label: a heading over one row reads as its own section for no
+        // reason. The gap between groups is enough to set it apart, at the
+        // sidebar's foot where account-level things belong.
+        shell::NavGroup { label: "", items: vec![shell::NavItem::new(icon::GEAR, "Settings", sel(Tab::Settings))] },
+    ];
 
     let mut sign_out = false;
     let mut refresh = false;
@@ -170,6 +176,12 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 app.project = None;
             }
         }
+        Some((1, _)) => {
+            views::agents::close();
+            app.tab = Tab::Settings;
+            app.task = None;
+            app.project = None;
+        }
         _ => {}
     }
 
@@ -187,6 +199,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 Tab::Triage => views::triage::page(app, ui),
                 Tab::Projects => views::board::ui(app, ui),
                 Tab::Agents => views::agents::ui(app, ui),
+                Tab::Settings => views::settings::ui(app, ui),
             }
         }
     });

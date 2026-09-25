@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 
 use crate::desktop::design::agent::{self as face, Presence, Step};
 use crate::desktop::design::{
-    cards as c, colour, glyph, motion, pad, radius, shell, size, space, text, theme, viz, widgets as w,
+    cards as c, colour, glyph, motion, pad, radius, shell, size, space, text, theme, viz,
+    widgets as w,
 };
 use crate::desktop::net::Net;
 use crate::desktop::{App, Tab};
@@ -31,8 +32,12 @@ const ACTION_KEY: &str = "agents:action";
 
 /// The runtimes the server knows, wire value first, then how the connect
 /// flow describes each in a line.
-pub const RUNTIMES: [(&str, &str); 4] =
-    [("hermes", "Hermes"), ("claude-code", "Claude Code"), ("codex", "Codex"), ("other", "Other")];
+pub const RUNTIMES: [(&str, &str); 4] = [
+    ("hermes", "Hermes"),
+    ("claude-code", "Claude Code"),
+    ("codex", "Codex"),
+    ("other", "Other"),
+];
 
 const RUNTIME_LINES: [&str; 4] = [
     "Wakes by itself when a task needs it.",
@@ -45,7 +50,10 @@ const RUNTIME_LINES: [&str; 4] = [
 const HELLO_POLL: Duration = Duration::from_secs(2);
 
 pub fn runtime_label(runtime: &str) -> &str {
-    RUNTIMES.iter().find(|(v, _)| *v == runtime).map_or(runtime, |(_, l)| l)
+    RUNTIMES
+        .iter()
+        .find(|(v, _)| *v == runtime)
+        .map_or(runtime, |(_, l)| l)
 }
 
 /// A delegated task's `agentState`, in words.
@@ -83,13 +91,70 @@ pub(super) fn status_words(status: &str) -> (&'static str, c::Tone) {
     }
 }
 
+/// An agent's two roles, each switched on or off by its owner.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Role {
+    /// Takes the tasks its owner hands off (`canWork`).
+    Work,
+    /// Files tasks for its owner from what it reads (`canIntake`).
+    Intake,
+}
+
+/// Whether an agent has a role. A payload from before roles has no
+/// `canWork`: every agent then took hand-offs.
+pub fn has(a: &Value, role: Role) -> bool {
+    match role {
+        Role::Work => a.get("canWork").and_then(Value::as_bool).unwrap_or(true),
+        Role::Intake => a.get("canIntake").and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+/// An agent a task can be handed to: live, and one that works on tasks. The
+/// server refuses the rest; every hand-off picker lists only these.
+pub fn takes_work(a: &Value) -> bool {
+    str_of(a, "status") != Some("revoked") && has(a, Role::Work)
+}
+
+/// Its roles as chips: "Works on tasks", "Files tasks".
+pub(super) fn role_chips(ui: &mut egui::Ui, a: &Value) {
+    if has(a, Role::Work) {
+        c::chip(ui, "Works on tasks", c::Tone::Neutral, false)
+            .on_hover_text("Takes the tasks you hand off and reports back on them.");
+    }
+    if has(a, Role::Intake) {
+        c::chip(ui, "Files tasks", c::Tone::Info, false)
+            .on_hover_text("Creates tasks for you from what it reads; they land in your Triage.");
+    }
+}
+
+/// The ⋯ menu's role switches, for the owner. Returns the role flipped and
+/// whether it is now on; the server refuses what would leave it no role.
+pub(super) fn role_items(ui: &mut egui::Ui, a: &Value) -> Option<(Role, bool)> {
+    let mut asked = None;
+    for (role, on_label, off_label) in [
+        (Role::Work, "Stop taking hand-offs", "Take tasks I hand off"),
+        (
+            Role::Intake,
+            "Stop creating tasks",
+            "Allow it to create tasks",
+        ),
+    ] {
+        let on = has(a, role);
+        if viz::menu_item(ui, if on { on_label } else { off_label }, false, None) {
+            asked = Some((role, !on));
+        }
+    }
+    asked
+}
+
 /// A handle as the server accepts it: lowercase letters, digits and dashes,
 /// starting with a letter or digit.
 pub fn valid_handle(h: &str) -> bool {
     !h.is_empty()
         && h.len() <= 40
         && !h.starts_with('-')
-        && h.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        && h.chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 // ------------------------------------------------------------------ state
@@ -98,13 +163,21 @@ struct Draft {
     handle: String,
     name: String,
     runtime: String,
+    /// It takes the tasks you hand off.
+    work: bool,
     /// It may file tasks for you from what it reads (intake).
     intake: bool,
 }
 
 impl Default for Draft {
     fn default() -> Self {
-        Self { handle: String::new(), name: String::new(), runtime: "hermes".into(), intake: false }
+        Self {
+            handle: String::new(),
+            name: String::new(),
+            runtime: "hermes".into(),
+            work: true,
+            intake: false,
+        }
     }
 }
 
@@ -113,10 +186,20 @@ enum Connect {
     /// 1: name, handle, runtime.
     Details(Draft),
     /// 2: the one-time prompt.
-    Prompt { id: String, name: String, prompt: String, copied: bool },
+    Prompt {
+        id: String,
+        name: String,
+        prompt: String,
+        copied: bool,
+    },
     /// 3: waiting for the agent's hello; `heard` is when it arrived (egui
     /// time), which the checklist's entrance is timed from.
-    Hello { id: String, name: String, polled: Option<Instant>, heard: Option<f64> },
+    Hello {
+        id: String,
+        name: String,
+        polled: Option<Instant>,
+        heard: Option<f64>,
+    },
 }
 
 #[derive(Clone)]
@@ -131,8 +214,8 @@ enum Pending {
     Create,
     Rotate,
     Revoke,
-    /// Intake switched on or off from a card: (agent name, now on).
-    Intake,
+    /// A role switched on or off from a card or the agent page.
+    Role,
 }
 
 /// An agent's page, open over the list: which agent, the tab showing, and
@@ -158,8 +241,8 @@ struct Local {
     /// The last action's failure, in the server's words.
     error: Option<String>,
     revoked_open: bool,
-    /// What to say once an intake switch lands.
-    intake_said: Option<String>,
+    /// What to say once a role switch lands.
+    role_said: Option<String>,
 }
 
 thread_local! {
@@ -178,7 +261,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 pub fn open(id: &str) {
     LOCAL.with(|cell| {
         let mut l = cell.borrow_mut();
-        l.open = Some(Opened { id: id.to_owned(), back: None, tab: 0 });
+        l.open = Some(Opened {
+            id: id.to_owned(),
+            back: None,
+            tab: 0,
+        });
         l.nav = true;
     });
 }
@@ -213,28 +300,53 @@ enum CardAct {
     Confirm(Confirm),
     Continue(String, String),
     Open(String),
-    /// Switch intake: (id, name, on).
-    Intake(String, String, bool),
+    /// Switch a role: (id, name, role, on).
+    Role(String, String, Role, bool),
     /// The agent's page.
     Page(String),
 }
 
 fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
-    let me = app.net.as_ref().and_then(|n| n.data("__me")).cloned().unwrap_or(Value::Null);
-    let my_seed = str_of(&me, "email").or_else(|| str_of(&me, "name")).unwrap_or("me").to_owned();
-    let my_first = str_of(&me, "name").and_then(|n| n.split_whitespace().next()).unwrap_or("Your").to_owned();
+    let me = app
+        .net
+        .as_ref()
+        .and_then(|n| n.data("__me"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let my_seed = str_of(&me, "email")
+        .or_else(|| str_of(&me, "name"))
+        .unwrap_or("me")
+        .to_owned();
+    let my_first = str_of(&me, "name")
+        .and_then(|n| n.split_whitespace().next())
+        .unwrap_or("Your")
+        .to_owned();
 
     let net = app.net.as_mut().expect("chrome runs signed in");
     net.get_once(AGENTS_KEY, "/api/user/agents");
     settle(ui.ctx(), net, local);
 
     let list = net.shared(AGENTS_KEY);
-    let all: &[Value] = list.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let all: &[Value] = list
+        .as_deref()
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
 
     if let Some(opened) = local.open.as_mut() {
-        let listed = all.iter().find(|a| str_of(a, "id") == Some(opened.id.as_str())).cloned();
+        let listed = all
+            .iter()
+            .find(|a| str_of(a, "id") == Some(opened.id.as_str()))
+            .cloned();
         let refresh = std::mem::take(&mut local.refresh_page);
-        let asked = super::agent_page::show(ui, net, opened, listed, refresh, local.error.as_deref(), &my_seed);
+        let asked = super::agent_page::show(
+            ui,
+            net,
+            opened,
+            listed,
+            refresh,
+            local.error.as_deref(),
+            &my_seed,
+        );
         let id = opened.id.clone();
         match asked {
             Some(super::agent_page::Ask::Back) => {
@@ -250,9 +362,17 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
             Some(super::agent_page::Ask::Card(name, act)) => {
                 let act = match act {
                     super::agent_page::CardAsk::Continue => CardAct::Continue(id, name),
-                    super::agent_page::CardAsk::Intake(on) => CardAct::Intake(id, name, on),
-                    super::agent_page::CardAsk::Rotate => CardAct::Confirm(Confirm { id, name, revoke: false }),
-                    super::agent_page::CardAsk::Revoke => CardAct::Confirm(Confirm { id, name, revoke: true }),
+                    super::agent_page::CardAsk::Role(role, on) => CardAct::Role(id, name, role, on),
+                    super::agent_page::CardAsk::Rotate => CardAct::Confirm(Confirm {
+                        id,
+                        name,
+                        revoke: false,
+                    }),
+                    super::agent_page::CardAsk::Revoke => CardAct::Confirm(Confirm {
+                        id,
+                        name,
+                        revoke: true,
+                    }),
                 };
                 card_act(app, local, act);
             }
@@ -265,15 +385,26 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         return;
     }
 
-    let live: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") != Some("revoked")).collect();
-    let revoked: Vec<&Value> = all.iter().filter(|a| str_of(a, "status") == Some("revoked")).collect();
+    let live: Vec<&Value> = all
+        .iter()
+        .filter(|a| str_of(a, "status") != Some("revoked"))
+        .collect();
+    let revoked: Vec<&Value> = all
+        .iter()
+        .filter(|a| str_of(a, "status") == Some("revoked"))
+        .collect();
     let mut connect = false;
 
-    shell::page_title(ui, "Agents", "Programs on your own machine that take the tasks you hand them.", |ui| {
-        if !live.is_empty() && w::primary(ui, "Connect an agent", true).clicked() {
-            connect = true;
-        }
-    });
+    shell::page_title(
+        ui,
+        "Agents",
+        "Programs on your own machine that take the tasks you hand them.",
+        |ui| {
+            if !live.is_empty() && w::primary(ui, "Connect an agent", true).clicked() {
+                connect = true;
+            }
+        },
+    );
 
     // Failures of the card actions. A failed create stays in its dialog.
     if local.connect.is_none() {
@@ -296,7 +427,13 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
 
     if !revoked.is_empty() {
         ui.add_space(space::XL);
-        face::disclosure(ui, egui::Id::new("agents:revoked"), "Revoked", Some(revoked.len()), &mut local.revoked_open);
+        face::disclosure(
+            ui,
+            egui::Id::new("agents:revoked"),
+            "Revoked",
+            Some(revoked.len()),
+            &mut local.revoked_open,
+        );
         if local.revoked_open {
             ui.add_space(space::XS);
             w::card_list(ui, |ui| {
@@ -332,27 +469,41 @@ fn card_act(app: &mut App, local: &mut Local, act: CardAct) {
         }
         CardAct::Continue(id, name) => {
             local.error = None;
-            local.connect = Some(Connect::Hello { id, name, polled: None, heard: None });
+            local.connect = Some(Connect::Hello {
+                id,
+                name,
+                polled: None,
+                heard: None,
+            });
         }
         CardAct::Open(task) => {
             app.task = Some(task);
             app.tab = Tab::Agents;
         }
-        CardAct::Intake(id, name, on) => {
+        CardAct::Role(id, name, role, on) => {
             let net = app.net.as_mut().expect("chrome runs signed in");
             local.error = None;
             net.invalidate(ACTION_KEY);
-            net.patch(ACTION_KEY, &format!("/api/user/agents/{id}"), json!({ "canIntake": on }));
-            local.pending = Some(Pending::Intake);
-            local.intake_said = Some(if on {
-                format!("{name} can create tasks for you now.")
-            } else {
-                format!("{name} no longer creates tasks for you.")
+            let body = match role {
+                Role::Work => json!({ "canWork": on }),
+                Role::Intake => json!({ "canIntake": on }),
+            };
+            net.patch(ACTION_KEY, &format!("/api/user/agents/{id}"), body);
+            local.pending = Some(Pending::Role);
+            local.role_said = Some(match (role, on) {
+                (Role::Work, true) => format!("{name} takes the tasks you hand off now."),
+                (Role::Work, false) => format!("{name} no longer takes hand-offs."),
+                (Role::Intake, true) => format!("{name} can create tasks for you now."),
+                (Role::Intake, false) => format!("{name} no longer creates tasks for you."),
             });
         }
         CardAct::Page(id) => {
             local.error = None;
-            local.open = Some(Opened { id, back: None, tab: 0 });
+            local.open = Some(Opened {
+                id,
+                back: None,
+                tab: 0,
+            });
         }
     }
 }
@@ -457,7 +608,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
     let current = a.get("currentTask").filter(|t| t.is_object());
     let task_state = current.and_then(|t| str_of(t, "state")).unwrap_or("idle");
     let presence = Presence::of(task_state, str_of(a, "lastSeenAt"));
-    let intake = a.get("canIntake").and_then(Value::as_bool).unwrap_or(false);
+    let intake = has(a, Role::Intake);
     let mut act = None;
     let mut used = 0.0;
 
@@ -465,7 +616,10 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
     // on last frame's rect, so the menu and the task link inside stay on top
     // and keep their own clicks.
     let rect_id = egui::Id::new(("agents:card", id.as_str()));
-    let last: egui::Rect = ui.ctx().data(|d| d.get_temp(rect_id)).unwrap_or(egui::Rect::NOTHING);
+    let last: egui::Rect = ui
+        .ctx()
+        .data(|d| d.get_temp(rect_id))
+        .unwrap_or(egui::Rect::NOTHING);
     let whole = ui.interact(last, rect_id.with("click"), egui::Sense::click());
     let open_label = format!("Open {name}");
     whole.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &open_label));
@@ -504,9 +658,8 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                                 ui.ctx().copy_text(str_of(a, "handle").unwrap_or_default().to_owned());
                                 w::toast(ui.ctx(), "Copied.", false);
                             }
-                            let label = if intake { "Stop creating tasks" } else { "Allow it to create tasks" };
-                            if viz::menu_item(ui, label, false, None) {
-                                act = Some(CardAct::Intake(id.clone(), name.clone(), !intake));
+                            if let Some((role, on)) = role_items(ui, a) {
+                                act = Some(CardAct::Role(id.clone(), name.clone(), role, on));
                             }
                             if viz::menu_item(ui, "Rotate token\u{2026}", false, None) {
                                 act = Some(CardAct::Confirm(Confirm { id: id.clone(), name: name.clone(), revoke: false }));
@@ -541,10 +694,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     ui.spacing_mut().item_spacing.x = space::SM;
                     let (words, tone) = status_words(status);
                     c::chip(ui, words, tone, true);
-                    if intake {
-                        c::chip(ui, "Intake", c::Tone::Info, false)
-                            .on_hover_text("Creates tasks for you from what it reads; they land in your Triage.");
-                    }
+                    role_chips(ui, a);
                     if let Some(at) = str_of(a, "lastSeenAt") {
                         ui.label(RichText::new(format!("seen {}", super::task::ago(at))).size(text::SMALL).color(colour::TEXT_MUTED))
                             .on_hover_text(super::task::exact(at));
@@ -575,9 +725,11 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     if let Some(now) = str_of(t, "now").map(str::trim).filter(|n| !n.is_empty()) {
                         ui.add(egui::Label::new(RichText::new(now).size(text::SMALL).color(colour::TEXT_MUTED)).truncate());
                     }
-                } else {
+                } else if has(a, Role::Work) {
                     w::caption(ui, "No task right now");
                     ui.label(RichText::new("Hand it one from the task\u{2019}s page.").size(text::SMALL).color(colour::TEXT_MUTED));
+                } else {
+                    w::caption(ui, "Files tasks; it doesn\u{2019}t take hand-offs");
                 }
 
                 if intake {
@@ -612,7 +764,8 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
             .rect
             .height();
     });
-    ui.ctx().data_mut(|d| d.insert_temp(rect_id, frame.response.rect));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(rect_id, frame.response.rect));
     (used, act)
 }
 
@@ -620,13 +773,30 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
 /// in white, their words muted — and where its filings land.
 fn intake_stats(ui: &mut egui::Ui, a: &Value) {
     let stats = a.get("intakeStats").filter(|s| s.is_object());
-    let n = |k: &str| stats.and_then(|s| s.get(k)).and_then(Value::as_i64).unwrap_or(0);
+    let n = |k: &str| {
+        stats
+            .and_then(|s| s.get(k))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
     ui.add_space(space::XS);
-    let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+    let (rule, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        rule.x_range(),
+        rule.center().y,
+        egui::Stroke::new(1.0, colour::LINE),
+    );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        for (i, (k, word)) in [("triage", "in triage"), ("accepted", "accepted"), ("dismissed", "dismissed")].iter().enumerate() {
+        for (i, (k, word)) in [
+            ("triage", "in triage"),
+            ("accepted", "accepted"),
+            ("dismissed", "dismissed"),
+        ]
+        .iter()
+        .enumerate()
+        {
             if i > 0 {
                 ui.add_space(space::SM);
             }
@@ -636,7 +806,11 @@ fn intake_stats(ui: &mut egui::Ui, a: &Value) {
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                     .color(colour::TEXT),
             );
-            ui.label(RichText::new(*word).size(text::SMALL).color(colour::TEXT_MUTED));
+            ui.label(
+                RichText::new(*word)
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
         }
     });
     w::caption(ui, "Files into your Triage, each task labelled Slack.");
@@ -648,7 +822,13 @@ pub(super) fn setup_checks(ui: &mut egui::Ui, setup: &Value, wrap: bool) {
     let skill = setup.get("skill").and_then(Value::as_str);
     let flag = |k: &str| setup.get(k).and_then(Value::as_bool);
     let items = [
-        ("Skill", skill.map(|_| true), skill.map(|v| format!("v{}", v.trim_start_matches('v'))).unwrap_or_default()),
+        (
+            "Skill",
+            skill.map(|_| true),
+            skill
+                .map(|v| format!("v{}", v.trim_start_matches('v')))
+                .unwrap_or_default(),
+        ),
         ("MCP", flag("mcp"), String::new()),
         ("Watcher", flag("watcher"), String::new()),
     ];
@@ -676,7 +856,11 @@ fn revoked_row(ui: &mut egui::Ui, a: &Value, seed: &str) {
             ui.spacing_mut().item_spacing.x = space::SM;
             ui.add_space(space::SM);
             face::avatar_still(ui, seed, face::XS, Presence::Offline, name);
-            ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT_MUTED));
+            ui.label(
+                RichText::new(name)
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
             w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());
             if let Some(at) = str_of(a, "lastSeenAt") {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -697,12 +881,14 @@ fn settle(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
         return;
     }
     match net.peek(ACTION_KEY) {
-        Some(Ok(_)) if pending == Pending::Intake => {
+        Some(Ok(_)) if pending == Pending::Role => {
             local.error = None;
-            if let Some(said) = local.intake_said.take() {
+            if let Some(said) = local.role_said.take() {
                 w::toast(ctx, said, false);
             }
         }
+        // A refused role switch is a sentence to read, not a page error.
+        Some(Err(e)) if pending == Pending::Role => w::toast(ctx, e.to_string(), true),
         Some(Ok(v)) => {
             local.error = None;
             if pending != Pending::Revoke {
@@ -719,7 +905,7 @@ fn settle(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
         None => {}
     }
     local.pending = None;
-    local.intake_said = None;
+    local.role_said = None;
     // The reply holds the token; it is not kept anywhere but the dialog.
     net.invalidate(ACTION_KEY);
     // In place, so the cards stay put under the dialog while it lands.
@@ -737,7 +923,12 @@ fn settle(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
 }
 
 /// The dialogs' shared frame: the palette's surface, a little more padding.
-pub(super) fn dialog(ctx: &egui::Context, id: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) -> egui::ModalResponse<()> {
+pub(super) fn dialog(
+    ctx: &egui::Context,
+    id: &str,
+    width: f32,
+    add: impl FnOnce(&mut egui::Ui),
+) -> egui::ModalResponse<()> {
     egui::Modal::new(egui::Id::new(id))
         .backdrop_color(colour::CANVAS.gamma_multiply(0.7))
         .frame(
@@ -773,7 +964,10 @@ pub(super) fn short(name: &str) -> &str {
 /// The three steps, for the dialog's indicator.
 fn connect_steps(at: usize, done: bool) -> impl FnOnce(&mut egui::Ui) {
     move |ui| {
-        let steps = ["Name it", "Paste the prompt", "First contact"].map(|l| Step { label: l.into(), when: None });
+        let steps = ["Name it", "Paste the prompt", "First contact"].map(|l| Step {
+            label: l.into(),
+            when: None,
+        });
         face::stepper(ui, &steps, at, done, colour::INFO);
     }
 }
@@ -781,7 +975,13 @@ fn connect_steps(at: usize, done: bool) -> impl FnOnce(&mut egui::Ui) {
 /// The connect flow. Escape and Cancel are safe at every step: nothing is
 /// created until step 1's Continue, and an agent left at step 2 or 3 waits on
 /// its card with "Continue setup".
-fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed: &str, my_first: &str) {
+fn connect_dialog(
+    ctx: &egui::Context,
+    net: &mut Net,
+    local: &mut Local,
+    my_seed: &str,
+    my_first: &str,
+) {
     let busy = local.pending.is_some();
     let mut next: Option<Option<Connect>> = None;
     let mut rotate: Option<Confirm> = None;
@@ -791,7 +991,9 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
     if let Some(Connect::Hello { polled, heard, .. }) = local.connect.as_mut() {
         if heard.is_none() {
             ctx.request_repaint_after(HELLO_POLL);
-            if polled.is_none_or(|t| t.elapsed() >= HELLO_POLL - Duration::from_millis(100)) && !net.is_loading(AGENTS_KEY) {
+            if polled.is_none_or(|t| t.elapsed() >= HELLO_POLL - Duration::from_millis(100))
+                && !net.is_loading(AGENTS_KEY)
+            {
                 net.get(AGENTS_KEY, "/api/user/agents");
                 *polled = Some(Instant::now());
             }
@@ -799,12 +1001,17 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
     }
     let agents = net.shared(AGENTS_KEY);
 
-    let Some(step) = local.connect.as_mut() else { return };
+    let Some(step) = local.connect.as_mut() else {
+        return;
+    };
     let modal = match step {
         Connect::Details(draft) => dialog(ctx, "agents:connect", CONNECT_W, |ui| {
             heading(ui, "Connect an agent");
             ui.add_space(space::XS);
-            w::muted(ui, "It gets its own token and sees only the tasks you hand it.");
+            w::muted(
+                ui,
+                "It gets its own token and sees only the tasks you hand it.",
+            );
             ui.add_space(space::LG);
             connect_steps(0, false)(ui);
             ui.add_space(space::LG);
@@ -815,44 +1022,90 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
             ui.add_space(space::MD);
 
             let label = runtime_label(&draft.runtime).to_owned();
-            let name_field = w::field(ui, "Display name", &mut draft.name, false, &format!("{label} ({my_first}\u{2019}s Mac)"));
+            let name_field = w::field(
+                ui,
+                "Display name",
+                &mut draft.name,
+                false,
+                &format!("{label} ({my_first}\u{2019}s Mac)"),
+            );
             ui.add_space(space::MD);
             let typed = draft.handle.trim().to_owned();
             let bad = !typed.is_empty() && !valid_handle(&typed);
-            let hint = if draft.runtime == "other" { "my-agent" } else { draft.runtime.as_str() };
+            let hint = if draft.runtime == "other" {
+                "my-agent"
+            } else {
+                draft.runtime.as_str()
+            };
             let entry = w::field(ui, "Handle", &mut draft.handle, false, hint);
             if bad {
-                ui.painter().rect_stroke(entry.rect, radius::SM as f32, egui::Stroke::new(1.0, colour::DANGER), egui::StrokeKind::Inside);
+                ui.painter().rect_stroke(
+                    entry.rect,
+                    radius::SM as f32,
+                    egui::Stroke::new(1.0, colour::DANGER),
+                    egui::StrokeKind::Inside,
+                );
                 ui.add_space(space::XXS);
-                w::caption(ui, "Lowercase letters, digits and dashes \u{2014} like hermes or claude-mac.");
+                w::caption(
+                    ui,
+                    "Lowercase letters, digits and dashes \u{2014} like hermes or claude-mac.",
+                );
             } else {
                 ui.add_space(space::XXS);
                 w::caption(ui, "How the agent is named in the API and its logs.");
             }
 
             ui.add_space(space::LG);
+            w::caption(ui, "Roles");
+            ui.add_space(space::XS);
             w::switch(
                 ui,
-                "Can create tasks for me (intake)",
+                "Takes tasks I hand off",
+                "It works on the tasks you hand it and reports back on each one.",
+                &mut draft.work,
+            );
+            ui.add_space(space::SM);
+            w::switch(
+                ui,
+                "Creates tasks for me",
                 "It files what it reads \u{2014} a Slack thread, say \u{2014} as tasks in your Triage, for you to accept or dismiss.",
                 &mut draft.intake,
             );
+            let no_role = !draft.work && !draft.intake;
+            if no_role {
+                ui.add_space(space::XS);
+                ui.label(
+                    RichText::new("Turn on at least one role.")
+                        .size(text::SMALL)
+                        .color(colour::WARN),
+                );
+            }
 
             if let Some(err) = &local.error {
                 ui.add_space(space::MD);
                 w::error(ui, err);
             }
             ui.add_space(space::XL);
-            let ready = valid_handle(&typed) && !draft.name.trim().is_empty() && !busy;
+            let ready = valid_handle(&typed) && !draft.name.trim().is_empty() && !no_role && !busy;
             // Enter from either field submits: egui drops a single-line field's
             // focus on Enter, which is how it can be told from Enter on a button.
-            let entered = (name_field.lost_focus() || entry.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let entered = (name_field.lost_focus() || entry.lost_focus())
+                && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let mut create = ready && entered;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
-                let response = w::primary(ui, if busy { "Creating\u{2026}" } else { "Continue" }, ready);
+                let response = w::primary(
+                    ui,
+                    if busy { "Creating\u{2026}" } else { "Continue" },
+                    ready,
+                );
                 if !busy && !ready {
-                    response.clone().on_disabled_hover_text("Needs a name and a valid handle.");
+                    let why = if no_role {
+                        "Turn on at least one role."
+                    } else {
+                        "Needs a name and a valid handle."
+                    };
+                    response.clone().on_disabled_hover_text(why);
                 }
                 create |= response.clicked();
                 if w::ghost(ui, "Cancel").clicked() && !busy {
@@ -865,68 +1118,115 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
                 net.post(
                     ACTION_KEY,
                     "/api/user/agents",
-                    json!({ "handle": typed, "name": draft.name.trim(), "runtime": draft.runtime, "canIntake": draft.intake }),
+                    json!({ "handle": typed, "name": draft.name.trim(), "runtime": draft.runtime, "canWork": draft.work, "canIntake": draft.intake }),
                 );
                 local.pending = Some(Pending::Create);
             }
         }),
 
-        Connect::Prompt { id, name, prompt, copied } => dialog(ctx, "agents:connect", CONNECT_W, |ui| {
+        Connect::Prompt {
+            id,
+            name,
+            prompt,
+            copied,
+        } => dialog(ctx, "agents:connect", CONNECT_W, |ui| {
             heading(ui, &format!("Paste this into {}", short(name)));
             ui.add_space(space::LG);
             connect_steps(1, false)(ui);
             ui.add_space(space::LG);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
-                let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(text::SMALL + 1.0), egui::Sense::hover());
+                let (r, _) = ui.allocate_exact_size(
+                    egui::Vec2::splat(text::SMALL + 1.0),
+                    egui::Sense::hover(),
+                );
                 glyph::lock(ui.painter(), r.center(), r.width(), colour::WARN);
-                ui.label(RichText::new("Shown only once \u{2014} it contains the agent\u{2019}s secret token.").size(text::SMALL).color(colour::WARN));
+                ui.label(
+                    RichText::new(
+                        "Shown only once \u{2014} it contains the agent\u{2019}s secret token.",
+                    )
+                    .size(text::SMALL)
+                    .color(colour::WARN),
+                );
             });
             ui.add_space(space::SM);
             egui::Frame::new()
                 .fill(colour::LOG_BG)
                 .stroke(egui::Stroke::new(1.0, colour::LINE))
                 .corner_radius(radius::MD)
-                .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+                .inner_margin(egui::Margin::symmetric(
+                    pad::CARD.0 as i8,
+                    pad::CARD.1 as i8,
+                ))
                 .show(ui, |ui| {
                     let mut shown: &str = prompt;
-                    egui::ScrollArea::vertical().max_height(size::ROW * 6.0).show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut shown)
-                                .id(egui::Id::new("agents:prompt"))
-                                .frame(egui::Frame::NONE)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(4)
-                                .font(egui::FontId::monospace(text::SMALL))
-                                .text_color(colour::LOG_TEXT),
-                        );
-                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(size::ROW * 6.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut shown)
+                                    .id(egui::Id::new("agents:prompt"))
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(4)
+                                    .font(egui::FontId::monospace(text::SMALL))
+                                    .text_color(colour::LOG_TEXT),
+                            );
+                        });
                 });
             ui.add_space(space::SM);
-            w::muted(ui, &format!("Paste it into {} on your Mac. It sets itself up and says hello here.", short(name)));
+            w::muted(
+                ui,
+                &format!(
+                    "Paste it into {} on your Mac. It sets itself up and says hello here.",
+                    short(name)
+                ),
+            );
             ui.add_space(space::XL);
             let mut closed = false;
-            button_row(ui, |ui| {
-                // One filled button: Copy until it is copied, then the way on.
-                let pasted = if *copied { w::primary(ui, "I\u{2019}ve pasted it", true) } else { w::secondary(ui, "I\u{2019}ve pasted it", true) };
-                if pasted.clicked() {
-                    next = Some(Some(Connect::Hello { id: id.clone(), name: name.clone(), polled: None, heard: None }));
-                }
-                let copy = if *copied { w::secondary(ui, "Copied", true) } else { w::primary(ui, "Copy", true) };
-                if copy.clicked() {
-                    ui.ctx().copy_text(prompt.clone());
-                    *copied = true;
-                }
-            }, |ui| {
-                closed = w::ghost(ui, "Close").clicked();
-            });
+            button_row(
+                ui,
+                |ui| {
+                    // One filled button: Copy until it is copied, then the way on.
+                    let pasted = if *copied {
+                        w::primary(ui, "I\u{2019}ve pasted it", true)
+                    } else {
+                        w::secondary(ui, "I\u{2019}ve pasted it", true)
+                    };
+                    if pasted.clicked() {
+                        next = Some(Some(Connect::Hello {
+                            id: id.clone(),
+                            name: name.clone(),
+                            polled: None,
+                            heard: None,
+                        }));
+                    }
+                    let copy = if *copied {
+                        w::secondary(ui, "Copied", true)
+                    } else {
+                        w::primary(ui, "Copy", true)
+                    };
+                    if copy.clicked() {
+                        ui.ctx().copy_text(prompt.clone());
+                        *copied = true;
+                    }
+                },
+                |ui| {
+                    closed = w::ghost(ui, "Close").clicked();
+                },
+            );
             if closed {
                 next = Some(None);
             }
         }),
 
-        Connect::Hello { id, name, heard, .. } => {
-            let agent = agents.as_deref().and_then(Value::as_array).and_then(|a| a.iter().find(|a| str_of(a, "id") == Some(id.as_str())));
+        Connect::Hello {
+            id, name, heard, ..
+        } => {
+            let agent = agents
+                .as_deref()
+                .and_then(Value::as_array)
+                .and_then(|a| a.iter().find(|a| str_of(a, "id") == Some(id.as_str())));
             let connected = agent.is_some_and(|a| str_of(a, "status") == Some("connected"));
             let now = ctx.input(|i| i.time);
             if connected && heard.is_none() {
@@ -934,39 +1234,68 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
             }
             dialog(ctx, "agents:connect", CONNECT_W, |ui| {
                 let s = short(name);
-                heading(ui, &if connected { format!("{s} is connected") } else { format!("Waiting for {s} to say hello\u{2026}") });
+                heading(
+                    ui,
+                    &if connected {
+                        format!("{s} is connected")
+                    } else {
+                        format!("Waiting for {s} to say hello\u{2026}")
+                    },
+                );
                 ui.add_space(space::LG);
                 connect_steps(2, connected)(ui);
                 ui.add_space(space::XL);
                 ui.vertical_centered(|ui| {
-                    let presence = if connected { Presence::Idle } else { Presence::Waiting };
-                    face::avatar(ui, my_seed, face::LG, presence, name);
+                    let presence = if connected {
+                        Presence::Idle
+                    } else {
+                        Presence::Waiting
+                    };
+                    face::avatar(ui, my_seed, face::XXL, presence, name);
                     ui.add_space(space::MD);
                     if connected {
-                        w::muted(ui, "Said hello just now. Hand it a task from any task\u{2019}s page.");
+                        w::muted(
+                            ui,
+                            "Said hello just now. Hand it a task from any task\u{2019}s page.",
+                        );
                     } else {
-                        w::muted(ui, "This page updates by itself, usually within a minute of pasting.");
+                        w::muted(
+                            ui,
+                            "This page updates by itself, usually within a minute of pasting.",
+                        );
                     }
                 });
                 if let (true, Some(at)) = (connected, *heard) {
                     ui.add_space(space::MD);
-                    let setup = agent.and_then(|a| a.get("setup")).filter(|s| s.is_object()).cloned().unwrap_or(json!({}));
+                    let setup = agent
+                        .and_then(|a| a.get("setup"))
+                        .filter(|s| s.is_object())
+                        .cloned()
+                        .unwrap_or(json!({}));
                     checklist(ui, &setup, now - at);
                 }
                 ui.add_space(space::XL);
-                button_row(ui, |ui| {
-                    if connected {
-                        if w::primary(ui, "Done", true).clicked() {
+                button_row(
+                    ui,
+                    |ui| {
+                        if connected {
+                            if w::primary(ui, "Done", true).clicked() {
+                                next = Some(None);
+                            }
+                        } else if w::ghost(ui, "Close").clicked() {
                             next = Some(None);
                         }
-                    } else if w::ghost(ui, "Close").clicked() {
-                        next = Some(None);
-                    }
-                }, |ui| {
-                    if !connected && w::link(ui, "Lost the prompt? Get a new one").clicked() {
-                        rotate = Some(Confirm { id: id.clone(), name: name.clone(), revoke: false });
-                    }
-                });
+                    },
+                    |ui| {
+                        if !connected && w::link(ui, "Lost the prompt? Get a new one").clicked() {
+                            rotate = Some(Confirm {
+                                id: id.clone(),
+                                name: name.clone(),
+                                revoke: false,
+                            });
+                        }
+                    },
+                );
             })
         }
     };
@@ -987,7 +1316,11 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
 /// A dialog's foot: `right` flush right, `left` flush left, one row high.
 /// A right-to-left layout on its own takes the rest of a modal's height and
 /// centres its buttons in it.
-fn button_row(ui: &mut egui::Ui, right: impl FnOnce(&mut egui::Ui), left: impl FnOnce(&mut egui::Ui)) {
+fn button_row(
+    ui: &mut egui::Ui,
+    right: impl FnOnce(&mut egui::Ui),
+    left: impl FnOnce(&mut egui::Ui),
+) {
     ui.horizontal(|ui| {
         ui.set_height(size::CONTROL);
         left(ui);
@@ -1003,13 +1336,21 @@ fn button_row(ui: &mut egui::Ui, right: impl FnOnce(&mut egui::Ui), left: impl F
 fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
     let gap = space::SM;
     let tile_w = (ui.available_width() - gap) / 2.0;
-    for pair in RUNTIMES.iter().zip(RUNTIME_LINES).collect::<Vec<_>>().chunks(2) {
+    for pair in RUNTIMES
+        .iter()
+        .zip(RUNTIME_LINES)
+        .collect::<Vec<_>>()
+        .chunks(2)
+    {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for ((value, label), line) in pair {
                 let on = runtime == value;
-                let (rect, response) = ui.allocate_exact_size(egui::vec2(tile_w, 56.0), egui::Sense::click());
-                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *label));
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(tile_w, 56.0), egui::Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *label)
+                });
                 let response = motion::operable(ui, response, radius::MD as f32);
                 if response.clicked() {
                     *runtime = (*value).to_owned();
@@ -1018,14 +1359,27 @@ fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
                 let fill = if on {
                     colour::SURFACE_ACTIVE
                 } else {
-                    motion::hover_fill(ui, response.id.with("fill"), hot, colour::INSET, colour::SURFACE_HOVER)
+                    motion::hover_fill(
+                        ui,
+                        response.id.with("fill"),
+                        hot,
+                        colour::INSET,
+                        colour::SURFACE_HOVER,
+                    )
                 };
                 let p = ui.painter();
                 p.rect_filled(rect, radius::MD as f32, fill);
                 p.rect_stroke(
                     rect,
                     radius::MD as f32,
-                    egui::Stroke::new(1.0, if on || hot { colour::LINE_STRONG } else { colour::LINE }),
+                    egui::Stroke::new(
+                        1.0,
+                        if on || hot {
+                            colour::LINE_STRONG
+                        } else {
+                            colour::LINE
+                        },
+                    ),
                     egui::StrokeKind::Inside,
                 );
                 let x = rect.left() + space::MD;
@@ -1036,10 +1390,21 @@ fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
                     egui::FontId::new(text::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
                     if on { colour::TEXT } else { colour::TEXT_2 },
                 );
-                let galley = w::truncated(ui, line, egui::FontId::proportional(text::CAPTION), colour::TEXT_MUTED, rect.width() - space::MD * 2.0);
-                ui.painter().galley(egui::pos2(x, rect.bottom() - space::MD - galley.size().y), galley, colour::TEXT_MUTED);
+                let galley = w::truncated(
+                    ui,
+                    line,
+                    egui::FontId::proportional(text::CAPTION),
+                    colour::TEXT_MUTED,
+                    rect.width() - space::MD * 2.0,
+                );
+                ui.painter().galley(
+                    egui::pos2(x, rect.bottom() - space::MD - galley.size().y),
+                    galley,
+                    colour::TEXT_MUTED,
+                );
                 if on {
-                    let c = egui::pos2(rect.right() - space::MD - 5.0, rect.top() + space::MD + 7.0);
+                    let c =
+                        egui::pos2(rect.right() - space::MD - 5.0, rect.top() + space::MD + 7.0);
                     glyph::tick(ui.painter(), c, 11.0, colour::TEXT);
                 }
                 if response.hovered() {
@@ -1060,7 +1425,13 @@ fn checklist(ui: &mut egui::Ui, setup: &Value, since: f64) {
     let skill = setup.get("skill").and_then(Value::as_str);
     let flag = |k: &str| setup.get(k).and_then(Value::as_bool);
     let items = [
-        ("Skill installed", skill.map(|_| true), skill.map(|v| format!("v{}", v.trim_start_matches('v'))).unwrap_or_default()),
+        (
+            "Skill installed",
+            skill.map(|_| true),
+            skill
+                .map(|v| format!("v{}", v.trim_start_matches('v')))
+                .unwrap_or_default(),
+        ),
         ("MCP server registered", flag("mcp"), String::new()),
         ("Watcher running", flag("watcher"), String::new()),
     ];
@@ -1069,7 +1440,11 @@ fn checklist(ui: &mut egui::Ui, setup: &Value, since: f64) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = space::SM;
         for (i, (label, ok, detail)) in items.iter().enumerate() {
-            let t = if still { 1.0 } else { ((since - i as f64 * STAGGER) / FADE).clamp(0.0, 1.0) as f32 };
+            let t = if still {
+                1.0
+            } else {
+                ((since - i as f64 * STAGGER) / FADE).clamp(0.0, 1.0) as f32
+            };
             animating |= t < 1.0;
             ui.scope(|ui| {
                 ui.set_opacity(egui::emath::easing::cubic_out(t));
@@ -1077,7 +1452,10 @@ fn checklist(ui: &mut egui::Ui, setup: &Value, since: f64) {
             });
         }
         if items.iter().any(|(_, ok, _)| ok.is_none()) {
-            w::caption(ui, "A dash is something this agent\u{2019}s kit does not report yet.");
+            w::caption(
+                ui,
+                "A dash is something this agent\u{2019}s kit does not report yet.",
+            );
         }
     });
     if animating {
@@ -1088,14 +1466,19 @@ fn checklist(ui: &mut egui::Ui, setup: &Value, since: f64) {
 /// "Are you sure" for rotate and revoke. Both cut off the agent's current
 /// token, so neither happens on one click.
 fn confirm_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
-    let Some(ask) = local.confirm.clone() else { return };
+    let Some(ask) = local.confirm.clone() else {
+        return;
+    };
     let mut go = false;
     let mut close = false;
     let modal = dialog(ctx, "agents:confirm", DIALOG_W * 0.8, |ui| {
         if ask.revoke {
             heading(ui, &format!("Revoke {}?", ask.name));
             ui.add_space(space::XS);
-            w::muted(ui, "Its token stops working now, and any task it holds comes back to you.");
+            w::muted(
+                ui,
+                "Its token stops working now, and any task it holds comes back to you.",
+            );
         } else {
             heading(ui, &format!("Rotate the token for {}?", ask.name));
             ui.add_space(space::XS);
@@ -1115,10 +1498,19 @@ fn confirm_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
     if go {
         net.invalidate(ACTION_KEY);
         if ask.revoke {
-            net.send(ACTION_KEY, reqwest::Method::DELETE, &format!("/api/user/agents/{}", ask.id), Value::Null);
+            net.send(
+                ACTION_KEY,
+                reqwest::Method::DELETE,
+                &format!("/api/user/agents/{}", ask.id),
+                Value::Null,
+            );
             local.pending = Some(Pending::Revoke);
         } else {
-            net.post(ACTION_KEY, &format!("/api/user/agents/{}/rotate", ask.id), json!({}));
+            net.post(
+                ACTION_KEY,
+                &format!("/api/user/agents/{}/rotate", ask.id),
+                json!({}),
+            );
             local.pending = Some(Pending::Rotate);
         }
         local.confirm = None;

@@ -33,7 +33,11 @@ pub const INTAKE_SKILL: &str = include_str!("../../agent-kit/airtribe-intake/SKI
 /// The skill's `version:` line. The inbox names it, so a changed skill changes
 /// the inbox and wakes every connected agent to fetch the new one.
 fn skill_version() -> &'static str {
-    SKILL.lines().find_map(|l| l.strip_prefix("version:")).map(str::trim).unwrap_or("0")
+    SKILL
+        .lines()
+        .find_map(|l| l.strip_prefix("version:"))
+        .map(str::trim)
+        .unwrap_or("0")
 }
 
 fn onboarding_template(runtime: &str) -> &'static str {
@@ -66,6 +70,8 @@ pub struct Agent {
     pub current_task: Option<Value>,
     /// Notes it wrote per day over the last 14 days, oldest first.
     pub activity: Vec<i64>,
+    /// Whether it takes tasks its owner hands off.
+    pub can_work: bool,
     /// Whether it may file tasks for its owner (`/api/agent/intake`).
     pub can_intake: bool,
     /// The live project its filings go to, once it has filed one.
@@ -91,7 +97,7 @@ fn agent_select() -> String {
             ARRAY(SELECT count(n.id) FROM generate_series(0, 13) i
                     LEFT JOIN note n ON n.agent_id = a.id AND n.created_at::date = current_date - 13 + i
                    GROUP BY i ORDER BY i) AS activity,
-            a.can_intake,
+            a.can_work, a.can_intake,
             (SELECT pr.id FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
               AS intake_project_id,
             (SELECT pr.name FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
@@ -119,10 +125,12 @@ pub struct Minted {
 }
 
 pub(crate) async fn one(db: impl sqlx::PgExecutor<'_>, id: Uuid) -> AppResult<Agent> {
-    Ok(sqlx::query_as(&format!("{} WHERE a.id = $1", agent_select()))
-        .bind(id)
-        .fetch_one(db)
-        .await?)
+    Ok(
+        sqlx::query_as(&format!("{} WHERE a.id = $1", agent_select()))
+            .bind(id)
+            .fetch_one(db)
+            .await?,
+    )
 }
 
 pub async fn list(state: &AppState, owner: Uuid) -> AppResult<Vec<Agent>> {
@@ -141,12 +149,18 @@ pub async fn create(
     handle: &str,
     name: &str,
     runtime: &str,
+    can_work: bool,
     can_intake: bool,
     server: &str,
 ) -> AppResult<Minted> {
+    if !can_work && !can_intake {
+        return Err(AppError::BadRequest(NO_ROLE.into()));
+    }
     let handle = handle.trim().to_lowercase();
     if handle.is_empty()
-        || !handle.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !handle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(AppError::BadRequest(
             "a handle is one word: letters, digits, '-' or '_'".into(),
@@ -157,18 +171,22 @@ pub async fn create(
         n => n.to_owned(),
     };
     if !RUNTIMES.contains(&runtime) {
-        return Err(AppError::BadRequest(format!("runtime must be one of {}", RUNTIMES.join(", "))));
+        return Err(AppError::BadRequest(format!(
+            "runtime must be one of {}",
+            RUNTIMES.join(", ")
+        )));
     }
 
     let mut tx = state.db.begin().await?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent (owner_id, handle, name, runtime, can_intake) VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO agent (owner_id, handle, name, runtime, can_work, can_intake) VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id",
     )
     .bind(owner)
     .bind(&handle)
     .bind(&name)
     .bind(runtime)
+    .bind(can_work)
     .bind(can_intake)
     .fetch_one(&mut *tx)
     .await
@@ -183,7 +201,11 @@ pub async fn create(
     tx.commit().await?;
 
     let prompt = prompt(state, owner, &agent, &raw, server).await?;
-    Ok(Minted { agent, token: raw, prompt })
+    Ok(Minted {
+        agent,
+        token: raw,
+        prompt,
+    })
 }
 
 /// A fresh token under the same agent. Every live one it had stops working,
@@ -198,31 +220,73 @@ pub async fn rotate(state: &AppState, owner: Uuid, id: Uuid, server: &str) -> Ap
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("no such agent of yours".into()))?;
-    sqlx::query("UPDATE credential SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE credential SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     let (raw, _) = token::mint_agent(&mut tx, id, owner, &handle).await?;
     let agent = one(&mut *tx, id).await?;
     tx.commit().await?;
 
     let prompt = prompt(state, owner, &agent, &raw, server).await?;
-    Ok(Minted { agent, token: raw, prompt })
+    Ok(Minted {
+        agent,
+        token: raw,
+        prompt,
+    })
 }
 
-/// Turn intake on or off for one of your agents. Off stops new filings; what
-/// it already filed stays where it is.
-pub async fn set_intake(state: &AppState, owner: Uuid, id: Uuid, can_intake: bool) -> AppResult<Agent> {
-    let found = sqlx::query("UPDATE agent SET can_intake = $3 WHERE id = $1 AND owner_id = $2 AND revoked_at IS NULL")
-        .bind(id)
-        .bind(owner)
-        .bind(can_intake)
-        .execute(&state.db)
-        .await?;
-    if found.rows_affected() == 0 {
-        return Err(AppError::NotFound("no such agent of yours".into()));
+const NO_ROLE: &str =
+    "An agent needs at least one role: taking tasks you hand off, or creating tasks for you.";
+
+/// Switch an agent's roles. Intake off stops new filings; what it already
+/// filed stays where it is. Work off is refused while it still holds an
+/// unfinished task, so nothing is left with an agent that won't work on it.
+pub async fn set_roles(
+    state: &AppState,
+    owner: Uuid,
+    id: Uuid,
+    can_work: Option<bool>,
+    can_intake: Option<bool>,
+) -> AppResult<Agent> {
+    let mut tx = state.db.begin().await?;
+    let (work, intake): (bool, bool) = sqlx::query_as(
+        "SELECT can_work, can_intake FROM agent WHERE id = $1 AND owner_id = $2 AND revoked_at IS NULL FOR UPDATE",
+    )
+    .bind(id)
+    .bind(owner)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("no such agent of yours".into()))?;
+    let (work, intake) = (can_work.unwrap_or(work), can_intake.unwrap_or(intake));
+    if !work && !intake {
+        return Err(AppError::BadRequest(NO_ROLE.into()));
     }
-    one(&state.db, id).await
+    if !work {
+        let held: Option<String> = sqlx::query_scalar(
+            "SELECT title FROM task WHERE delegate_agent_id = $1 AND done_at IS NULL AND status <> 'dropped'
+              ORDER BY delegated_at DESC NULLS LAST LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(title) = held {
+            return Err(AppError::Conflict(format!(
+                "It still holds \"{title}\". Take its tasks back before it stops working on tasks."
+            )));
+        }
+    }
+    sqlx::query("UPDATE agent SET can_work = $2, can_intake = $3 WHERE id = $1")
+        .bind(id)
+        .bind(work)
+        .bind(intake)
+        .execute(&mut *tx)
+        .await?;
+    let agent = one(&mut *tx, id).await?;
+    tx.commit().await?;
+    Ok(agent)
 }
 
 /// Revoke an agent: its tokens stop working and every unfinished task it held
@@ -240,10 +304,12 @@ pub async fn revoke(state: &AppState, owner: Uuid, id: Uuid) -> AppResult<Agent>
     if found.rows_affected() == 0 {
         return Err(AppError::NotFound("no such agent of yours".into()));
     }
-    sqlx::query("UPDATE credential SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE credential SET revoked_at = now() WHERE agent_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         "UPDATE task SET delegate_agent_id = NULL, agent_state = 'stopped', review_target = NULL
           WHERE delegate_agent_id = $1 AND done_at IS NULL AND status <> 'dropped'",
@@ -266,12 +332,21 @@ pub fn render(template: &str, server: &str, handle: &str, name: &str, owner: &st
 }
 
 async fn owner_name(db: impl sqlx::PgExecutor<'_>, owner: Uuid) -> AppResult<String> {
-    Ok(sqlx::query_scalar("SELECT name FROM person WHERE id = $1").bind(owner).fetch_one(db).await?)
+    Ok(sqlx::query_scalar("SELECT name FROM person WHERE id = $1")
+        .bind(owner)
+        .fetch_one(db)
+        .await?)
 }
 
 /// The paste-once text that connects an agent. It carries the token, and
 /// points at setup steps that only ever refer to it.
-async fn prompt(state: &AppState, owner: Uuid, agent: &Agent, token: &str, server: &str) -> AppResult<String> {
+async fn prompt(
+    state: &AppState,
+    owner: Uuid,
+    agent: &Agent,
+    token: &str,
+    server: &str,
+) -> AppResult<String> {
     let owner = owner_name(&state.db, owner).await?;
     Ok(format!(
         "Set yourself up as {owner}'s agent in Airtribe Control Plane. This is a one-time setup \
@@ -312,7 +387,12 @@ pub async fn identity(state: &AppState, id: Uuid) -> AppResult<Identity> {
     .bind(id)
     .fetch_one(&state.db)
     .await?;
-    Ok(Identity { agent, owner_id, owner_name, owner_email })
+    Ok(Identity {
+        agent,
+        owner_id,
+        owner_name,
+        owner_email,
+    })
 }
 
 pub async fn me(state: &AppState, id: Uuid, server: &str) -> AppResult<Value> {
@@ -348,7 +428,10 @@ pub async fn hello(
 ) -> AppResult<Value> {
     if let Some(r) = runtime {
         if !RUNTIMES.contains(&r) {
-            return Err(AppError::BadRequest(format!("runtime must be one of {}", RUNTIMES.join(", "))));
+            return Err(AppError::BadRequest(format!(
+                "runtime must be one of {}",
+                RUNTIMES.join(", ")
+            )));
         }
     }
     sqlx::query(
@@ -364,28 +447,56 @@ pub async fn hello(
     me(state, id, server).await
 }
 
-pub async fn skill(state: &AppState, id: Uuid, name: Option<&str>, server: &str) -> AppResult<String> {
+pub async fn skill(
+    state: &AppState,
+    id: Uuid,
+    name: Option<&str>,
+    server: &str,
+) -> AppResult<String> {
     let who = identity(state, id).await?;
     let template = match name {
         None | Some("agent") => SKILL,
         Some("intake") if who.agent.can_intake => INTAKE_SKILL,
-        Some("intake") => {
-            return Err(AppError::Forbidden(
-                "the intake skill is for agents your owner lets create tasks; ask them to turn that on".into(),
-            ))
+        Some("intake") => return Err(AppError::Forbidden(
+            "the intake skill is for agents your owner lets create tasks; ask them to turn that on"
+                .into(),
+        )),
+        Some(other) => {
+            return Err(AppError::NotFound(format!(
+                "no skill called '{other}'; try 'agent' or 'intake'"
+            )))
         }
-        Some(other) => return Err(AppError::NotFound(format!("no skill called '{other}'; try 'agent' or 'intake'"))),
     };
-    Ok(render(template, server, &who.agent.handle, &who.agent.name, &who.owner_name))
+    Ok(render(
+        template,
+        server,
+        &who.agent.handle,
+        &who.agent.name,
+        &who.owner_name,
+    ))
 }
 
-pub async fn onboarding(state: &AppState, id: Uuid, runtime: Option<&str>, server: &str) -> AppResult<String> {
+pub async fn onboarding(
+    state: &AppState,
+    id: Uuid,
+    runtime: Option<&str>,
+    server: &str,
+) -> AppResult<String> {
     let who = identity(state, id).await?;
     let runtime = runtime.unwrap_or(&who.agent.runtime);
     if !RUNTIMES.contains(&runtime) {
-        return Err(AppError::BadRequest(format!("runtime must be one of {}", RUNTIMES.join(", "))));
+        return Err(AppError::BadRequest(format!(
+            "runtime must be one of {}",
+            RUNTIMES.join(", ")
+        )));
     }
-    Ok(render(onboarding_template(runtime), server, &who.agent.handle, &who.agent.name, &who.owner_name))
+    Ok(render(
+        onboarding_template(runtime),
+        server,
+        &who.agent.handle,
+        &who.agent.name,
+        &who.owner_name,
+    ))
 }
 
 pub async fn tasks(state: &AppState, id: Uuid) -> AppResult<Vec<TaskRow>> {
@@ -422,10 +533,25 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
         return Err(not_delegated(task_id));
     }
     let department = row.discipline.as_deref();
-    let track = if department == Some("design") { "design" } else { "eng" };
+    let track = if department == Some("design") {
+        "design"
+    } else {
+        "eng"
+    };
     let allowed = next_statuses(department, &row.task.status);
 
-    // A standalone task has no project: `project` is null.
+    // Whose Mac the agent works on: the owner of the agent this task is
+    // delegated to, since that is whose repo folders and whose private
+    // `user_folder` list mean anything here.
+    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+
+    // A standalone task has no project: `project` is null. `has_repo_path`
+    // says whether it gave the owner somewhere to work — if not, `folder`
+    // below is what does.
+    let mut has_repo_path = false;
     let project = match row.project_id {
         None => Value::Null,
         Some(project_id) => {
@@ -433,14 +559,13 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
             let resources = artifact::list(state, None, "project".into(), project_id).await?;
             // Each repo with the folder its owner keeps it in: the agent works on the
             // owner's Mac, so the owner's path is the one that means anything here.
-            let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
-                .bind(id)
-                .fetch_one(&state.db)
-                .await?;
             let repos: Vec<Value> = repo::list(state, Some(owner_id), project_id)
                 .await?
                 .into_iter()
-                .map(|r| json!({ "name": r.name, "url": r.url, "localPath": r.my_path }))
+                .map(|r| {
+                    has_repo_path |= r.my_path.is_some();
+                    json!({ "name": r.name, "url": r.url, "localPath": r.my_path })
+                })
                 .collect();
             json!({
                 "id": project.id,
@@ -452,18 +577,49 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
             })
         }
     };
-    let owner: Option<(Uuid, String, String, String)> = sqlx::query_as(
-        "SELECT id, name, email, department FROM person WHERE id = $1",
-    )
-    .bind(row.task.assignee_person_id)
-    .fetch_optional(&state.db)
-    .await?;
+
+    // No project repo to work in: fall back to the owner's own folders —
+    // whichever one this task pins by name, else their default. Neither
+    // exists, `folder` is null and the worker still has to ask.
+    let folder: Option<Value> = if has_repo_path {
+        None
+    } else {
+        // `pinned` is NULL, not false, when there is no pin ($2 is NULL) to
+        // compare against — decoded as `Option<bool>` for exactly that case.
+        sqlx::query_as::<_, (String, String, Option<bool>)>(
+            "SELECT name, path, name = $2::text AS pinned FROM user_folder
+              WHERE person_id = $1 AND (is_default OR name = $2::text)
+              ORDER BY pinned DESC LIMIT 1",
+        )
+        .bind(owner_id)
+        .bind(row.task.folder_name.clone())
+        .fetch_optional(&state.db)
+        .await?
+        .map(|(name, path, pinned)| {
+            let source = if pinned.unwrap_or(false) { "pinned" } else { "default" };
+            json!({ "name": name, "path": path, "source": source })
+        })
+    };
+    let owner: Option<(Uuid, String, String, String)> =
+        sqlx::query_as("SELECT id, name, email, department FROM person WHERE id = $1")
+            .bind(row.task.assignee_person_id)
+            .fetch_optional(&state.db)
+            .await?;
     let notes = note::list(state, task_id, row.task.assignee_person_id).await?;
 
     let mut artifacts = serde_json::Map::new();
-    for a in artifact::list(state, None, "task".into(), task_id).await?.into_iter().rev() {
+    for a in artifact::list(state, None, "task".into(), task_id)
+        .await?
+        .into_iter()
+        .rev()
+    {
         let kind = a.kind.clone();
-        artifacts.entry(kind).or_insert_with(|| json!([])).as_array_mut().unwrap().push(json!(a));
+        artifacts
+            .entry(kind)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(json!(a));
     }
 
     let related: Vec<Related> = sqlx::query_as(
@@ -485,18 +641,33 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
     .await?;
     let (blocked_by, blocks): (Vec<Related>, Vec<Related>) =
         related.into_iter().partition(|r| r.relation == "blockedBy");
+    // Where it was filed from, the thread before it and what came with it.
+    // Unmasked: the agent works for the owner, who may read their own DMs.
+    let source: Option<Value> = sqlx::query_scalar(
+        "SELECT json_build_object('kind', s.kind, 'url', s.url, 'channelName', s.channel_name,
+                'author', s.author, 'text', s.text, 'receivedAt', s.received_at, 'thread', s.thread,
+                'files', coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime)
+                                                   ORDER BY f.created_at, f.name)
+                                     FROM task_file f WHERE f.task_id = s.task_id), '[]'))
+           FROM task_source s WHERE s.task_id = $1 AND NOT s.appended",
+    )
+    .bind(task_id)
+    .fetch_optional(&state.db)
+    .await?;
 
     Ok(json!({
         "task": row,
         "track": track,
         "allowedNext": allowed,
         "project": project,
+        "folder": folder,
         "owner": owner.map(|(id, name, email, department)| json!({
             "id": id, "name": name, "email": email, "department": department,
         })),
         "notes": notes,
         "artifacts": artifacts,
         "related": { "blockedBy": blocked_by, "blocks": blocks },
+        "source": source,
     }))
 }
 
@@ -553,17 +724,37 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
     if status == "dropped" || finished || agent_state.as_deref() == Some("stopped") {
         return Err(AppError::Forbidden(format!(
             "task {task_id} is {} — you no longer hold it; stop work on it and check your inbox",
-            if status == "dropped" { "dropped" } else { "finished" }
+            if status == "dropped" {
+                "dropped"
+            } else {
+                "finished"
+            }
         )));
     }
 
     // The agent moves the task as the person who handed it off, so the track
     // rules and the assignee check in `task::transition` apply unchanged.
-    let actor = Actor { label: format!("{name} (agent)"), person_id: Some(owner), can_apply: true };
-    Ok(Delegated { tx, actor, status, agent_state, department, attached })
+    let actor = Actor {
+        label: format!("{name} (agent)"),
+        person_id: Some(owner),
+        can_apply: true,
+    };
+    Ok(Delegated {
+        tx,
+        actor,
+        status,
+        agent_state,
+        department,
+        attached,
+    })
 }
 
-async fn set_state(tx: &mut PgTransaction<'_>, task_id: Uuid, state: &str, review_target: Option<&str>) -> AppResult<()> {
+async fn set_state(
+    tx: &mut PgTransaction<'_>,
+    task_id: Uuid,
+    state: &str,
+    review_target: Option<&str>,
+) -> AppResult<()> {
     sqlx::query("UPDATE task SET agent_state = $2, review_target = $3 WHERE id = $1")
         .bind(task_id)
         .bind(state)
@@ -669,7 +860,12 @@ const LOG_MAX_CHARS: usize = 2000;
 
 /// Append lines to the task's step log, numbered on from the last one. The
 /// task row is locked by `delegated`, so two posts cannot take the same seq.
-pub async fn log(state: &AppState, agent: Uuid, task_id: Uuid, lines: &[String]) -> AppResult<Value> {
+pub async fn log(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    lines: &[String],
+) -> AppResult<Value> {
     if lines.is_empty() || lines.len() > LOG_MAX_LINES {
         return Err(AppError::BadRequest(format!(
             "send 1 to {LOG_MAX_LINES} lines per request; you sent {}",
@@ -756,9 +952,22 @@ pub async fn submit(
             "a submission needs a summary your owner can check: what you did and how you verified it".into(),
         ));
     }
-    let reason = task::check_move(d.department.as_deref(), &d.status, target, &d.attached, manual_reason)?;
+    let reason = task::check_move(
+        d.department.as_deref(),
+        &d.status,
+        target,
+        &d.attached,
+        manual_reason,
+    )?;
 
-    note::insert(&mut d.tx, task_id, Author::Agent(agent), "submission", summary).await?;
+    note::insert(
+        &mut d.tx,
+        task_id,
+        Author::Agent(agent),
+        "submission",
+        summary,
+    )
+    .await?;
     sqlx::query(
         "UPDATE task SET agent_state = 'in_review', review_target = $2, manual_reason = $3 WHERE id = $1",
     )
@@ -784,7 +993,12 @@ pub struct Event {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-async fn events_after(state: &AppState, agent: Uuid, after: i64, limit: i64) -> AppResult<Vec<Event>> {
+async fn events_after(
+    state: &AppState,
+    agent: Uuid,
+    after: i64,
+    limit: i64,
+) -> AppResult<Vec<Event>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.task_id, t.title AS task_title, e.kind, e.payload, e.created_at
            FROM agent_event e JOIN task t ON t.id = e.task_id
@@ -810,13 +1024,20 @@ pub const MAX_WAIT: u64 = 25;
 /// held connections would starve the app of the ten it has.
 /// ponytail: one Postgres connection per waiting agent. A team's worth is
 /// nothing; share one listener across requests if there are ever hundreds.
-pub async fn events(state: &AppState, agent: Uuid, after: Option<i64>, wait: u64) -> AppResult<Vec<Event>> {
+pub async fn events(
+    state: &AppState,
+    agent: Uuid,
+    after: Option<i64>,
+    wait: u64,
+) -> AppResult<Vec<Event>> {
     let after = match after {
         Some(a) => a,
-        None => sqlx::query_scalar("SELECT event_cursor FROM agent WHERE id = $1")
-            .bind(agent)
-            .fetch_one(&state.db)
-            .await?,
+        None => {
+            sqlx::query_scalar("SELECT event_cursor FROM agent WHERE id = $1")
+                .bind(agent)
+                .fetch_one(&state.db)
+                .await?
+        }
     };
     let found = events_after(state, agent, after, 100).await?;
     if !found.is_empty() || wait == 0 {
@@ -892,7 +1113,11 @@ fn summarise(e: &Event) -> String {
             })
             .unwrap_or_default(),
         "note" | "answer" | "instruction" | "approved" | "changes_requested" => {
-            format!("{}: {}", p["author"].as_str().unwrap_or("someone"), one_line(text("body"), 200))
+            format!(
+                "{}: {}",
+                p["author"].as_str().unwrap_or("someone"),
+                one_line(text("body"), 200)
+            )
         }
         "artifact" => format!("{} {}", text("kind"), text("url")),
         "taken_back" | "dropped" => "stop work on it now".into(),
@@ -924,7 +1149,10 @@ pub async fn inbox(state: &AppState, agent: Uuid) -> AppResult<String> {
         "Airtribe inbox for {} ({}), working for {}.\n\
          Skill: airtribe-agent {}. If your installed copy has a different `version:`, \
          download it again from /api/agent/skill before acting.\n",
-        who.agent.name, who.agent.handle, who.owner_name, skill_version()
+        who.agent.name,
+        who.agent.handle,
+        who.owner_name,
+        skill_version()
     );
     if waiting.is_empty() && events.is_empty() {
         out.push_str("\nNothing needs you.\n");
@@ -965,17 +1193,29 @@ async fn owned(
     person: Uuid,
     task_id: Uuid,
     what: &str,
-) -> AppResult<(Option<Uuid>, Option<String>, Option<String>, Option<String>, bool)> {
-    let row: (Option<Uuid>, Option<Uuid>, Option<String>, Option<String>, Option<String>, bool) =
-        sqlx::query_as(
-            "SELECT assignee_person_id, delegate_agent_id, agent_state, review_target, manual_reason,
+) -> AppResult<(
+    Option<Uuid>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    bool,
+)> {
+    let row: (
+        Option<Uuid>,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT assignee_person_id, delegate_agent_id, agent_state, review_target, manual_reason,
                     done_at IS NOT NULL OR status = 'dropped'
                FROM task WHERE id = $1 FOR UPDATE",
-        )
-        .bind(task_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    )
+    .bind(task_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
     if row.0 != Some(person) {
         return Err(AppError::Forbidden(format!(
             "only the person this task is assigned to can {what}"
@@ -984,23 +1224,36 @@ async fn owned(
     Ok((row.1, row.2, row.3, row.4, row.5))
 }
 
-pub async fn hand_off(state: &AppState, person: Uuid, task_id: Uuid, agent: Uuid) -> AppResult<TaskRow> {
+pub async fn hand_off(
+    state: &AppState,
+    person: Uuid,
+    task_id: Uuid,
+    agent: Uuid,
+) -> AppResult<TaskRow> {
     let mut tx = state.db.begin().await?;
-    let (delegate, agent_state, _, _, finished) = owned(&mut tx, person, task_id, "hand it off").await?;
+    let (delegate, agent_state, _, _, finished) =
+        owned(&mut tx, person, task_id, "hand it off").await?;
     if finished {
-        return Err(AppError::Conflict("this task is finished; there is nothing to hand off".into()));
+        return Err(AppError::Conflict(
+            "this task is finished; there is nothing to hand off".into(),
+        ));
     }
-    let live: Option<bool> = sqlx::query_scalar(
-        "SELECT revoked_at IS NULL FROM agent WHERE id = $1 AND owner_id = $2",
+    let found: Option<(bool, bool, String)> = sqlx::query_as(
+        "SELECT revoked_at IS NULL, can_work, name FROM agent WHERE id = $1 AND owner_id = $2 FOR SHARE",
     )
     .bind(agent)
     .bind(person)
     .fetch_optional(&mut *tx)
     .await?;
-    match live {
+    match found {
         None => return Err(AppError::NotFound("no such agent of yours".into())),
-        Some(false) => return Err(AppError::Conflict("that agent has been revoked".into())),
-        Some(true) => {}
+        Some((false, ..)) => return Err(AppError::Conflict("that agent has been revoked".into())),
+        Some((true, false, name)) => {
+            return Err(AppError::Conflict(format!(
+                "{name} only files tasks; it doesn't take hand-offs. Hand this to an agent that works on tasks."
+            )))
+        }
+        Some((true, true, _)) => {}
     }
     // Handing it to the agent that already holds it is a no-op, not a
     // second `handed_off` for it to act on.
@@ -1040,25 +1293,48 @@ pub async fn answer(state: &AppState, person: Uuid, task_id: Uuid, body: &str) -
     let mut tx = state.db.begin().await?;
     let (delegate, agent_state, ..) = owned(&mut tx, person, task_id, "answer its agent").await?;
     if delegate.is_none() || agent_state.as_deref() != Some("needs_input") {
-        return Err(AppError::Conflict("there is no open question on this task".into()));
+        return Err(AppError::Conflict(
+            "there is no open question on this task".into(),
+        ));
     }
     set_state(&mut tx, task_id, "working", None).await?;
-    let note = note::insert(&mut tx, task_id, Author::Person(Some(person)), "answer", body).await?;
+    let note = note::insert(
+        &mut tx,
+        task_id,
+        Author::Person(Some(person)),
+        "answer",
+        body,
+    )
+    .await?;
     tx.commit().await?;
     Ok(note)
 }
 
 /// A private instruction to the agent holding the task. Only its owner and
 /// admins see it on the task; the agent hears it as an `instruction` event.
-pub async fn instruct(state: &AppState, person: Uuid, task_id: Uuid, body: &str) -> AppResult<Note> {
+pub async fn instruct(
+    state: &AppState,
+    person: Uuid,
+    task_id: Uuid,
+    body: &str,
+) -> AppResult<Note> {
     let mut tx = state.db.begin().await?;
-    let (delegate, agent_state, _, _, finished) = owned(&mut tx, person, task_id, "instruct its agent").await?;
-    if delegate.is_none() || finished || matches!(agent_state.as_deref(), Some("done" | "stopped")) {
+    let (delegate, agent_state, _, _, finished) =
+        owned(&mut tx, person, task_id, "instruct its agent").await?;
+    if delegate.is_none() || finished || matches!(agent_state.as_deref(), Some("done" | "stopped"))
+    {
         return Err(AppError::Conflict(
             "no agent is working on this task right now; hand it off first".into(),
         ));
     }
-    let note = note::insert(&mut tx, task_id, Author::Person(Some(person)), "instruction", body).await?;
+    let note = note::insert(
+        &mut tx,
+        task_id,
+        Author::Person(Some(person)),
+        "instruction",
+        body,
+    )
+    .await?;
     tx.commit().await?;
     Ok(note)
 }
@@ -1074,19 +1350,37 @@ pub async fn review(
     body: Option<&str>,
 ) -> AppResult<TaskRow> {
     let mut tx = state.db.begin().await?;
-    let (delegate, agent_state, target, reason, _) = owned(&mut tx, person, task_id, "review its agent's work").await?;
-    let (Some(_), Some("in_review"), Some(target)) = (delegate, agent_state.as_deref(), target) else {
-        return Err(AppError::Conflict("there is no submission waiting for review on this task".into()));
+    let (delegate, agent_state, target, reason, _) =
+        owned(&mut tx, person, task_id, "review its agent's work").await?;
+    let (Some(_), Some("in_review"), Some(target)) = (delegate, agent_state.as_deref(), target)
+    else {
+        return Err(AppError::Conflict(
+            "there is no submission waiting for review on this task".into(),
+        ));
     };
     let body = body.map(str::trim).filter(|b| !b.is_empty());
     if approve {
         task::transition(&mut tx, actor, task_id, target, reason, None).await?;
         set_state(&mut tx, task_id, "done", None).await?;
-        note::insert(&mut tx, task_id, Author::Person(Some(person)), "review", body.unwrap_or("Approved.")).await?;
+        note::insert(
+            &mut tx,
+            task_id,
+            Author::Person(Some(person)),
+            "review",
+            body.unwrap_or("Approved."),
+        )
+        .await?;
     } else {
         let body = body.ok_or_else(|| AppError::BadRequest("say what needs to change".into()))?;
         set_state(&mut tx, task_id, "working", None).await?;
-        note::insert(&mut tx, task_id, Author::Person(Some(person)), "review", body).await?;
+        note::insert(
+            &mut tx,
+            task_id,
+            Author::Person(Some(person)),
+            "review",
+            body,
+        )
+        .await?;
     }
     tx.commit().await?;
     task::get(state, task_id, Some(person)).await
@@ -1192,11 +1486,55 @@ pub struct Source {
     /// A direct message. A Slack channel id starting with `D` is one anyway.
     #[serde(default)]
     pub private: Option<bool>,
+    /// The earlier messages in its thread, oldest first, so whoever works the
+    /// task reads the conversation it came out of. Private with the message.
+    #[serde(default)]
+    pub thread: Vec<ThreadMessage>,
 }
+
+/// One earlier message in the thread, text in Slack formatting with names
+/// resolved like `Source::text`.
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadMessage {
+    pub author: String,
+    pub text: String,
+    #[serde(default)]
+    pub ts: Option<String>,
+    pub received_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The most earlier messages a source carries, and the longest each may be.
+pub const THREAD_LIMIT: usize = 30;
+pub const THREAD_TEXT_LIMIT: usize = 4_000;
 
 impl Source {
     fn is_private(&self) -> bool {
         self.private.unwrap_or(false) || self.channel.starts_with('D')
+    }
+
+    /// The thread as stored, once it is within the limits.
+    fn thread_json(&self) -> AppResult<Value> {
+        if self.thread.len() > THREAD_LIMIT {
+            return Err(AppError::BadRequest(format!(
+                "source.thread has {} messages; send at most the {THREAD_LIMIT} just before this one, oldest first",
+                self.thread.len()
+            )));
+        }
+        if let Some((i, m)) = self
+            .thread
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.text.chars().count() > THREAD_TEXT_LIMIT)
+        {
+            return Err(AppError::BadRequest(format!(
+                "source.thread[{i}] (from {}) is {} characters; each earlier message is at most {THREAD_TEXT_LIMIT}; \
+                 cut it down to the part that matters",
+                m.author,
+                m.text.chars().count()
+            )));
+        }
+        Ok(json!(self.thread))
     }
 }
 
@@ -1223,19 +1561,18 @@ struct Intaker {
 /// intakes, so a message raced in twice is refused by the pre-check rather
 /// than the constraint.
 async fn intaker(tx: &mut PgTransaction<'_>, agent: Uuid) -> AppResult<Intaker> {
-    let (name, owner, owner_name, can_intake): (String, Uuid, String, bool) =
-        sqlx::query_as(
-            "SELECT a.name, a.owner_id, p.name, a.can_intake
+    let (name, owner, owner_name, can_intake): (String, Uuid, String, bool) = sqlx::query_as(
+        "SELECT a.name, a.owner_id, p.name, a.can_intake
                FROM agent a JOIN person p ON p.id = a.owner_id
               WHERE a.id = $1 FOR UPDATE OF a",
-        )
-        .bind(agent)
-        .fetch_one(&mut **tx)
-        .await?;
+    )
+    .bind(agent)
+    .fetch_one(&mut **tx)
+    .await?;
     if !can_intake {
         return Err(AppError::Forbidden(format!(
             "{name} is not allowed to create tasks: {owner_name} has not turned on intake for it. \
-             Ask them to enable \"Can create tasks for me\" on your agent card, then try again."
+             Ask them to turn on \"Creates tasks for me\" on your agent card, then try again."
         )));
     }
     Ok(Intaker { name, owner })
@@ -1252,11 +1589,13 @@ fn dedupe_conflict(e: sqlx::Error, key: &str) -> AppError {
 
 /// The task this agent already filed or appended `key` to, if any.
 async fn seen(tx: &mut PgTransaction<'_>, agent: Uuid, key: &str) -> AppResult<Option<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT task_id FROM task_source WHERE agent_id = $1 AND source_key = $2")
-        .bind(agent)
-        .bind(key)
-        .fetch_optional(&mut **tx)
-        .await?)
+    Ok(sqlx::query_scalar(
+        "SELECT task_id FROM task_source WHERE agent_id = $1 AND source_key = $2",
+    )
+    .bind(agent)
+    .bind(key)
+    .fetch_optional(&mut **tx)
+    .await?)
 }
 
 /// File a task for the owner from something the agent read. It lands in
@@ -1265,7 +1604,9 @@ async fn seen(tx: &mut PgTransaction<'_>, agent: Uuid, key: &str) -> AppResult<O
 pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskRow> {
     let title = i.title.trim();
     if title.is_empty() {
-        return Err(AppError::BadRequest("a filed task needs a title: one line saying what is wrong or wanted".into()));
+        return Err(AppError::BadRequest(
+            "a filed task needs a title: one line saying what is wrong or wanted".into(),
+        ));
     }
     task::check_category(&i.category)?;
     if !(0.0..=1.0).contains(&i.confidence) {
@@ -1275,16 +1616,26 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
         )));
     }
     if i.reason.trim().is_empty() {
-        return Err(AppError::BadRequest("say in one sentence why this is a task (reason)".into()));
+        return Err(AppError::BadRequest(
+            "say in one sentence why this is a task (reason)".into(),
+        ));
     }
     let priority = i.priority.unwrap_or(2);
     if !(0..=4).contains(&priority) {
-        return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+        return Err(AppError::BadRequest(
+            "priority must be between 0 and 4".into(),
+        ));
     }
-    let (kind, key) = (i.source.kind.trim().to_lowercase(), i.source.key.trim().to_owned());
+    let (kind, key) = (
+        i.source.kind.trim().to_lowercase(),
+        i.source.key.trim().to_owned(),
+    );
     if kind.is_empty() || key.is_empty() {
-        return Err(AppError::BadRequest("source.kind and source.key are required".into()));
+        return Err(AppError::BadRequest(
+            "source.kind and source.key are required".into(),
+        ));
     }
+    let thread = i.source.thread_json()?;
 
     let mut tx = state.db.begin().await?;
     let who = intaker(&mut tx, agent).await?;
@@ -1295,7 +1646,11 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
         )));
     }
 
-    let actor = Actor { label: format!("{} (agent)", who.name), person_id: Some(who.owner), can_apply: true };
+    let actor = Actor {
+        label: format!("{} (agent)", who.name),
+        person_id: Some(who.owner),
+        can_apply: true,
+    };
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO task (title, body, priority, status, category,
                            assignee_kind, assignee_person_id, created_by)
@@ -1311,8 +1666,8 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     let s = &i.source;
     sqlx::query(
         "INSERT INTO task_source (task_id, agent_id, kind, source_key, url, channel, channel_name,
-                                  author, text, private, received_at, reason, confidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                                  author, text, private, received_at, reason, confidence, thread)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(id)
     .bind(agent)
@@ -1327,6 +1682,7 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     .bind(s.received_at)
     .bind(i.reason.trim())
     .bind(i.confidence)
+    .bind(thread)
     .execute(&mut *tx)
     .await
     .map_err(|e| dedupe_conflict(e, &key))?;
@@ -1360,17 +1716,31 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
 fn source_label(kind: &str) -> String {
     match kind {
         "github" => "GitHub".to_owned(),
-        _ => kind.chars().take(1).flat_map(char::to_uppercase).chain(kind.chars().skip(1)).collect(),
+        _ => kind
+            .chars()
+            .take(1)
+            .flat_map(char::to_uppercase)
+            .chain(kind.chars().skip(1))
+            .collect(),
     }
 }
 
 /// Another message about a task this agent filed: a note with the permalink,
 /// and the message's key remembered so it is never appended twice.
-pub async fn intake_append(state: &AppState, agent: Uuid, task_id: Uuid, s: Source, text: &str) -> AppResult<Note> {
+pub async fn intake_append(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    s: Source,
+    text: &str,
+) -> AppResult<Note> {
     let (kind, key) = (s.kind.trim().to_lowercase(), s.key.trim().to_owned());
     if kind.is_empty() || key.is_empty() {
-        return Err(AppError::BadRequest("source.kind and source.key are required".into()));
+        return Err(AppError::BadRequest(
+            "source.kind and source.key are required".into(),
+        ));
     }
+    let thread = s.thread_json()?;
     let mut tx = state.db.begin().await?;
     intaker(&mut tx, agent).await?;
     let filed: bool = sqlx::query_scalar(
@@ -1393,8 +1763,8 @@ pub async fn intake_append(state: &AppState, agent: Uuid, task_id: Uuid, s: Sour
     let private = s.is_private();
     sqlx::query(
         "INSERT INTO task_source (task_id, agent_id, appended, kind, source_key, url, channel,
-                                  channel_name, author, text, private, received_at)
-         VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                                  channel_name, author, text, private, received_at, thread)
+         VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(task_id)
     .bind(agent)
@@ -1407,6 +1777,7 @@ pub async fn intake_append(state: &AppState, agent: Uuid, task_id: Uuid, s: Sour
     .bind(&s.text)
     .bind(private)
     .bind(s.received_at)
+    .bind(thread)
     .execute(&mut *tx)
     .await
     .map_err(|e| dedupe_conflict(e, &key))?;
@@ -1417,7 +1788,12 @@ pub async fn intake_append(state: &AppState, agent: Uuid, task_id: Uuid, s: Sour
     } else {
         let text = text.trim();
         let text = if text.is_empty() { s.text.trim() } else { text };
-        format!("{text}\n\u{2014} {} in {}: {}", s.author, s.channel_name.as_deref().unwrap_or(&s.channel), s.url)
+        format!(
+            "{text}\n\u{2014} {} in {}: {}",
+            s.author,
+            s.channel_name.as_deref().unwrap_or(&s.channel),
+            s.url
+        )
     };
     let note = note::insert(&mut tx, task_id, Author::Agent(agent), "note", &body).await?;
     tx.commit().await?;
@@ -1485,13 +1861,24 @@ pub struct Attachment {
 /// ponytail: PNG, GIF and JPEG dimensions only; WebP and PDF come back
 /// without, and the app sizes those once it has decoded them.
 fn sniff(mime: &str, b: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
-    let be16 = |i: usize| b.get(i..i + 2).map(|s| u16::from_be_bytes([s[0], s[1]]) as i32);
-    let le16 = |i: usize| b.get(i..i + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as i32);
-    let be32 = |i: usize| b.get(i..i + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as i32);
+    let be16 = |i: usize| {
+        b.get(i..i + 2)
+            .map(|s| u16::from_be_bytes([s[0], s[1]]) as i32)
+    };
+    let le16 = |i: usize| {
+        b.get(i..i + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]) as i32)
+    };
+    let be32 = |i: usize| {
+        b.get(i..i + 4)
+            .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as i32)
+    };
     match mime {
         "image/png" if b.starts_with(b"\x89PNG\r\n\x1a\n") => Some((be32(16), be32(20))),
         "image/gif" if b.starts_with(b"GIF8") => Some((le16(6), le16(8))),
-        "image/webp" if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" => Some((None, None)),
+        "image/webp" if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" => {
+            Some((None, None))
+        }
         "application/pdf" if b.starts_with(b"%PDF") => Some((None, None)),
         "image/jpeg" if b.starts_with(&[0xFF, 0xD8, 0xFF]) => {
             // Walk the segments to the frame header (SOF0–SOF15 but DHT,
@@ -1512,14 +1899,27 @@ fn sniff(mime: &str, b: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
 
 /// Attach a file that came with a message this agent filed: a screenshot, a
 /// PDF. Only on tasks it filed; the same name from the same message once.
-pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Attachment) -> AppResult<FileMeta> {
+pub async fn intake_attach(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    a: Attachment,
+) -> AppResult<FileMeta> {
     use base64::Engine;
     let name = a.name.trim();
     if name.is_empty() {
-        return Err(AppError::BadRequest("a file needs a name, e.g. screenshot.png".into()));
+        return Err(AppError::BadRequest(
+            "a file needs a name, e.g. screenshot.png".into(),
+        ));
     }
     let mime = a.mime.trim().to_lowercase();
-    const TYPES: [&str; 5] = ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"];
+    const TYPES: [&str; 5] = [
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "application/pdf",
+    ];
     if !TYPES.contains(&mime.as_str()) {
         return Err(AppError::UnsupportedType(format!(
             "{name} is {mime}; only PNG, JPEG, GIF and WebP images and PDFs can be attached. Link anything else in the task instead."
@@ -1531,10 +1931,18 @@ pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Atta
             bytes as f64 / (1024.0 * 1024.0)
         ))
     };
-    let data: String = a.data_base64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let data: String = a
+        .data_base64
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data.as_bytes())
-        .map_err(|e| AppError::BadRequest(format!("dataBase64 is not valid base64 ({e}); send the file's bytes base64-encoded")))?;
+        .map_err(|e| {
+            AppError::BadRequest(format!(
+                "dataBase64 is not valid base64 ({e}); send the file's bytes base64-encoded"
+            ))
+        })?;
     if bytes.is_empty() {
         return Err(AppError::BadRequest(format!("{name} is empty")));
     }
@@ -1542,7 +1950,9 @@ pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Atta
         return Err(too_big(bytes.len()));
     }
     let (width, height) = sniff(&mime, &bytes).ok_or_else(|| {
-        AppError::UnsupportedType(format!("{name} does not look like {mime}; send its real type"))
+        AppError::UnsupportedType(format!(
+            "{name} does not look like {mime}; send its real type"
+        ))
     })?;
 
     let mut tx = state.db.begin().await?;
@@ -1559,7 +1969,11 @@ pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Atta
             "task {task_id} was not filed by you; you can only attach files to tasks you filed (see intake_recent)"
         )));
     };
-    let key = a.source_key.map(|k| k.trim().to_owned()).filter(|k| !k.is_empty()).unwrap_or(original);
+    let key = a
+        .source_key
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty())
+        .unwrap_or(original);
     let known: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM task_source WHERE task_id = $1 AND agent_id = $2 AND source_key = $3)",
     )
@@ -1590,12 +2004,14 @@ pub async fn intake_attach(state: &AppState, agent: Uuid, task_id: Uuid, a: Atta
     .fetch_optional(&mut *tx)
     .await?;
     let Some(made) = made else {
-        let id: Uuid = sqlx::query_scalar("SELECT id FROM task_file WHERE task_id = $1 AND source_key = $2 AND name = $3")
-            .bind(task_id)
-            .bind(&key)
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await?;
+        let id: Uuid = sqlx::query_scalar(
+            "SELECT id FROM task_file WHERE task_id = $1 AND source_key = $2 AND name = $3",
+        )
+        .bind(task_id)
+        .bind(&key)
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
         return Err(AppError::Conflict(format!(
             "{name} from that message is already attached (file {id}); nothing was added."
         )));
@@ -1613,9 +2029,14 @@ mod sniff_tests {
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         png.extend_from_slice(&[0, 0, 1, 0x40, 0, 0, 0, 0xF0]);
         assert_eq!(sniff("image/png", &png), Some((Some(320), Some(240))));
-        assert_eq!(sniff("image/gif", b"GIF89a\x10\x00\x20\x00"), Some((Some(16), Some(32))));
+        assert_eq!(
+            sniff("image/gif", b"GIF89a\x10\x00\x20\x00"),
+            Some((Some(16), Some(32)))
+        );
         // SOI, an APP0 of length 4, then SOF0: precision, height 2, width 3.
-        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 11, 8, 0, 2, 0, 3, 1, 0, 0, 0];
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 11, 8, 0, 2, 0, 3, 1, 0, 0, 0,
+        ];
         assert_eq!(sniff("image/jpeg", &jpeg), Some((Some(3), Some(2))));
         assert_eq!(sniff("image/png", b"<html>"), None);
         assert_eq!(sniff("application/pdf", b"%PDF-1.7"), Some((None, None)));

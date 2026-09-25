@@ -133,6 +133,7 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
                     login: views::login::State::default(),
                     board: views::board::State::default(),
                     palette: views::palette::State::default(),
+                    settings: views::settings::State::default(),
                 });
                 stage(shot, slot.as_mut().unwrap());
                 return;

@@ -7,7 +7,9 @@ const EMAIL: &str = "anmol@airtribe.live";
 
 async fn bootstrap(pool: &PgPool) -> (AppState, String) {
     let state = AppState { db: pool.clone() };
-    let code = people::bootstrap_admin(&state, EMAIL, "Anmol", false).await.unwrap();
+    let code = people::bootstrap_admin(&state, EMAIL, "Anmol", false)
+        .await
+        .unwrap();
     (state, code)
 }
 
@@ -37,14 +39,19 @@ async fn an_agent_cannot_hold_write(pool: PgPool) {
     .bind(agent_id)
     .execute(&pool)
     .await;
-    assert!(direct.is_err(), "the constraint must reject an agent with write");
+    assert!(
+        direct.is_err(),
+        "the constraint must reject an agent with write"
+    );
 }
 
 #[sqlx::test]
 async fn a_setup_code_is_single_use(pool: PgPool) {
     let (state, code) = bootstrap(&pool).await;
 
-    people::set_password(&state, EMAIL, &code, "correct horse battery").await.unwrap();
+    people::set_password(&state, EMAIL, &code, "correct horse battery")
+        .await
+        .unwrap();
 
     let second = people::set_password(&state, EMAIL, &code, "another long password").await;
     assert!(second.is_err(), "a spent code must not work twice");
@@ -57,7 +64,9 @@ async fn reinviting_voids_the_previous_code(pool: PgPool) {
     assert_ne!(first, second);
 
     assert!(
-        people::set_password(&state, EMAIL, &first, "correct horse battery").await.is_err(),
+        people::set_password(&state, EMAIL, &first, "correct horse battery")
+            .await
+            .is_err(),
         "the old code must be dead"
     );
     let person = people::set_password(&state, EMAIL, &second, "correct horse battery")
@@ -75,26 +84,40 @@ async fn an_expired_setup_code_fails(pool: PgPool) {
         .await
         .unwrap();
 
-    assert!(people::set_password(&state, EMAIL, &code, "correct horse battery").await.is_err());
+    assert!(
+        people::set_password(&state, EMAIL, &code, "correct horse battery")
+            .await
+            .is_err()
+    );
 }
 
 #[sqlx::test]
 async fn revoking_a_person_ends_sessions_and_agents(pool: PgPool) {
     let (state, code) = bootstrap(&pool).await;
-    people::set_password(&state, EMAIL, &code, "correct horse battery").await.unwrap();
+    people::set_password(&state, EMAIL, &code, "correct horse battery")
+        .await
+        .unwrap();
 
     let (session_raw, _) = token::mint_session(&state, EMAIL).await.unwrap();
     let owner = people::id_of(&state, EMAIL).await.unwrap();
-    let agent_raw = acp_server::controllers::agent::create(&state, owner, "hermes", "", "hermes", false, "http://x")
-        .await
-        .unwrap()
-        .token;
+    let agent_raw = acp_server::controllers::agent::create(
+        &state, owner, "hermes", "", "hermes", true, false, "http://x",
+    )
+    .await
+    .unwrap()
+    .token;
 
     let revoked = people::revoke_person(&state, EMAIL).await.unwrap();
     assert_eq!(revoked, 2, "both the session and the agent must be revoked");
 
-    assert!(acp_server::models::token::lookup(&pool, &session_raw).await.unwrap().is_none());
-    assert!(acp_server::models::token::lookup(&pool, &agent_raw).await.unwrap().is_none());
+    assert!(acp_server::models::token::lookup(&pool, &session_raw)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(acp_server::models::token::lookup(&pool, &agent_raw)
+        .await
+        .unwrap()
+        .is_none());
 
     let deleted: Option<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("SELECT deleted_at FROM person WHERE email = $1")
@@ -117,6 +140,9 @@ fn passwords_verify_and_a_missing_account_costs_the_same() {
 fn setup_codes_are_typable() {
     let code = setup_code::generate();
     assert_eq!(code.len(), 14, "three groups of four: {code}");
-    assert!(!code.contains(['O', '0', 'I', '1']), "ambiguous character in {code}");
+    assert!(
+        !code.contains(['O', '0', 'I', '1']),
+        "ambiguous character in {code}"
+    );
     assert_ne!(code, setup_code::generate());
 }

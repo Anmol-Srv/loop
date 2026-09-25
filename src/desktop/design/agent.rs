@@ -1,28 +1,38 @@
 //! The agent's face, and the few shapes that say what it is doing.
 //!
-//! An agent is a rounded square with the robot mark, tinted in its owner's
-//! colour — a person is a disc, an agent is a square, and whose agent it is
-//! reads from the hue. Presence rides on the face rather than beside it:
+//! An agent is a dotted globe, tinted in its owner's colour — a person is a
+//! solid disc with initials, an agent is a sphere of dots with none, and whose
+//! agent it is reads from the gradient (`avatar::tint_pair`, the owner's hue
+//! plus a second one rotated warmer). Presence is the globe's own animation
+//! rather than a ring drawn beside it:
 //!
-//! * working — one slow arc travelling round the edge. The only continuous
-//!   motion in the app, and it runs only while an avatar that shows it is on
-//!   screen: it asks for a frame at 30 fps, never for "as soon as possible",
-//!   and stops asking the moment it scrolls away or the work stops.
-//! * waiting for first contact — the edge breathes, for the connect flow.
-//! * needs input — an amber dot, the same amber as every "waiting on you".
-//! * offline — the tint fades to grey after ten minutes without a word.
+//! * working — the sphere turns and two particles orbit it. The only
+//!   continuous motion in most lists, and it runs only while an avatar that
+//!   shows it is on screen: it asks for a frame at 30 fps, never for "as soon
+//!   as possible", and stops asking the moment it scrolls away or the work
+//!   stops.
+//! * waiting for first contact — a meridian sweeps the sphere as it turns, for
+//!   the connect flow.
+//! * needs input — the sphere holds still; an amber dot, the same amber as
+//!   every "waiting on you", sits at the corner.
+//! * idle — a very slow turn at MD and above, still below that. Unlike
+//!   working and waiting it never asks for its own frame — the page sleeps
+//!   unless the agent is doing something — so it only advances on whatever
+//!   repaint something else on the page causes anyway.
+//! * offline — still, and the gradient fades toward grey after ten minutes
+//!   without a word.
 //!
-//! With `AIRTRIBE_REDUCE_MOTION` (egui's `animation_time` at zero) the arc is
-//! a still ring and nothing here asks for a repaint.
+//! With `AIRTRIBE_REDUCE_MOTION` (egui's `animation_time` at zero), every
+//! state is its still frame and nothing here asks for a repaint.
 
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use egui::{pos2, vec2, Color32, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{pos2, vec2, Color32, Pos2, Rect, Response, RichText, Sense, Stroke, Ui, Vec2};
 
 use super::tokens::{colour, radius, size, space, text};
-use super::{avatar, glyph, motion, theme, widgets};
+use super::{avatar, glyph, motion, orb, theme};
 
 /// The avatar sizes: a table cell, a rail row, a page header, a card, and
 /// the agent's own page.
@@ -32,13 +42,27 @@ pub const MD: f32 = 28.0;
 pub const LG: f32 = 40.0;
 /// An agent's own page: the face that heads it.
 pub const XL: f32 = 56.0;
+/// The connect flow's last step: the one place the globe is the whole screen
+/// rather than a mark beside other content.
+pub const XXL: f32 = 72.0;
 
-/// One turn of the working arc. Slow on purpose: it says "still going", not
-/// "hurry".
+/// One turn of the now-line spinner. Slow on purpose: it says "still going",
+/// not "hurry".
 const PERIOD: f64 = 1.6;
-/// How often a moving ring asks to be drawn again. A slow arc at 30 fps is
-/// indistinguishable from 60 at half the cost.
+/// How often a moving shape asks to be drawn again. 30 fps is
+/// indistinguishable from 60 here, at half the cost.
 const TICK: Duration = Duration::from_millis(33);
+/// One full turn of an idle or working globe. Slow enough to read as ambient
+/// rather than a loader.
+const SPIN_PERIOD: f64 = 14.0;
+/// One lap of the searching meridian — quick enough to read as a scan.
+const SWEEP_PERIOD: f64 = 3.2;
+/// One lap of the working orbit, deliberately faster than the sphere's own
+/// spin so the two motions read as separate layers.
+const ORBIT_PERIOD: f64 = 2.0;
+/// The globe's fixed viewing angle: enough tilt that it reads as a sphere,
+/// not a flat disc face-on.
+const TILT: f32 = 0.42;
 /// Ten minutes without a word and an agent reads as away.
 const OFFLINE_AFTER_SECS: i64 = 600;
 
@@ -88,9 +112,9 @@ pub fn avatar(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str
     face(ui, seed, side, presence, name, true)
 }
 
-/// The same face with a still ring, for the second copy of an agent on a page
-/// that already carries the moving one — there is one working ring per thing
-/// that is working.
+/// The same face, still, for the second copy of an agent on a page that
+/// already carries the moving one — there is one turning globe per thing that
+/// is working, everywhere else shows its still frame.
 pub fn avatar_still(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str) -> Response {
     face(ui, seed, side, presence, name, false)
 }
@@ -100,35 +124,69 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
     let label = format!("{name}, {}", presence.words());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
 
-    let mut tint = avatar::tint(seed);
+    let (mut c1, mut c2) = avatar::tint_pair(seed);
     if presence == Presence::Offline {
-        tint = tint.lerp_to_gamma(colour::IDLE, 0.7);
+        c1 = c1.lerp_to_gamma(colour::IDLE, 0.7);
+        c2 = c2.lerp_to_gamma(colour::IDLE, 0.7);
     }
-    let r = corner(side);
-    let p = ui.painter();
-    p.rect_filled(rect, r, tint.gamma_multiply(0.16));
-    p.rect_stroke(rect, r, Stroke::new(1.0, tint.gamma_multiply(0.45)), StrokeKind::Inside);
-    widgets::paint_agent_mark(p, rect.shrink(side * 0.2), tint);
 
+    let center = rect.center();
+    let globe_r = side * 0.5 * orb::INSET;
+    let dynamic = animate && ui.style().animation_time > f32::EPSILON;
+    let p = ui.painter();
     match presence {
-        Presence::Working => ring(ui, rect, r, animate),
-        Presence::Waiting => breathe(ui, rect, r, animate),
-        Presence::NeedsInput => {
-            let rad = (side * 0.15).clamp(3.0, 5.0);
-            let c = rect.right_top() + vec2(-rad * 0.3, rad * 0.3);
-            p.circle_filled(c, rad + 1.5, colour::CANVAS);
-            p.circle_filled(c, rad, colour::WARN);
+        Presence::Working if dynamic => {
+            orb::paint(p, center, globe_r, side, (c1, c2), spin_phase(ui, SPIN_PERIOD), TILT, None);
+            orb::orbit(p, center, globe_r, side, c2, spin_phase(ui, ORBIT_PERIOD) / TAU);
+            keep_moving(ui, rect);
         }
-        Presence::Idle | Presence::Offline => {}
+        Presence::Waiting if dynamic => {
+            let spin = spin_phase(ui, SWEEP_PERIOD);
+            orb::paint(p, center, globe_r, side, (c1, c2), spin, TILT, Some(0.0));
+            keep_moving(ui, rect);
+        }
+        // Idle never asks for its own frame — "the page sleeps unless the
+        // agent is working" is load-bearing elsewhere. At MD and up it still
+        // reads the clock, so it drifts a little across whatever repaints the
+        // rest of the page causes anyway; below that it would only ever be
+        // caught mid-turn by accident, so it takes the fixed still frame.
+        Presence::Idle if dynamic && side >= MD => {
+            orb::paint(p, center, globe_r, side, (c1, c2), spin_phase(ui, SPIN_PERIOD), TILT, None);
+        }
+        _ => {
+            let (spin, tilt) = still_phase(seed);
+            orb::paint(p, center, globe_r, side, (c1, c2), spin, tilt, None);
+        }
+    }
+    orb::hairline(p, center, globe_r, c1);
+
+    if presence == Presence::NeedsInput {
+        let rad = (side * 0.15).clamp(3.0, 5.0);
+        let c = rect.right_top() + vec2(-rad * 0.3, rad * 0.3);
+        p.circle_filled(c, rad + 1.5, colour::CANVAS);
+        p.circle_filled(c, rad, colour::WARN);
     }
     response.on_hover_text(label)
 }
 
-fn corner(side: f32) -> f32 {
-    (side * 0.26).min(radius::LG as f32)
+/// A continuous turn, in radians, bounded to `[0, TAU)` so it never loses
+/// precision over a long session the way an ever-growing angle would.
+fn spin_phase(ui: &Ui, period: f64) -> f32 {
+    (((ui.input(|i| i.time) / period).rem_euclid(1.0)) * TAU as f64) as f32
 }
 
-/// Where the ring's clock is, 0→1 through a turn, or `None` with motion off.
+/// A fixed spin and tilt for a globe that isn't turning — a small per-seed
+/// offset so a list of still agents doesn't read as one shape repeated, the
+/// way distinct hues already keep a row of initials discs from doing.
+fn still_phase(seed: &str) -> (f32, f32) {
+    let h = seed.bytes().fold(2166136261u32, |acc, b| (acc ^ b as u32).wrapping_mul(16777619));
+    let spin = (h % 1000) as f32 / 1000.0 * TAU;
+    let tilt = 0.32 + ((h / 1000) % 100) as f32 / 100.0 * 0.22;
+    (spin, tilt)
+}
+
+/// Where the now-line spinner's clock is, 0→1 through a turn, or `None` with
+/// motion off.
 fn clock(ui: &Ui) -> Option<f32> {
     if ui.style().animation_time <= f32::EPSILON {
         return None;
@@ -141,88 +199,6 @@ fn keep_moving(ui: &Ui, rect: Rect) {
     if ui.is_rect_visible(rect) {
         ui.ctx().request_repaint_after(TICK);
     }
-}
-
-fn ring_geometry(rect: Rect, r: f32) -> (Rect, f32, f32) {
-    let gap = (rect.width() * 0.1).clamp(2.0, 3.0);
-    let width = if rect.width() >= MD { 1.6 } else { 1.3 };
-    (rect.expand(gap), r + gap, width)
-}
-
-/// The working ring: a faint track and one arc travelling round it, easing in
-/// and out each turn so it reads as breathing work rather than a loader.
-fn ring(ui: &Ui, rect: Rect, r: f32, animate: bool) {
-    let (outer, rr, width) = ring_geometry(rect, r);
-    let p = ui.painter();
-    let Some(t) = clock(ui).filter(|_| animate) else {
-        p.rect_stroke(outer, rr, Stroke::new(width, colour::INFO.gamma_multiply(0.7)), StrokeKind::Middle);
-        return;
-    };
-    p.rect_stroke(outer, rr, Stroke::new(width, colour::INFO.gamma_multiply(0.14)), StrokeKind::Middle);
-    let pts = outline(outer, rr);
-    let n = pts.len() - 1;
-    let head = egui::emath::easing::cubic_in_out(t) * n as f32;
-    let tail = n as f32 * 0.32;
-    for i in 0..n {
-        let rel = (i as f32 + 0.5 - (head - tail)).rem_euclid(n as f32);
-        if rel < tail {
-            let a = rel / tail;
-            p.line_segment([pts[i], pts[i + 1]], Stroke::new(width, colour::INFO.gamma_multiply(a)));
-        }
-    }
-    keep_moving(ui, outer);
-}
-
-/// Waiting for first contact: the edge brightens and dims.
-fn breathe(ui: &Ui, rect: Rect, r: f32, animate: bool) {
-    let (outer, rr, width) = ring_geometry(rect, r);
-    let alpha = match clock(ui).filter(|_| animate) {
-        Some(t) => {
-            keep_moving(ui, outer);
-            0.2 + 0.6 * (0.5 - 0.5 * (TAU * t).cos())
-        }
-        None => 0.5,
-    };
-    ui.painter().rect_stroke(outer, rr, Stroke::new(width, colour::INFO.gamma_multiply(alpha)), StrokeKind::Middle);
-}
-
-/// A rounded rectangle's edge as evenly spaced points, clockwise from the top
-/// of the right-hand corner, closed. Even spacing is what lets the arc's fade
-/// run smoothly along a straight edge as well as round a corner.
-fn outline(rect: Rect, r: f32) -> Vec<Pos2> {
-    let r = r.min(rect.width() / 2.0).min(rect.height() / 2.0);
-    let corners = [
-        (pos2(rect.right() - r, rect.top() + r), -FRAC_PI_2),
-        (pos2(rect.right() - r, rect.bottom() - r), 0.0),
-        (pos2(rect.left() + r, rect.bottom() - r), FRAC_PI_2),
-        (pos2(rect.left() + r, rect.top() + r), PI),
-    ];
-    let mut raw = Vec::with_capacity(29);
-    for (c, a0) in corners {
-        for i in 0..=6 {
-            let a = a0 + FRAC_PI_2 * i as f32 / 6.0;
-            raw.push(c + vec2(a.cos(), a.sin()) * r);
-        }
-    }
-    raw.push(raw[0]);
-
-    const STEP: f32 = 1.5;
-    let mut out = vec![raw[0]];
-    let mut carry = 0.0;
-    for w in raw.windows(2) {
-        let d = w[0].distance(w[1]);
-        if d <= f32::EPSILON {
-            continue;
-        }
-        let mut s = STEP - carry;
-        while s <= d {
-            out.push(w[0] + (w[1] - w[0]) * (s / d));
-            s += STEP;
-        }
-        carry = d - (s - STEP);
-    }
-    out.push(raw[0]);
-    out
 }
 
 /// The now line's mark: a short arc turning on a faint circle, in step with
@@ -427,14 +403,5 @@ mod tests {
         assert_eq!(Presence::of("needs_input", Some(&old)), Presence::NeedsInput);
         assert_eq!(Presence::of("in_review", Some(&now)), Presence::Idle);
         assert_eq!(Presence::of("working", None), Presence::Offline);
-    }
-
-    #[test]
-    fn outline_is_even_and_closed() {
-        let pts = outline(Rect::from_min_size(Pos2::ZERO, vec2(30.0, 30.0)), 6.0);
-        assert_eq!(pts.first(), pts.last());
-        for w in pts.windows(2).take(pts.len() - 2) {
-            assert!(w[0].distance(w[1]) < 1.6, "{:?}", w);
-        }
     }
 }

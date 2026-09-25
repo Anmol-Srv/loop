@@ -19,6 +19,9 @@ pub(super) enum Pick {
     Handoff(String, String),
     TakeBack,
     Priority(i64),
+    /// A project-less task's pinned folder, by name — `None` to use the
+    /// viewer's default instead.
+    Folder(Option<String>),
     /// Out of triage: into the intake project it was filed in (`None`), or
     /// moved into another (id, name).
     Accept(Option<(String, String)>),
@@ -37,6 +40,9 @@ pub(super) struct Viewer {
     /// Projects a triaged task may be accepted into: (id, name). Empty until
     /// a view with triage on it has asked for them.
     pub projects: Vec<(String, String)>,
+    /// The viewer's own folders, for a project-less task's Folder submenu.
+    /// Empty until a view that offers it has asked (`settings::want_folders`).
+    pub folders: Vec<Value>,
 }
 
 impl Viewer {
@@ -44,20 +50,33 @@ impl Viewer {
         let can_write = app.can_write();
         let net = app.net.as_mut().expect("net is live whenever a view runs");
         net.get_once(AGENTS_KEY, "/api/user/agents");
-        let me = net.data("__me").map(|m| str_at(m, "personId").to_owned()).unwrap_or_default();
-        let admin = net.data("__me").is_some_and(|m| str_at(m, "role") == "admin");
+        let me = net
+            .data("__me")
+            .map(|m| str_at(m, "personId").to_owned())
+            .unwrap_or_default();
+        let admin = net
+            .data("__me")
+            .is_some_and(|m| str_at(m, "role") == "admin");
         let projects = super::triage::projects(net);
+        let folders = super::settings::folders(net);
         let agents = net
             .data(AGENTS_KEY)
             .and_then(Value::as_array)
             .map(|rows| {
                 rows.iter()
-                    .filter(|a| str_at(a, "status") != "revoked")
+                    .filter(|a| super::agents::takes_work(a))
                     .map(|a| (str_at(a, "id").to_owned(), str_at(a, "name").to_owned()))
                     .collect()
             })
             .unwrap_or_default();
-        Self { me, can_write, admin, agents, projects }
+        Self {
+            me,
+            can_write,
+            admin,
+            agents,
+            projects,
+            folders,
+        }
     }
 }
 
@@ -65,7 +84,12 @@ const READ_ONLY: &str = "Your access is read-only.";
 
 /// A project's menu. `row` adds Open, which on the project's own page would
 /// go nowhere.
-pub(super) fn project_items(ui: &mut egui::Ui, p: &Value, can_write: bool, row: bool) -> Option<Pick> {
+pub(super) fn project_items(
+    ui: &mut egui::Ui,
+    p: &Value,
+    can_write: bool,
+    row: bool,
+) -> Option<Pick> {
     let mut pick = None;
     if row && viz::menu_item(ui, "Open", false, None) {
         pick = Some(Pick::Open);
@@ -122,19 +146,53 @@ pub(super) fn task_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, row: boo
         }
     }
     let current = t.get("priority").and_then(Value::as_i64);
-    viz::submenu(ui, "Priority", (!viewer.can_write).then_some(READ_ONLY), |ui| {
-        for p in 0..=4 {
-            if viz::menu_choice(ui, &format!("P{p}"), current == Some(p)) && current != Some(p) {
-                pick = Some(Pick::Priority(p));
+    viz::submenu(
+        ui,
+        "Priority",
+        (!viewer.can_write).then_some(READ_ONLY),
+        |ui| {
+            for p in 0..=4 {
+                if viz::menu_choice(ui, &format!("P{p}"), current == Some(p)) && current != Some(p)
+                {
+                    pick = Some(Pick::Priority(p));
+                }
             }
-        }
-    });
+        },
+    );
+    // Only for a task with no project: its own repo already says where to
+    // work.
+    if str_at(t, "projectId").is_empty()
+        && (!viewer.folders.is_empty() || t.get("folderName").is_some_and(|v| !v.is_null()))
+    {
+        let pinned = t.get("folderName").and_then(Value::as_str);
+        let default_label = match super::settings::default_name(&viewer.folders) {
+            Some(d) => format!("Use default ({d})"),
+            None => "Use default".to_owned(),
+        };
+        viz::submenu(
+            ui,
+            "Folder",
+            (!viewer.can_write).then_some(READ_ONLY),
+            |ui| {
+                if pinned.is_some() && viz::menu_choice(ui, &default_label, false) {
+                    pick = Some(Pick::Folder(None));
+                }
+                for f in &viewer.folders {
+                    let name = str_at(f, "name");
+                    if viz::menu_choice(ui, name, pinned == Some(name)) && pinned != Some(name) {
+                        pick = Some(Pick::Folder(Some(name.to_owned())));
+                    }
+                }
+            },
+        );
+    }
     copy(ui, "Copy title", str_at(t, "title"));
     copy(ui, "Copy ID", str_at(t, "id"));
     viz::menu_rule(ui);
     // A task archived along with its project has no Restore of its own.
     let with_project = t.get("projectArchivedAt").is_some_and(|v| !v.is_null());
-    let why = with_project.then_some("Archived with its project \u{2014} restoring the project brings it back.");
+    let why = with_project
+        .then_some("Archived with its project \u{2014} restoring the project brings it back.");
     pick.or(lifecycle(ui, t, viewer.can_write, "task", why))
 }
 
@@ -148,8 +206,14 @@ fn triage_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer) -> Option<Pick> {
         pick = Some(Pick::Accept(None));
     }
     let here = str_at(t, "projectId");
-    let others: Vec<&(String, String)> = viewer.projects.iter().filter(|(id, _)| id != here).collect();
-    let why_into = why.or(others.is_empty().then_some("No other project to move it into."));
+    let others: Vec<&(String, String)> = viewer
+        .projects
+        .iter()
+        .filter(|(id, _)| id != here)
+        .collect();
+    let why_into = why.or(others
+        .is_empty()
+        .then_some("No other project to move it into."));
     viz::submenu(ui, "Accept into", why_into, |ui| {
         for (id, name) in others {
             if viz::menu_item(ui, name, false, None) {
@@ -184,18 +248,32 @@ fn copy(ui: &mut egui::Ui, label: &str, text: &str) {
 
 /// Archive or Restore, then Delete — the group that changes what exists, so
 /// it comes last, under a rule.
-fn lifecycle(ui: &mut egui::Ui, v: &Value, can_write: bool, what: &str, restore_why: Option<&str>) -> Option<Pick> {
+fn lifecycle(
+    ui: &mut egui::Ui,
+    v: &Value,
+    can_write: bool,
+    what: &str,
+    restore_why: Option<&str>,
+) -> Option<Pick> {
     let mut pick = None;
     let (act, label, verb) = if archived(v) {
         (Act::Restore, "Restore", "restore")
     } else {
         (Act::Archive, "Archive\u{2026}", "archive")
     };
-    let why = restore_why.filter(|_| act == Act::Restore).map(str::to_owned).or_else(|| refusal(v, can_write, verb, what));
+    let why = restore_why
+        .filter(|_| act == Act::Restore)
+        .map(str::to_owned)
+        .or_else(|| refusal(v, can_write, verb, what));
     if viz::menu_item(ui, label, false, why.as_deref()) {
         pick = Some(Pick::Act(act));
     }
-    if viz::menu_item(ui, "Delete\u{2026}", true, refusal(v, can_write, "delete", what).as_deref()) {
+    if viz::menu_item(
+        ui,
+        "Delete\u{2026}",
+        true,
+        refusal(v, can_write, "delete", what).as_deref(),
+    ) {
         pick = Some(Pick::Act(Act::Delete));
     }
     pick
@@ -208,7 +286,11 @@ fn refusal(v: &Value, can_write: bool, verb: &str, what: &str) -> Option<String>
     if !can_write {
         return Some(READ_ONLY.to_owned());
     }
-    let flag = if verb == "delete" { "canDelete" } else { "canArchive" };
+    let flag = if verb == "delete" {
+        "canDelete"
+    } else {
+        "canArchive"
+    };
     if v.get(flag).and_then(Value::as_bool).unwrap_or(false) {
         return None;
     }
@@ -259,7 +341,11 @@ impl Tasks {
         let done = match pick {
             Pick::Open => return,
             Pick::Act(act @ (Act::Archive | Act::Delete)) => {
-                self.ask = Some(Ask { id, title: str_at(t, "title").to_owned(), act });
+                self.ask = Some(Ask {
+                    id,
+                    title: str_at(t, "title").to_owned(),
+                    act,
+                });
                 return;
             }
             // Undone as easily as it was done, so it does not ask.
@@ -300,6 +386,18 @@ impl Tasks {
                 }
                 net.patch(KEY, &format!("{path}/details"), body);
                 format!("Priority set to P{p}.")
+            }
+            Pick::Folder(name) => {
+                let at = str_at(t, "updatedAt");
+                let mut body = json!({ "folderName": name });
+                if !at.is_empty() {
+                    body["expectedUpdatedAt"] = json!(at);
+                }
+                net.patch(KEY, &format!("{path}/details"), body);
+                match &name {
+                    Some(n) => format!("Folder set to {n}."),
+                    None => "Folder set to your default.".to_owned(),
+                }
             }
         };
         self.sent = Some((done, None));
@@ -363,7 +461,12 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
         ui.add_space(space::XL);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
-            go = if delete { w::danger(ui, "Delete task", true) } else { w::primary(ui, "Archive", true) }.clicked();
+            go = if delete {
+                w::danger(ui, "Delete task", true)
+            } else {
+                w::primary(ui, "Archive", true)
+            }
+            .clicked();
             close = w::ghost(ui, "Cancel").clicked();
         });
     });
@@ -379,14 +482,25 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
 /// "Dismiss this?" with room for why. The reason is optional and lands on the
 /// task as a note; Enter in the box dismisses, Escape leaves it in triage.
 fn dismiss_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
-    let Some((id, title, reason)) = s.dismiss.as_mut() else { return };
+    let Some((id, title, reason)) = s.dismiss.as_mut() else {
+        return;
+    };
     let (mut go, mut close) = (false, false);
     let modal = super::agents::dialog(ctx, "task:dismiss", super::agents::DIALOG_W * 0.8, |ui| {
         super::agents::heading(ui, &format!("Dismiss \u{201c}{title}\u{201d}?"));
         ui.add_space(space::XS);
-        w::muted(ui, "It leaves triage as dropped. The agent will not file this message again.");
+        w::muted(
+            ui,
+            "It leaves triage as dropped. The agent will not file this message again.",
+        );
         ui.add_space(space::LG);
-        let field = w::field(ui, "Reason (optional)", reason, false, "Already fixed, not ours, duplicate\u{2026}");
+        let field = w::field(
+            ui,
+            "Reason (optional)",
+            reason,
+            false,
+            "Already fixed, not ours, duplicate\u{2026}",
+        );
         if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             go = true;
         }
@@ -399,7 +513,11 @@ fn dismiss_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
     });
     if go {
         let reason = reason.trim();
-        let body = if reason.is_empty() { json!({}) } else { json!({ "reason": reason }) };
+        let body = if reason.is_empty() {
+            json!({})
+        } else {
+            json!({ "reason": reason })
+        };
         net.invalidate(KEY);
         net.post(KEY, &format!("/api/user/tasks/{id}/dismiss"), body);
         s.deciding = Some(std::mem::take(id));

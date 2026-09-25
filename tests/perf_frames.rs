@@ -73,6 +73,7 @@ fn measure(page: &(&str, Tab, Option<&str>, Option<&str>), url: &str, token: &st
                 login: views::login::State::default(),
                 board: views::board::State::default(),
                 palette: views::palette::State::default(),
+                settings: views::settings::State::default(),
             });
             return;
         }

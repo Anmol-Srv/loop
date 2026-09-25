@@ -91,9 +91,10 @@ pub fn dot(ui: &mut Ui, c: Color32) {
     ui.painter().circle_filled(rect.center(), size::DOT / 2.0 - 0.5, c);
 }
 
-/// The agent mark: a small robot head, painted — the UI font has no glyph for
-/// it, and one shape everywhere is what lets "an agent holds this" read at a
-/// glance in a table, a rail and a thread alike.
+/// The agent mark: a tiny still dotted globe, painted — the UI font has no
+/// glyph for it, and one shape everywhere is what lets "an agent holds this"
+/// read at a glance in a table, a rail and a thread alike. Unlike the full
+/// avatar it has no seed to draw a gradient from, so it is one flat tint.
 pub fn agent_mark(ui: &mut Ui, side: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
     paint_agent_mark(ui.painter(), rect, colour::AGENT);
@@ -101,21 +102,10 @@ pub fn agent_mark(ui: &mut Ui, side: f32) -> Response {
 }
 
 pub fn paint_agent_mark(p: &egui::Painter, rect: egui::Rect, ink: Color32) {
-    let s = rect.width();
-    let stroke = egui::Stroke::new((s / 11.0).max(1.0), ink);
-    // The head sits low in the square, leaving the top for the antenna.
-    let head = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + s * 0.12, rect.top() + s * 0.34),
-        egui::pos2(rect.right() - s * 0.12, rect.bottom() - s * 0.06),
-    );
-    p.rect_stroke(head, s * 0.16, stroke, egui::StrokeKind::Inside);
-    let eye_y = head.center().y;
-    for dx in [-0.17, 0.17] {
-        p.circle_filled(egui::pos2(head.center().x + s * dx, eye_y), s * 0.075, ink);
-    }
-    let top = egui::pos2(head.center().x, rect.top() + s * 0.12);
-    p.line_segment([top, egui::pos2(top.x, head.top())], stroke);
-    p.circle_filled(top, s * 0.08, ink);
+    let center = rect.center();
+    let radius = rect.width() * 0.5 * super::orb::INSET;
+    super::orb::paint(p, center, radius, rect.width(), (ink, ink), 0.6, 0.4, None);
+    super::orb::hairline(p, center, radius, ink);
 }
 
 /// A tinted pill. For one-off state, not for every row.

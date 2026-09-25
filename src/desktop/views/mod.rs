@@ -12,4 +12,5 @@ pub mod new_task;
 pub mod palette;
 pub mod menus;
 pub mod triage;
+pub mod settings;
 pub mod mrkdwn;

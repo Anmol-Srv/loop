@@ -6,6 +6,7 @@ pub mod avatar;
 pub mod cards;
 pub mod glyph;
 pub mod motion;
+pub mod orb;
 pub mod shell;
 pub mod table;
 pub mod theme;

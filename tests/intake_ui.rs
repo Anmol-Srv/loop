@@ -1,7 +1,7 @@
 //! Intake agents: the Triage tab and My Tasks' line to it, the task page's
 //! Source card and category, Accept / Dismiss from the row (hover icons, A/D),
 //! the menu and the page, the
-//! connect flow's intake switch, the agent card's intake stats, and Home's
+//! connect flow's intake role, the agent card's intake stats, and Home's
 //! triage items — from fixture JSON in the shapes of
 //! docs/superpowers/plans/2026-09-25-intake-agents.md.
 //!
@@ -35,7 +35,8 @@ const BUG_TITLE: &str = "Checkout fails for saved cards";
 const DM_TITLE: &str = "Export cohort roster as CSV";
 const IDEA_TITLE: &str = "Show cohort start dates on the invoice";
 const BUG_TEXT: &str = "Checkout is failing for anyone paying with a saved card \u{2014} it spins and then says \u{201c}payment method invalid\u{201d}. New cards work. Started this morning.";
-const DM_TEXT: &str = "Hey, could we get a CSV export of the roster? I copy it by hand every Monday.";
+const DM_TEXT: &str =
+    "Hey, could we get a CSV export of the roster? I copy it by hand every Monday.";
 
 fn ago(minutes: i64) -> String {
     (Utc::now() - chrono::Duration::minutes(minutes)).to_rfc3339()
@@ -52,7 +53,11 @@ fn me(person: &str) -> Value {
 
 fn source(private: bool, reader_is_owner: bool) -> Value {
     if private {
-        let (text, author) = if reader_is_owner { (json!(DM_TEXT), json!("Rahul Mehta")) } else { (Value::Null, Value::Null) };
+        let (text, author) = if reader_is_owner {
+            (json!(DM_TEXT), json!("Rahul Mehta"))
+        } else {
+            (Value::Null, Value::Null)
+        };
         return json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/D04AB12CD/p1727251200", "channel": "D04AB12CD",
             "private": true, "author": author, "text": text, "receivedAt": ago(95), "agentName": "Slack Agent",
             "reason": "a feature ask sent to you directly", "confidence": 0.71});
@@ -76,10 +81,15 @@ fn triage_task(id: &str, title: &str, category: &str, src: Value, minutes: i64) 
 fn triage() -> Vec<Value> {
     vec![
         triage_task(BUG, BUG_TITLE, "bug", source(false, true), 12),
-        triage_task(IDEA, IDEA_TITLE, "feedback",
+        triage_task(
+            IDEA,
+            IDEA_TITLE,
+            "feedback",
             json!({"kind": "slack", "url": "https://airtribe.slack.com/archives/C05/p1", "channel": "C05XY34EF",
                    "channelName": "sales-floor", "author": "Karan", "text": "Learners keep asking which cohort an invoice is for.",
-                   "receivedAt": ago(48), "agentName": "Slack Agent", "reason": "feedback on invoices", "confidence": 0.64}), 48),
+                   "receivedAt": ago(48), "agentName": "Slack Agent", "reason": "feedback on invoices", "confidence": 0.64}),
+            48,
+        ),
         triage_task(DM, DM_TITLE, "feature", source(true, true), 95),
     ]
 }
@@ -89,9 +99,11 @@ fn mine(with_triage: bool) -> Value {
     rows.push(json!({"id": "t1", "title": "Rate leads by role bucket", "status": "in_progress", "priority": 1,
         "body": "Expose the bucket on the lead payload.", "projectId": "p1", "projectName": "Lead Rating",
         "assigneePersonId": ME, "createdAt": ago(4000), "updatedAt": ago(10), "doneAt": null}));
-    rows.push(json!({"id": "t2", "title": "Payment sheet sync retries", "status": "open", "priority": 2,
+    rows.push(
+        json!({"id": "t2", "title": "Payment sheet sync retries", "status": "open", "priority": 2,
         "body": "Retry the sheet write on 429.", "projectId": "p2", "projectName": "Sales tooling",
-        "assigneePersonId": ME, "createdAt": ago(6000), "updatedAt": ago(300), "doneAt": null}));
+        "assigneePersonId": ME, "createdAt": ago(6000), "updatedAt": ago(300), "doneAt": null}),
+    );
     Value::Array(rows)
 }
 
@@ -123,7 +135,10 @@ type Fixtures = Vec<(&'static str, Value)>;
 fn base(viewer: Value) -> Fixtures {
     vec![
         ("__me", viewer),
-        ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 3})),
+        (
+            "sidebar:counts",
+            json!({"myOpen": 2, "activeProjects": 3, "triage": 3}),
+        ),
         ("__tracks", json!({})),
         ("board:people", json!([])),
         ("board:projects", projects()),
@@ -181,7 +196,14 @@ struct Page<'a> {
 
 impl Page<'_> {
     fn seed(&self, key: &str, value: Value) {
-        self.app.borrow_mut().as_mut().unwrap().net.as_mut().unwrap().seed(key, value);
+        self.app
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .net
+            .as_mut()
+            .unwrap()
+            .seed(key, value);
     }
     fn steps(&mut self, n: usize) {
         for _ in 0..n {
@@ -192,11 +214,16 @@ impl Page<'_> {
         self.harness.query_all_by_label(label).next().is_some()
     }
     fn has_part(&self, label: &str) -> bool {
-        self.harness.query_all_by_label_contains(label).next().is_some()
+        self.harness
+            .query_all_by_label_contains(label)
+            .next()
+            .is_some()
     }
     fn button(&mut self, label: &str) {
         self.harness
-            .get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label))
+            .get_all_by(|n| {
+                n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(label)
+            })
             .next()
             .unwrap_or_else(|| panic!("no button {label}"))
             .click();
@@ -227,16 +254,23 @@ fn page<'a>(
     size: (f32, f32),
     gpu: bool,
 ) -> Page<'a> {
-    let builder = Harness::builder().with_size(egui::vec2(size.0, size.1)).with_pixels_per_point(2.0);
+    let builder = Harness::builder()
+        .with_size(egui::vec2(size.0, size.1))
+        .with_pixels_per_point(2.0);
     let builder = if gpu { builder.wgpu() } else { builder };
     let mut harness = builder.build_ui(move |ui| {
         let mut slot = app.borrow_mut();
         if slot.is_none() {
             theme::install(ui.ctx());
-            ui.ctx().all_styles_mut(|s| s.animation_time = egui::Style::default().animation_time);
+            ui.ctx()
+                .all_styles_mut(|s| s.animation_time = egui::Style::default().animation_time);
             ui.ctx().set_zoom_factor(1.15);
             *slot = Some(App {
-                net: Some(Net::spawn(silent_server().into(), "test".into(), ui.ctx().clone())),
+                net: Some(Net::spawn(
+                    silent_server().into(),
+                    "test".into(),
+                    ui.ctx().clone(),
+                )),
                 tab,
                 project: None,
                 task: task.map(str::to_owned),
@@ -244,6 +278,7 @@ fn page<'a>(
                 login: views::login::State::default(),
                 board: views::board::State::default(),
                 palette: views::palette::State::default(),
+                settings: views::settings::State::default(),
             });
             return;
         }
@@ -268,7 +303,9 @@ fn tab(p: &Page<'_>) -> Tab {
 /// The row itself, a button named by its title.
 fn row_node<'a>(p: &'a Page<'_>, title: &'a str) -> egui_kittest::Node<'a> {
     p.harness
-        .get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(title))
+        .get_all_by(|n| {
+            n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some(title)
+        })
         .next()
         .unwrap_or_else(|| panic!("no row {title}"))
 }
@@ -299,7 +336,11 @@ fn triage_is_a_tab_from_the_sidebar() {
     let f = my_tasks(true, true);
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1100.0), false);
-    p.harness.get_by(|n| n.label().as_deref() == Some("Triage") && n.role() == egui::accesskit::Role::Button).click();
+    p.harness
+        .get_by(|n| {
+            n.label().as_deref() == Some("Triage") && n.role() == egui::accesskit::Role::Button
+        })
+        .click();
     p.steps(3);
     assert!(tab(&p) == Tab::Triage);
     assert!(p.has("3 waiting on a yes or a no"));
@@ -318,7 +359,8 @@ fn triage_opens_from_the_palette() {
     let f = my_tasks(true, true);
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::Home, None, (1440.0, 1100.0), false);
-    p.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+    p.harness
+        .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
     p.steps(2);
     p.harness.event(egui::Event::Text("Triage".into()));
     p.steps(2);
@@ -337,7 +379,10 @@ fn rows_are_quiet_until_hovered() {
     assert!(!p.has("Accept into a project"), "no split button");
     hover_row(&mut p, BUG_TITLE);
     assert!(p.has(&accept) && p.has(&format!("Dismiss {BUG_TITLE}")));
-    assert!(!p.has(&format!("Accept {DM_TITLE}")), "only the row pointed at");
+    assert!(
+        !p.has(&format!("Accept {DM_TITLE}")),
+        "only the row pointed at"
+    );
     p.button(&accept);
     p.seed("tasks:action", json!({"id": BUG, "status": "open"}));
     p.steps(3);
@@ -355,11 +400,19 @@ fn a_and_d_decide_the_hovered_row() {
     p.steps(3);
     assert!(p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")));
     // Typing a reason with an A in it is typing, not a decision.
-    p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).focus();
+    p.harness
+        .get_by(|n| {
+            n.placeholder()
+                .is_some_and(|h| h.starts_with("Already fixed"))
+        })
+        .focus();
     p.steps(1);
     p.harness.key_press(egui::Key::A);
     p.steps(2);
-    assert!(p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")), "still asking");
+    assert!(
+        p.has(&format!("Dismiss \u{201c}{DM_TITLE}\u{201d}?")),
+        "still asking"
+    );
     p.harness.key_press(egui::Key::Escape);
     p.steps(3);
 
@@ -378,7 +431,13 @@ fn accept_into_is_on_the_right_click_menu() {
     let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
     row_node(&p, BUG_TITLE).click_secondary();
     p.steps(3);
-    for item in ["Open", "Accept", "Accept into", "Dismiss\u{2026}", "Copy title"] {
+    for item in [
+        "Open",
+        "Accept",
+        "Accept into",
+        "Dismiss\u{2026}",
+        "Copy title",
+    ] {
         assert!(p.has(item), "{item}");
     }
     p.harness.get_by_label("Accept into").hover();
@@ -386,7 +445,10 @@ fn accept_into_is_on_the_right_click_menu() {
     assert!(p.has("Checkout redesign"));
     assert!(!p.has("Old launch"), "archived projects are not offered");
     p.button("Checkout redesign");
-    p.seed("tasks:action", json!({"id": BUG, "status": "open", "projectId": CHECKOUT}));
+    p.seed(
+        "tasks:action",
+        json!({"id": BUG, "status": "open", "projectId": CHECKOUT}),
+    );
     p.steps(3);
     assert!(p.has("Accepted into Checkout redesign."));
 }
@@ -402,13 +464,26 @@ fn dismiss_asks_for_an_optional_reason() {
     assert!(p.has(&format!("Dismiss \u{201c}{BUG_TITLE}\u{201d}?")));
     p.harness.key_press(egui::Key::Escape);
     p.steps(3);
-    assert!(!p.has(&format!("Dismiss \u{201c}{BUG_TITLE}\u{201d}?")), "Escape leaves it in triage");
+    assert!(
+        !p.has(&format!("Dismiss \u{201c}{BUG_TITLE}\u{201d}?")),
+        "Escape leaves it in triage"
+    );
 
     hover_row(&mut p, BUG_TITLE);
     p.button(&dismiss);
-    p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).focus();
+    p.harness
+        .get_by(|n| {
+            n.placeholder()
+                .is_some_and(|h| h.starts_with("Already fixed"))
+        })
+        .focus();
     p.steps(1);
-    p.harness.get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("Already fixed"))).type_text("Fixed in #4821");
+    p.harness
+        .get_by(|n| {
+            n.placeholder()
+                .is_some_and(|h| h.starts_with("Already fixed"))
+        })
+        .type_text("Fixed in #4821");
     p.steps(1);
     p.harness.key_press(egui::Key::Enter);
     p.steps(2);
@@ -420,7 +495,10 @@ fn dismiss_asks_for_an_optional_reason() {
 #[test]
 fn an_empty_triage_tab_stays_put() {
     let mut f = my_tasks(false, true);
-    f[1] = ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 0}));
+    f[1] = (
+        "sidebar:counts",
+        json!({"myOpen": 2, "activeProjects": 3, "triage": 0}),
+    );
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::Triage, None, (1440.0, 1100.0), false);
     assert!(tab(&p) == Tab::Triage);
@@ -468,7 +546,10 @@ fn a_teammate_sees_a_dm_source_without_its_words() {
     let app = RefCell::new(None);
     let p = page(&app, &f, Tab::MyTasks, Some(DM), (1440.0, 1400.0), false);
     assert!(p.has(DM_TEXT), "the owner reads their own DM");
-    assert!(p.has("Rahul Mehta") && p.has_part("Direct message \u{00B7} "), "who, then where");
+    assert!(
+        p.has("Rahul Mehta") && p.has_part("Direct message \u{00B7} "),
+        "who, then where"
+    );
 }
 
 #[test]
@@ -491,7 +572,12 @@ fn accept_from_the_task_page() {
     let f = task_page_fixtures(BUG, true);
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::MyTasks, Some(BUG), (1440.0, 1400.0), false);
-    let accepts = p.harness.get_all_by(|n| n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Accept")).count();
+    let accepts = p
+        .harness
+        .get_all_by(|n| {
+            n.role() == egui::accesskit::Role::Button && n.label().as_deref() == Some("Accept")
+        })
+        .count();
     assert_eq!(accepts, 1, "one Accept");
     // Accept into another project is in the page's ⋯ menu.
     p.button("More actions");
@@ -505,16 +591,20 @@ fn accept_from_the_task_page() {
 }
 
 #[test]
-fn connect_offers_intake_as_a_switch() {
+fn connect_offers_intake_as_a_role() {
     let f = base(me(ME));
     let app = RefCell::new(None);
     let mut p = page(&app, &f, Tab::Agents, None, (1440.0, 1300.0), false);
     p.seed("agents:mine", agents(true));
     p.steps(2);
     p.button("Connect an agent");
-    let label = "Can create tasks for me (intake)";
+    let label = "Creates tasks for me";
     let toggled = |p: &Page<'_>| p.harness.get_by_label(label).accesskit_node().toggled();
-    assert_eq!(toggled(&p), Some(egui::accesskit::Toggled::False), "off unless asked for");
+    assert_eq!(
+        toggled(&p),
+        Some(egui::accesskit::Toggled::False),
+        "off unless asked for"
+    );
     p.harness.get_by_label(label).click();
     p.steps(2);
     assert_eq!(toggled(&p), Some(egui::accesskit::Toggled::True));
@@ -527,7 +617,7 @@ fn an_intake_agent_card_shows_what_it_filed() {
     let mut p = page(&app, &f, Tab::Agents, None, (1440.0, 1300.0), false);
     p.seed("agents:mine", agents(true));
     p.steps(3);
-    assert!(p.has("Intake"));
+    assert!(p.has("Files tasks"));
     assert!(p.has("in triage") && p.has("accepted") && p.has("dismissed"));
     assert!(p.has("12") && p.has("4"));
     // Its filings are standalone and labelled, not a project to open.
@@ -542,7 +632,11 @@ fn home_lists_triage_as_needing_attention() {
     assert!(p.has("Needs attention"));
     assert!(p.has("Slack Agent filed a bug \u{00B7} accept or dismiss"));
     assert!(p.has("Slack Agent filed a feature request \u{00B7} accept or dismiss"));
-    p.harness.get_all_by_label(BUG_TITLE).next().unwrap().click();
+    p.harness
+        .get_all_by_label(BUG_TITLE)
+        .next()
+        .unwrap()
+        .click();
     p.steps(2);
     assert_eq!(p.open().1.as_deref(), Some(BUG));
 }
@@ -561,7 +655,11 @@ fn save(p: &mut Page<'_>, name: &str, label: &str) {
 fn save_in(p: &mut Page<'_>, dir: &str, name: &str, label: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let path = format!("{dir}/{name}-{label}.png");
-    p.harness.render().expect("render").save(&path).expect("write png");
+    p.harness
+        .render()
+        .expect("render")
+        .save(&path)
+        .expect("write png");
     eprintln!("wrote {path}");
 }
 
@@ -576,7 +674,7 @@ fn renders() {
         p.steps(4);
         save(&mut p, "agent-card", label);
         p.button("Connect an agent");
-        p.harness.get_by_label("Can create tasks for me (intake)").click();
+        p.harness.get_by_label("Creates tasks for me").click();
         p.steps(20);
         save(&mut p, "connect-intake", label);
         // The page's dialog state is per thread, as the one window's is.
@@ -603,7 +701,10 @@ fn renders() {
         drop(p);
 
         let mut empty = my_tasks(false, true);
-        empty[1] = ("sidebar:counts", json!({"myOpen": 2, "activeProjects": 3, "triage": 0}));
+        empty[1] = (
+            "sidebar:counts",
+            json!({"myOpen": 2, "activeProjects": 3, "triage": 0}),
+        );
         let app = RefCell::new(None);
         let mut p = page(&app, &empty, Tab::Triage, None, (width, 1000.0), true);
         save_in(&mut p, TRIAGE_DIR, "triage-empty", label);
@@ -644,15 +745,39 @@ fn task_page_width_sweep() {
     let mut f = task_page_fixtures(BUG, true);
     for (k, v) in f.iter_mut() {
         if *k == "task:one" {
-            v["title"] = json!("Add Frontend to the Mock Interview skill options for every learner track");
+            v["title"] =
+                json!("Add Frontend to the Mock Interview skill options for every learner track");
             v["labels"] = json!([{"id": "l1", "name": "Slack", "colour": "purple"}]);
             v["source"]["reason"] = json!("A specific additional Mock Interview skill option was requested from the owner in the issues channel, which needs a product decision before it can be built.");
+            v["projectId"] = json!("p1");
+            v["projectName"] = json!("Give multiselect feature for the learner skill options picker");
+        }
+    }
+    for (k, v) in f.iter_mut() {
+        if *k == "task:artifacts" {
+            *v = json!([
+                {"id": "r1", "kind": "commit", "url": "https://github.com/airtribe-live/mycohort-api/commit/6f54d7dd1e2a9b", "title": "", "addedBy": {"name": "Anmol Srivastava"}, "canRemove": true},
+                {"id": "r2", "kind": "pr", "url": "https://github.com/airtribe-live/mycohort-api/pull/4821", "title": "Mock interview: frontend skill option", "addedBy": {"name": "Anmol Srivastava"}, "addedByAgent": "Airtribe Agent", "canRemove": false},
+            ]);
+        }
+    }
+    // A long project name: the rail's Project picker must truncate.
+    let long = json!("Give multiselect feature for the learner skill options picker");
+    for (_, v) in f.iter_mut() {
+        if let Some(rows) = v.as_array_mut() {
+            for r in rows.iter_mut().filter(|r| r["id"] == "p1" && r.get("name").is_some()) {
+                r["name"] = long.clone();
+            }
         }
     }
     for w in [880.0, 960.0, 1040.0, 1120.0, 1200.0, 1400.0] {
         let app = RefCell::new(None);
         let mut p = page(&app, &f, Tab::Home, Some(BUG), (w, 900.0), true);
         let path = format!("/tmp/sweep-{}.png", w as i32);
-        p.harness.render().expect("render").save(&path).expect("png");
+        p.harness
+            .render()
+            .expect("render")
+            .save(&path)
+            .expect("png");
     }
 }

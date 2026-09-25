@@ -39,7 +39,8 @@ pub fn all() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "task_search",
-            description: "Search tasks by project, phase, status, or assignee. All filters optional.",
+            description:
+                "Search tasks by project, phase, status, or assignee. All filters optional.",
             scope: "read",
             input_schema: schema(
                 json!({
@@ -144,8 +145,19 @@ pub fn for_scopes(scopes: &[String]) -> Vec<ToolDef> {
 pub fn agent_tools() -> Vec<ToolDef> {
     let uuid = json!({ "type": "string", "format": "uuid" });
     let task_only = || schema(json!({ "taskId": uuid }), &["taskId"]);
-    let with_body = || schema(json!({ "taskId": uuid, "body": { "type": "string" } }), &["taskId", "body"]);
-    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef { name, description, scope: "agent", input_schema, doc: "" };
+    let with_body = || {
+        schema(
+            json!({ "taskId": uuid, "body": { "type": "string" } }),
+            &["taskId", "body"],
+        )
+    };
+    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef {
+        name,
+        description,
+        scope: "agent",
+        input_schema,
+        doc: "",
+    };
     vec![
         tool(
             "agent_inbox",
@@ -157,9 +169,13 @@ pub fn agent_tools() -> Vec<ToolDef> {
         tool(
             "task_context",
             "Everything about one of your tasks: the task with its track and allowed next statuses, the \
-             project (with its repositories and localPath, the folder on your owner's Mac to work in), \
+             project (with its repositories and localPath, the folder on your owner's Mac to work in), or, \
+             when there is none to work in, folder — a folder from your owner's own list ({name, path, \
+             source}, source being 'pinned' if the task named it or 'default' otherwise) — \
              the owner, every note oldest first, artifacts by kind, and related work (tasks it \
-             waits on and tasks waiting on it, with their PRs, commits and Figma links).",
+             waits on and tasks waiting on it, with their PRs, commits and Figma links), and, for a \
+             task filed from a message, source: the message, the earlier messages in its thread and \
+             its files.",
             task_only(),
         ),
         tool("task_ack", "Acknowledge a task handed to you, so your owner sees you have it.", task_only()),
@@ -262,10 +278,31 @@ pub fn intake_tools() -> Vec<ToolDef> {
             "text": { "type": "string", "description": "The message, verbatim." },
             "receivedAt": { "type": "string", "format": "date-time" },
             "private": { "type": "boolean", "description": "A direct message: only your owner and admins see its text and author." },
+            "thread": {
+                "type": "array",
+                "maxItems": 30,
+                "description": "The earlier messages in its thread, oldest first (at most 30, each text at most 4,000 characters), so whoever works the task reads the conversation. Private with the message.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "author": { "type": "string" },
+                        "text": { "type": "string", "maxLength": 4000, "description": "Slack formatting, names resolved like source.text." },
+                        "ts": { "type": "string", "description": "Its Slack ts." },
+                        "receivedAt": { "type": "string", "format": "date-time" },
+                    },
+                    "required": ["author", "text", "receivedAt"],
+                },
+            },
         },
         "required": ["kind", "key", "url", "channel", "author", "text", "receivedAt"],
     });
-    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef { name, description, scope: "agent", input_schema, doc: "" };
+    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef {
+        name,
+        description,
+        scope: "agent",
+        input_schema,
+        doc: "",
+    };
     vec![
         tool(
             "intake_create",

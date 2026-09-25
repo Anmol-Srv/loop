@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::menus::{Pick, Viewer};
 use super::projects::{PROJECTS_KEY, PROSE_W};
+use crate::desktop::design::agent as face;
 use crate::desktop::design::{
     cards as c, colour, glyph, motion, radius, shell, size, space, text, theme, viz, widgets as w,
 };
@@ -23,11 +24,19 @@ pub(super) const NOT_YOURS: &str = "Only the person it was filed for, or an admi
 const ROW_H: f32 = 56.0;
 
 /// The categories an intake agent files under, wire value first.
-pub(super) const CATEGORIES: [(&str, &str); 5] =
-    [("bug", "Bug"), ("feature", "Feature"), ("feedback", "Feedback"), ("question", "Question"), ("chore", "Chore")];
+pub(super) const CATEGORIES: [(&str, &str); 5] = [
+    ("bug", "Bug"),
+    ("feature", "Feature"),
+    ("feedback", "Feedback"),
+    ("question", "Question"),
+    ("chore", "Chore"),
+];
 
 pub(super) fn category_label(value: &str) -> &str {
-    CATEGORIES.iter().find(|(v, _)| *v == value).map_or(value, |(_, l)| l)
+    CATEGORIES
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map_or(value, |(_, l)| l)
 }
 
 /// One tinted chip per category, from the chip tones: every one of them
@@ -62,7 +71,8 @@ pub(super) fn want_projects(net: &mut Net) {
 
 /// Whether the viewer may decide on `t`.
 pub(super) fn decides(t: &Value, viewer: &Viewer) -> bool {
-    viewer.admin || (!viewer.me.is_empty() && str_of(t, "assigneePersonId") == Some(viewer.me.as_str()))
+    viewer.admin
+        || (!viewer.me.is_empty() && str_of(t, "assigneePersonId") == Some(viewer.me.as_str()))
 }
 
 // ------------------------------------------------------------------ the source
@@ -83,7 +93,9 @@ fn channel(src: &Value) -> Option<String> {
     if private(src) {
         return Some("Direct message".to_owned());
     }
-    let raw = str_of(src, "channelName").or_else(|| str_of(src, "channel"))?.trim();
+    let raw = str_of(src, "channelName")
+        .or_else(|| str_of(src, "channel"))?
+        .trim();
     if raw.is_empty() {
         return None;
     }
@@ -91,7 +103,10 @@ fn channel(src: &Value) -> Option<String> {
         return Some(raw.to_owned());
     }
     // "C04AB12CD": an id, not a name. Better nothing than a code.
-    let id_like = raw.len() >= 9 && raw.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit());
+    let id_like = raw.len() >= 9
+        && raw
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit());
     (!id_like).then(|| format!("#{raw}"))
 }
 
@@ -101,7 +116,9 @@ fn kind_word(kind: &str) -> String {
         "github" => "GitHub".to_owned(),
         other => {
             let mut ch = other.chars();
-            ch.next().map(|f| f.to_uppercase().chain(ch).collect()).unwrap_or_else(|| "Intake".to_owned())
+            ch.next()
+                .map(|f| f.to_uppercase().chain(ch).collect())
+                .unwrap_or_else(|| "Intake".to_owned())
         }
     }
 }
@@ -111,11 +128,18 @@ fn kind_word(kind: &str) -> String {
 pub(super) fn source_words(src: &Value, short_age: bool) -> String {
     let mut parts = vec![kind_word(str_of(src, "kind").unwrap_or("slack"))];
     parts.extend(channel(src));
-    if let Some(a) = str_of(src, "author").map(str::trim).filter(|a| !a.is_empty()) {
+    if let Some(a) = str_of(src, "author")
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
         parts.push(a.to_owned());
     }
     if let Some(at) = str_of(src, "receivedAt") {
-        let age = if short_age { super::mytasks::age(at) } else { super::task::ago(at) };
+        let age = if short_age {
+            super::mytasks::age(at)
+        } else {
+            super::task::ago(at)
+        };
         if !age.is_empty() {
             parts.push(age);
         }
@@ -126,7 +150,13 @@ pub(super) fn source_words(src: &Value, short_age: bool) -> String {
 /// The source's mark, at `side`.
 fn mark(ui: &mut egui::Ui, src: &Value, side: f32, ink: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    glyph::source(ui.painter(), rect.center(), side, str_of(src, "kind").unwrap_or("slack"), ink);
+    glyph::source(
+        ui.painter(),
+        rect.center(),
+        side,
+        str_of(src, "kind").unwrap_or("slack"),
+        ink,
+    );
 }
 
 /// The source, as a card under the description: who said it, where and
@@ -141,10 +171,17 @@ pub(super) fn source_card(ui: &mut egui::Ui, net: &mut Net, t: &Value) {
     // A DM read by a teammate: the server sends a stand-in for the text and
     // no author. The stand-in is not the message, so it is not quoted.
     let withheld = private(src) && str_of(src, "author").is_none();
-    let said = str_of(src, "text").map(str::trim).filter(|s| !s.is_empty() && !withheld);
-    let files: &[Value] = src.get("files").and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let said = str_of(src, "text")
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !withheld);
+    let files: &[Value] = src
+        .get("files")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
     let readable = said.is_some() || !files.is_empty();
-    let owner = str_of(t, "assigneeName").and_then(|n| n.split_whitespace().next()).unwrap_or("its owner");
+    let owner = str_of(t, "assigneeName")
+        .and_then(|n| n.split_whitespace().next())
+        .unwrap_or("its owner");
 
     shell::section(ui, "Source");
     ui.scope(|ui| {
@@ -154,13 +191,18 @@ pub(super) fn source_card(ui: &mut egui::Ui, net: &mut Net, t: &Value) {
             ui.spacing_mut().item_spacing.y = space::SM;
             header(ui, src, readable);
             if readable {
+                thread(ui, t, src);
                 quote(ui, net, said, files);
             } else if private(src) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::XS;
-                    let (r, _) = ui.allocate_exact_size(Vec2::splat(text::SMALL + 1.0), Sense::hover());
+                    let (r, _) =
+                        ui.allocate_exact_size(Vec2::splat(text::SMALL + 1.0), Sense::hover());
                     glyph::lock(ui.painter(), r.center(), r.width(), colour::TEXT_MUTED);
-                    w::muted(ui, &format!("From a direct message \u{2014} only {owner} can read it."));
+                    w::muted(
+                        ui,
+                        &format!("From a direct message \u{2014} only {owner} can read it."),
+                    );
                 });
             }
             filed_by(ui, src);
@@ -188,8 +230,13 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
-                let author = str_of(src, "author").map(str::trim).is_some_and(|a| !a.is_empty());
-                if let Some(a) = str_of(src, "author").map(str::trim).filter(|a| !a.is_empty()) {
+                let author = str_of(src, "author")
+                    .map(str::trim)
+                    .is_some_and(|a| !a.is_empty());
+                if let Some(a) = str_of(src, "author")
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                {
                     ui.add(
                         egui::Label::new(
                             RichText::new(a)
@@ -210,8 +257,12 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
                     rest.push(kind_word(str_of(src, "kind").unwrap_or("slack")));
                 }
                 let r = ui.add(
-                    egui::Label::new(RichText::new(rest.join(" \u{00B7} ").trim_start()).size(text::SMALL).color(colour::TEXT_MUTED))
-                        .truncate(),
+                    egui::Label::new(
+                        RichText::new(rest.join(" \u{00B7} ").trim_start())
+                            .size(text::SMALL)
+                            .color(colour::TEXT_MUTED),
+                    )
+                    .truncate(),
                 );
                 if let Some(at) = at {
                     r.on_hover_text(super::task::exact(at));
@@ -221,27 +272,98 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
     });
 }
 
+/// The earlier messages in the thread, behind a quiet "Earlier in the
+/// thread (N)", closed by default: the message that was filed stays the
+/// first thing read, the conversation it came out of a click away.
+fn thread(ui: &mut egui::Ui, t: &Value, src: &Value) {
+    let earlier: &[Value] = src
+        .get("thread")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    if earlier.is_empty() {
+        return;
+    }
+    let id = egui::Id::new(("source:thread", str_of(t, "id").unwrap_or_default()));
+    let mut open: bool = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(false);
+    let label = format!("Earlier in the thread ({})", earlier.len());
+    face::disclosure(ui, id, &label, None, &mut open);
+    ui.ctx().data_mut(|d| d.insert_temp(id, open));
+    if !open {
+        return;
+    }
+    quoted(ui, colour::LINE, |ui| {
+        ui.spacing_mut().item_spacing.y = space::MD;
+        for m in earlier {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = space::XXS;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    let author = str_of(m, "author")
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty())
+                        .unwrap_or("Someone");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(author)
+                                .size(text::SMALL)
+                                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                .color(colour::TEXT_2),
+                        )
+                        .selectable(false),
+                    );
+                    if let Some(at) = str_of(m, "receivedAt") {
+                        let age = super::task::ago(at);
+                        if !age.is_empty() {
+                            ui.label(
+                                RichText::new(age)
+                                    .size(text::SMALL)
+                                    .color(colour::TEXT_MUTED),
+                            )
+                            .on_hover_text(super::task::exact(at));
+                        }
+                    }
+                });
+                if let Some(said) = str_of(m, "text").map(str::trim).filter(|s| !s.is_empty()) {
+                    super::mrkdwn::show(ui, said, colour::TEXT_MUTED);
+                }
+            });
+        }
+    });
+}
+
 /// The original words, as a quote: a rule down the left and the message
 /// beside it, its images underneath. Not a bubble — this is a record of what
 /// was said, not a conversation.
 fn quote(ui: &mut egui::Ui, net: &mut Net, said: Option<&str>, files: &[Value]) {
+    quoted(ui, colour::LINE_STRONG, |ui| {
+        if let Some(said) = said {
+            super::mrkdwn::show(ui, said, colour::TEXT_2);
+        }
+        if !files.is_empty() {
+            attachments(ui, net, files);
+        }
+    });
+}
+
+/// A quote block: `add` beside a `rule`-coloured bar down the left.
+fn quoted(ui: &mut egui::Ui, rule: egui::Color32, add: impl FnOnce(&mut egui::Ui)) {
     let out = egui::Frame::new()
-        .inner_margin(egui::Margin { left: space::MD as i8, right: 0, top: space::XXS as i8, bottom: space::XXS as i8 })
+        .inner_margin(egui::Margin {
+            left: space::MD as i8,
+            right: 0,
+            top: space::XXS as i8,
+            bottom: space::XXS as i8,
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = space::SM;
-            if let Some(said) = said {
-                super::mrkdwn::show(ui, said, colour::TEXT_2);
-            }
-            if !files.is_empty() {
-                attachments(ui, net, files);
-            }
+            add(ui);
         });
     let r = out.response.rect;
     ui.painter().rect_filled(
         egui::Rect::from_min_size(r.min, Vec2::new(space::XXS, r.height())),
         radius::SM as f32,
-        colour::LINE_STRONG,
+        rule,
     );
 }
 
@@ -267,7 +389,11 @@ fn want(net: &mut Net, id: &str) {
 /// A file's texture, decoded once and kept in the temp store. The lookup and
 /// the load are separate statements: `load_texture` takes the context lock
 /// `data_mut` holds (see `shell::mark_texture`).
-fn texture(ctx: &egui::Context, net: &Net, id: &str) -> Option<Result<egui::TextureHandle, String>> {
+fn texture(
+    ctx: &egui::Context,
+    net: &Net,
+    id: &str,
+) -> Option<Result<egui::TextureHandle, String>> {
     let tid = egui::Id::new(("source:texture", id));
     if let Some(held) = ctx.data(|d| d.get_temp::<Result<egui::TextureHandle, String>>(tid)) {
         return Some(held);
@@ -277,7 +403,11 @@ fn texture(ctx: &egui::Context, net: &Net, id: &str) -> Option<Result<egui::Text
         Ok(bytes) => match image::load_from_memory(bytes) {
             Err(e) => Err(format!("This image could not be read ({e}).")),
             Ok(img) => {
-                let img = if img.width().max(img.height()) > MAX_TEXTURE { img.thumbnail(MAX_TEXTURE, MAX_TEXTURE) } else { img };
+                let img = if img.width().max(img.height()) > MAX_TEXTURE {
+                    img.thumbnail(MAX_TEXTURE, MAX_TEXTURE)
+                } else {
+                    img
+                };
                 let rgba = img.to_rgba8();
                 let size = [rgba.width() as usize, rgba.height() as usize];
                 Ok(ctx.load_texture(
@@ -303,8 +433,9 @@ fn file_size(bytes: i64) -> String {
 
 /// Images as a grid of thumbnails, anything else as a file chip under them.
 fn attachments(ui: &mut egui::Ui, net: &mut Net, files: &[Value]) {
-    let (images, others): (Vec<&Value>, Vec<&Value>) =
-        files.iter().partition(|f| str_of(f, "mime").is_some_and(|m| m.starts_with("image/")));
+    let (images, others): (Vec<&Value>, Vec<&Value>) = files
+        .iter()
+        .partition(|f| str_of(f, "mime").is_some_and(|m| m.starts_with("image/")));
     if !images.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::splat(space::SM);
@@ -324,7 +455,9 @@ fn attachments(ui: &mut egui::Ui, net: &mut Net, files: &[Value]) {
 }
 
 fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
-    let (Some(id), name) = (str_of(f, "id"), str_of(f, "name").unwrap_or("image")) else { return };
+    let (Some(id), name) = (str_of(f, "id"), str_of(f, "name").unwrap_or("image")) else {
+        return;
+    };
     want(net, id);
     let tex = texture(ui.ctx(), net, id);
     if let Some(Err(e)) = &tex {
@@ -335,18 +468,29 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
     let natural = match &tex {
         Some(Ok(t)) => t.size_vec2(),
         _ => {
-            let dim = |k: &str| f.get(k).and_then(Value::as_f64).filter(|v| *v > 0.0).map(|v| v as f32);
-            dim("width").zip(dim("height")).map_or(Vec2::new(THUMB_W, THUMB_H * 0.75), |(w, h)| Vec2::new(w, h))
+            let dim = |k: &str| {
+                f.get(k)
+                    .and_then(Value::as_f64)
+                    .filter(|v| *v > 0.0)
+                    .map(|v| v as f32)
+            };
+            dim("width")
+                .zip(dim("height"))
+                .map_or(Vec2::new(THUMB_W, THUMB_H * 0.75), |(w, h)| Vec2::new(w, h))
         }
     };
     let scale = (THUMB_W / natural.x).min(THUMB_H / natural.y).min(1.0);
     let shown = (natural * scale).max(Vec2::splat(space::XXL));
     let (rect, response) = ui.allocate_exact_size(shown, Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open image {name}")));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open image {name}"))
+    });
     let response = motion::operable(ui, response, radius::MD as f32);
     let p = ui.painter();
     match &tex {
-        Some(Ok(t)) => egui::Image::new((t.id(), shown)).corner_radius(radius::MD).paint_at(ui, rect),
+        Some(Ok(t)) => egui::Image::new((t.id(), shown))
+            .corner_radius(radius::MD)
+            .paint_at(ui, rect),
         _ => {
             p.rect_filled(rect, radius::MD as f32, colour::INSET);
             glyph::evidence(p, rect.center(), text::HEADING, "doc", colour::TEXT_FAINT);
@@ -356,7 +500,14 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
     p.rect_stroke(
         rect,
         radius::MD as f32,
-        egui::Stroke::new(1.0, if hot { colour::LINE_STRONG } else { colour::LINE_SOFT }),
+        egui::Stroke::new(
+            1.0,
+            if hot {
+                colour::LINE_STRONG
+            } else {
+                colour::LINE_SOFT
+            },
+        ),
         egui::StrokeKind::Inside,
     );
     if response.hovered() {
@@ -364,7 +515,8 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
     }
     let response = response.on_hover_text(name);
     if response.clicked() {
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(LIGHTBOX), (id.to_owned(), name.to_owned())));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(LIGHTBOX), (id.to_owned(), name.to_owned())));
     }
 }
 
@@ -373,29 +525,77 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
 fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
     let id = str_of(f, "id").unwrap_or_default().to_owned();
     let name = str_of(f, "name").unwrap_or("file");
-    let size = f.get("size").and_then(Value::as_i64).map(file_size).unwrap_or_default();
-    let words = if size.is_empty() { name.to_owned() } else { format!("{name} \u{00B7} {size}") };
-    let galley = ui.painter().layout_no_wrap(words.clone(), egui::FontId::proportional(text::SMALL), colour::TEXT_2);
+    let size = f
+        .get("size")
+        .and_then(Value::as_i64)
+        .map(file_size)
+        .unwrap_or_default();
+    let words = if size.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} \u{00B7} {size}")
+    };
+    let galley = ui.painter().layout_no_wrap(
+        words.clone(),
+        egui::FontId::proportional(text::SMALL),
+        colour::TEXT_2,
+    );
     let height = size::CONTROL;
     let width = (galley.size().x + text::BODY + space::SM * 2.0 + space::XS).min(THUMB_W * 1.5);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open {name}")));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open {name}"))
+    });
     let response = motion::operable_sm(ui, response);
     let hot = response.hovered() || response.has_focus();
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, if hot { colour::GLASS_HOVER } else { colour::GLASS });
-    p.rect_stroke(rect, radius::SM as f32, egui::Stroke::new(1.0, if hot { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }), egui::StrokeKind::Inside);
+    p.rect_filled(
+        rect,
+        radius::SM as f32,
+        if hot {
+            colour::GLASS_HOVER
+        } else {
+            colour::GLASS
+        },
+    );
+    p.rect_stroke(
+        rect,
+        radius::SM as f32,
+        egui::Stroke::new(
+            1.0,
+            if hot {
+                colour::EDGE_HI_HOVER
+            } else {
+                colour::EDGE_MID
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
     let icon = egui::pos2(rect.left() + space::SM + text::BODY / 2.0, rect.center().y);
     glyph::evidence(p, icon, text::BODY, "doc", colour::TEXT_MUTED);
-    let text_rect = egui::Rect::from_min_max(egui::pos2(icon.x + text::BODY / 2.0 + space::XS, rect.top()), rect.max - Vec2::new(space::SM, 0.0));
-    let shown = w::truncated(ui, &words, egui::FontId::proportional(text::SMALL), colour::TEXT_2, text_rect.width());
-    p.galley(egui::pos2(text_rect.left(), rect.center().y - shown.size().y / 2.0), shown, colour::TEXT_2);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(icon.x + text::BODY / 2.0 + space::XS, rect.top()),
+        rect.max - Vec2::new(space::SM, 0.0),
+    );
+    let shown = w::truncated(
+        ui,
+        &words,
+        egui::FontId::proportional(text::SMALL),
+        colour::TEXT_2,
+        text_rect.width(),
+    );
+    p.galley(
+        egui::pos2(text_rect.left(), rect.center().y - shown.size().y / 2.0),
+        shown,
+        colour::TEXT_2,
+    );
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if response.clicked() && !id.is_empty() {
         want(net, &id);
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(OPENING), (id, name.to_owned())));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(OPENING), (id, name.to_owned())));
     }
     response
 }
@@ -404,14 +604,23 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
 /// open them and hand the file over.
 fn open_pending(ctx: &egui::Context, net: &Net) {
     let key = egui::Id::new(OPENING);
-    let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else { return };
-    let Some(got) = net.bytes(&file_key(&id)) else { return };
+    let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else {
+        return;
+    };
+    let Some(got) = net.bytes(&file_key(&id)) else {
+        return;
+    };
     ctx.data_mut(|d| d.remove::<(String, String)>(key));
     let written = got.clone().and_then(|bytes| {
         let dir = std::env::temp_dir().join("loop-files");
-        let safe: String = name.chars().map(|c| if c == '/' || c == '\\' { '-' } else { c }).collect();
+        let safe: String = name
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '-' } else { c })
+            .collect();
         let path = dir.join(format!("{}-{safe}", &id[..8.min(id.len())]));
-        std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes.as_slice())).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir)
+            .and_then(|_| std::fs::write(&path, bytes.as_slice()))
+            .map_err(|e| e.to_string())?;
         Ok(path)
     });
     match written {
@@ -424,7 +633,9 @@ fn open_pending(ctx: &egui::Context, net: &Net) {
 /// outside closes it too.
 fn lightbox(ctx: &egui::Context, net: &Net) {
     let key = egui::Id::new(LIGHTBOX);
-    let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else { return };
+    let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else {
+        return;
+    };
     let tex = texture(ctx, net, &id);
     let screen = ctx.content_rect();
     let room = Vec2::new(screen.width() * 0.8, screen.height() * 0.72);
@@ -434,35 +645,42 @@ fn lightbox(ctx: &egui::Context, net: &Net) {
     };
     let shown = natural * (room.x / natural.x).min(room.y / natural.y).min(1.0);
     let mut close = false;
-    let modal = super::agents::dialog(ctx, LIGHTBOX, shown.x.max(super::agents::DIALOG_W * 0.8), |ui| {
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                close = w::ghost(ui, "Close").clicked();
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(&name)
-                                .size(text::HEADING)
-                                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                .color(colour::TEXT),
-                        )
-                        .truncate(),
-                    );
+    let modal = super::agents::dialog(
+        ctx,
+        LIGHTBOX,
+        shown.x.max(super::agents::DIALOG_W * 0.8),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = w::ghost(ui, "Close").clicked();
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&name)
+                                    .size(text::HEADING)
+                                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                    .color(colour::TEXT),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
-        });
-        ui.add_space(space::MD);
-        match &tex {
-            Some(Ok(t)) => {
-                ui.vertical_centered(|ui| {
-                    let r = ui.add(egui::Image::new((t.id(), shown)).corner_radius(radius::MD));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, name.as_str()));
-                });
+            ui.add_space(space::MD);
+            match &tex {
+                Some(Ok(t)) => {
+                    ui.vertical_centered(|ui| {
+                        let r = ui.add(egui::Image::new((t.id(), shown)).corner_radius(radius::MD));
+                        r.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Image, true, name.as_str())
+                        });
+                    });
+                }
+                Some(Err(e)) => w::error(ui, e),
+                None => w::loading(ui, "Loading image"),
             }
-            Some(Err(e)) => w::error(ui, e),
-            None => w::loading(ui, "Loading image"),
-        }
-    });
+        },
+    );
     if close || modal.should_close() {
         ctx.data_mut(|d| d.remove::<(String, String)>(key));
     }
@@ -474,7 +692,10 @@ fn filed_by(ui: &mut egui::Ui, src: &Value) {
         .or_else(|| src.get("agent").and_then(|a| str_of(a, "name")))
         .unwrap_or("an intake agent");
     let mut line = format!("Filed by {agent}");
-    if let Some(reason) = str_of(src, "reason").map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(reason) = str_of(src, "reason")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         line += &format!(" \u{2014} {reason}");
     }
     let confidence = src.get("confidence").and_then(Value::as_f64);
@@ -486,7 +707,14 @@ fn filed_by(ui: &mut egui::Ui, src: &Value) {
         w::agent_mark(ui, text::BODY);
         // Wraps: an agent's reason can run long, and an unwrapped line in a
         // horizontal row widens the whole column and pushes the rail off-screen.
-        let r = ui.add(egui::Label::new(RichText::new(line).size(text::SMALL).color(colour::TEXT_MUTED)).wrap());
+        let r = ui.add(
+            egui::Label::new(
+                RichText::new(line)
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            )
+            .wrap(),
+        );
         if confidence.is_some() {
             r.on_hover_text("The last figure is how sure the agent was, from 0 to 1.");
         }
@@ -498,7 +726,11 @@ fn filed_by(ui: &mut egui::Ui, src: &Value) {
 /// The category chip, and — for someone who may edit it — a menu that sets
 /// it. Returns the category picked this frame. Without a category, an
 /// editor gets a quiet "Category" chip to set one; a reader gets nothing.
-pub(super) fn category_chip(ui: &mut egui::Ui, current: Option<&str>, editable: bool) -> Option<String> {
+pub(super) fn category_chip(
+    ui: &mut egui::Ui,
+    current: Option<&str>,
+    editable: bool,
+) -> Option<String> {
     let chip = match current {
         Some(v) => c::chip(ui, category_label(v), category_tone(v), false),
         None if editable => c::chip(ui, "Category", c::Tone::Neutral, false),
@@ -519,7 +751,12 @@ pub(super) fn category_chip(ui: &mut egui::Ui, current: Option<&str>, editable: 
     let r = motion::operable_sm(ui, r);
     if r.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        ui.painter().rect_stroke(chip.rect, radius::SM as f32, egui::Stroke::new(1.0, colour::LINE_STRONG), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            chip.rect,
+            radius::SM as f32,
+            egui::Stroke::new(1.0, colour::LINE_STRONG),
+            egui::StrokeKind::Inside,
+        );
     }
     let mut picked = None;
     viz::click_menu(&r, |ui| {
@@ -544,10 +781,16 @@ pub(super) fn page_actions(ui: &mut egui::Ui, t: &Value) -> Option<Pick> {
         None => "Make it an open task, in no project".to_owned(),
     };
     let mut pick = None;
-    if w::secondary(ui, "Accept", true).on_hover_text(hover).clicked() {
+    if w::secondary(ui, "Accept", true)
+        .on_hover_text(hover)
+        .clicked()
+    {
         pick = Some(Pick::Accept(None));
     }
-    if w::ghost(ui, "Dismiss").on_hover_text("Drop it, with an optional reason").clicked() {
+    if w::ghost(ui, "Dismiss")
+        .on_hover_text("Drop it, with an optional reason")
+        .clicked()
+    {
         pick = Some(Pick::Dismiss);
     }
     pick
@@ -559,17 +802,37 @@ const ICON_BTN: f32 = 26.0;
 /// A ghost icon button painted at `rect`: nothing at rest but the glyph, a
 /// soft fill on hover. `alpha` is the row's reveal, so the pair fades in and
 /// out with the row's hover rather than popping.
-fn icon_action(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, name: String, tip: &str, alpha: f32, accept: bool) -> egui::Response {
+fn icon_action(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    name: String,
+    tip: &str,
+    alpha: f32,
+    accept: bool,
+) -> egui::Response {
     let response = ui.interact(rect, id, Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.as_str()));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.as_str()));
     let response = motion::operable_sm(ui, response);
     let hot = response.hovered() || response.has_focus();
-    let fill = motion::hover_fill(ui, id.with("fill"), hot, colour::TRANSPARENT, colour::GLASS_HOVER);
+    let fill = motion::hover_fill(
+        ui,
+        id.with("fill"),
+        hot,
+        colour::TRANSPARENT,
+        colour::GLASS_HOVER,
+    );
     let p = ui.painter();
     if fill != colour::TRANSPARENT {
         p.rect_filled(rect, radius::SM as f32, fill.gamma_multiply(alpha));
     }
-    let ink = if hot { colour::TEXT } else { colour::TEXT_MUTED }.gamma_multiply(alpha);
+    let ink = if hot {
+        colour::TEXT
+    } else {
+        colour::TEXT_MUTED
+    }
+    .gamma_multiply(alpha);
     if accept {
         glyph::tick(p, rect.center(), text::BODY, ink);
     } else {
@@ -588,17 +851,30 @@ fn icon_action(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id, name: String, 
 pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
     let words = format!("{n} to triage");
     let font = egui::FontId::proportional(text::BODY);
-    let galley = ui.painter().layout_no_wrap(words.clone(), font, colour::TEXT_2);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(words.clone(), font, colour::TEXT_2);
     // Flush with the page's left column; the hover fill bleeds past it.
     let width = text::HEADING + space::XS + galley.size().x + space::SM + text::SMALL;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, size::CONTROL), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, words.as_str()));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, words.as_str()));
     let response = motion::operable_sm(ui, response);
     let hot = response.hovered() || response.has_focus();
-    let fill = motion::hover_fill(ui, response.id.with("hover"), hot, colour::TRANSPARENT, colour::GLASS_HOVER);
+    let fill = motion::hover_fill(
+        ui,
+        response.id.with("hover"),
+        hot,
+        colour::TRANSPARENT,
+        colour::GLASS_HOVER,
+    );
     let p = ui.painter();
     if fill != colour::TRANSPARENT {
-        p.rect_filled(rect.expand2(Vec2::new(space::SM, 0.0)), radius::SM as f32, fill);
+        p.rect_filled(
+            rect.expand2(Vec2::new(space::SM, 0.0)),
+            radius::SM as f32,
+            fill,
+        );
     }
     let ink = if hot { colour::TEXT } else { colour::TEXT_2 };
     let mut x = rect.left();
@@ -610,9 +886,23 @@ pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
         colour::TEXT_MUTED,
     );
     x += text::HEADING + space::XS;
-    p.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, ink);
+    p.galley(
+        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
+    );
     let caret_x = rect.right() - text::SMALL / 2.0;
-    glyph::caret(p, egui::pos2(caret_x, rect.center().y), text::SMALL, 0.0, if hot { colour::TEXT } else { colour::TEXT_FAINT });
+    glyph::caret(
+        p,
+        egui::pos2(caret_x, rect.center().y),
+        text::SMALL,
+        0.0,
+        if hot {
+            colour::TEXT
+        } else {
+            colour::TEXT_FAINT
+        },
+    );
     if hot {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -635,14 +925,23 @@ pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
     let net = app.net.as_mut().expect("signed in");
     net.get_once(super::mytasks::MINE, "/api/user/tasks/mine");
     want_projects(net);
-    let viewer = Viewer { projects: projects(net), ..viewer };
+    super::settings::want_folders(net);
+    let viewer = Viewer {
+        projects: projects(net),
+        folders: super::settings::folders(net),
+        ..viewer
+    };
     let loading = net.is_loading(super::mytasks::MINE);
     let error = net.error(super::mytasks::MINE).map(str::to_owned);
     let all = net.shared(super::mytasks::MINE);
     let mut rows: Vec<&Value> = all
         .as_deref()
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter(|t| str_of(t, "status") == Some("triage")).collect())
+        .map(|a| {
+            a.iter()
+                .filter(|t| str_of(t, "status") == Some("triage"))
+                .collect()
+        })
         .unwrap_or_default();
     rows.sort_by(|a, b| str_of(b, "createdAt").cmp(&str_of(a, "createdAt")));
 
@@ -654,14 +953,21 @@ pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
     shell::page_title(ui, "Triage", &subtitle, |_| {});
 
     if let Some(err) = error {
-        w::error(ui, &format!("Could not load triage. {err} Use Refresh in the sidebar to try again."));
+        w::error(
+            ui,
+            &format!("Could not load triage. {err} Use Refresh in the sidebar to try again."),
+        );
         return;
     }
     if rows.is_empty() {
         if loading && all.is_none() {
             w::loading(ui, "Loading triage");
         } else {
-            w::empty(ui, "Nothing to triage.", "Tasks your intake agents file land here.");
+            w::empty(
+                ui,
+                "Nothing to triage.",
+                "Tasks your intake agents file land here.",
+            );
         }
         return;
     }
@@ -673,7 +979,12 @@ pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
     }
 }
 
-fn list(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, deciding: Option<&str>) -> Option<Out> {
+fn list(
+    ui: &mut egui::Ui,
+    rows: &[&Value],
+    viewer: &Viewer,
+    deciding: Option<&str>,
+) -> Option<Out> {
     let mut out = None;
     w::card_list(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -681,7 +992,11 @@ fn list(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, deciding: Option<&s
         for (i, t) in rows.iter().enumerate() {
             if i > 0 {
                 let y = ui.cursor().top();
-                ui.painter().hline(ui.max_rect().x_range(), y, egui::Stroke::new(1.0, colour::LINE_SOFT));
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    y,
+                    egui::Stroke::new(1.0, colour::LINE_SOFT),
+                );
             }
             let busy = deciding.is_some() && deciding == str_of(t, "id");
             if let Some(o) = row(ui, t, viewer, busy) {
@@ -698,7 +1013,8 @@ fn list(ui: &mut egui::Ui, rows: &[&Value], viewer: &Viewer, deciding: Option<&s
 /// right-click menu.
 fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out> {
     let title = str_of(t, "title").unwrap_or("Untitled");
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     let response = motion::operable_sm(ui, response);
 
@@ -714,7 +1030,13 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
     let (accept_id, dismiss_id) = (response.id.with("accept"), response.id.with("dismiss"));
     let icon_focus = ui.memory(|m| m.has_focus(accept_id) || m.has_focus(dismiss_id));
     let lit = response.contains_pointer() || response.has_focus() || menu_open || icon_focus;
-    let tint = motion::hover_fill(ui, response.id.with("hover"), lit, colour::TRANSPARENT, colour::SURFACE_HOVER);
+    let tint = motion::hover_fill(
+        ui,
+        response.id.with("hover"),
+        lit,
+        colour::TRANSPARENT,
+        colour::SURFACE_HOVER,
+    );
     if tint != colour::TRANSPARENT {
         ui.painter().rect_filled(rect, radius::SM as f32, tint);
     }
@@ -724,10 +1046,17 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
 
     // The pair's room is kept whether or not it shows, so the title never
     // re-truncates under the pointer.
-    let reserve = if decides { ICON_BTN * 2.0 + space::XXS + space::SM } else { 0.0 };
+    let reserve = if decides {
+        ICON_BTN * 2.0 + space::XXS + space::SM
+    } else {
+        0.0
+    };
     if decides {
         let y = rect.center().y - ICON_BTN / 2.0;
-        let dismiss = egui::Rect::from_min_size(egui::pos2(rect.right() - space::SM - ICON_BTN, y), Vec2::splat(ICON_BTN));
+        let dismiss = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - space::SM - ICON_BTN, y),
+            Vec2::splat(ICON_BTN),
+        );
         let accept = dismiss.translate(Vec2::new(-(ICON_BTN + space::XXS), 0.0));
         if busy {
             let spin = egui::Rect::from_center_size(dismiss.center(), Vec2::splat(text::BODY));
@@ -735,10 +1064,30 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
         } else {
             let alpha = motion::to(ui, response.id.with("reveal"), lit, motion::FAST);
             if alpha > 0.0 {
-                if icon_action(ui, accept, accept_id, format!("Accept {title}"), "Accept (A)", alpha, true).clicked() {
+                if icon_action(
+                    ui,
+                    accept,
+                    accept_id,
+                    format!("Accept {title}"),
+                    "Accept (A)",
+                    alpha,
+                    true,
+                )
+                .clicked()
+                {
                     pick = Some(Pick::Accept(None));
                 }
-                if icon_action(ui, dismiss, dismiss_id, format!("Dismiss {title}"), "Dismiss (D)", alpha, false).clicked() {
+                if icon_action(
+                    ui,
+                    dismiss,
+                    dismiss_id,
+                    format!("Dismiss {title}"),
+                    "Dismiss (D)",
+                    alpha,
+                    false,
+                )
+                .clicked()
+                {
                     pick = Some(Pick::Dismiss);
                 }
             }
@@ -746,7 +1095,10 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
             // not while a text field has the keyboard.
             if lit && !menu_open && !ui.ctx().text_edit_focused() {
                 let (a, d) = ui.input_mut(|i| {
-                    (i.consume_key(egui::Modifiers::NONE, egui::Key::A), i.consume_key(egui::Modifiers::NONE, egui::Key::D))
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::A),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::D),
+                    )
                 });
                 if a {
                     pick = Some(Pick::Accept(None));
@@ -784,18 +1136,28 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
         .selectable(false),
     );
     if let Some(src) = source_of(t) {
-        let mut second = line(rect.bottom() - space::SM - text::SMALL * 1.5, text::SMALL * 1.5);
+        let mut second = line(
+            rect.bottom() - space::SM - text::SMALL * 1.5,
+            text::SMALL * 1.5,
+        );
         second.spacing_mut().item_spacing.x = space::XS;
         mark(&mut second, src, text::SMALL, colour::TEXT_MUTED);
         let mut words = source_words(src, true);
         let withheld = private(src) && str_of(src, "author").is_none();
-        if let Some(said) = str_of(src, "text").map(str::trim).filter(|s| !s.is_empty() && !withheld) {
+        if let Some(said) = str_of(src, "text")
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !withheld)
+        {
             words += &format!("  \u{201c}{}\u{201d}", super::mrkdwn::plain(said));
         }
         second.add(
-            egui::Label::new(RichText::new(words).size(text::SMALL).color(colour::TEXT_MUTED))
-                .truncate()
-                .selectable(false),
+            egui::Label::new(
+                RichText::new(words)
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            )
+            .truncate()
+            .selectable(false),
         );
     }
 
@@ -819,11 +1181,23 @@ mod tests {
     #[test]
     fn source_words_read_like_a_line() {
         let s = json!({"kind": "slack", "channel": "C04AB12CD", "channelName": "issues-and-feedback", "author": "Priya"});
-        assert_eq!(source_words(&s, true), "Slack \u{00B7} #issues-and-feedback \u{00B7} Priya");
+        assert_eq!(
+            source_words(&s, true),
+            "Slack \u{00B7} #issues-and-feedback \u{00B7} Priya"
+        );
         // A bare id with no name says nothing rather than a code.
-        assert_eq!(source_words(&json!({"kind": "slack", "channel": "C04AB12CD"}), true), "Slack");
+        assert_eq!(
+            source_words(&json!({"kind": "slack", "channel": "C04AB12CD"}), true),
+            "Slack"
+        );
         // A DM, as a teammate sees it: no author, and never the id.
-        assert_eq!(source_words(&json!({"kind": "slack", "channel": "D0123ABCD"}), true), "Slack \u{00B7} Direct message");
-        assert_eq!(source_words(&json!({"channel": "#general", "private": false}), true), "Slack \u{00B7} #general");
+        assert_eq!(
+            source_words(&json!({"kind": "slack", "channel": "D0123ABCD"}), true),
+            "Slack \u{00B7} Direct message"
+        );
+        assert_eq!(
+            source_words(&json!({"channel": "#general", "private": false}), true),
+            "Slack \u{00B7} #general"
+        );
     }
 }

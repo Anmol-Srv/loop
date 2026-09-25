@@ -1136,7 +1136,12 @@ fn resource_row(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
                 c::chip(ui, kind_label(kind), kind_tone(kind), false);
-                let name = if title.is_empty() { where_ } else { title };
+                let short = super::task::link_label(url);
+                let name = if !title.is_empty() {
+                    title
+                } else {
+                    short.as_deref().unwrap_or(where_)
+                };
                 // Half the row at most, so the address beside it still shows
                 // where the link goes.
                 let room = if title.is_empty() { ui.available_width() } else { ui.available_width() * 0.55 };
@@ -1159,7 +1164,9 @@ fn resource_row(
                 if !title.is_empty() {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(where_).size(text::SMALL).color(colour::TEXT_MUTED),
+                            RichText::new(short.as_deref().unwrap_or(where_))
+                                .size(text::SMALL)
+                                .color(colour::TEXT_MUTED),
                         )
                         .truncate(),
                     );
@@ -1813,12 +1820,14 @@ pub(super) fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-/// "Added by Dhaval", or "Attached by Hermes for Anmol" when an agent did.
+/// "Added by Dhaval", or "Attached by Hermes" when an agent did — whose
+/// agent it is shows on the agent's own page, and the long form crowded out
+/// the link's name.
 /// Rows from before anyone was recorded say nothing.
 pub(super) fn added_by(artifact: &Value) -> Option<String> {
     let person = artifact["addedBy"]["name"].as_str()?;
     Some(match artifact["addedByAgent"].as_str() {
-        Some(agent) => format!("Attached by {agent} for {person}"),
+        Some(agent) => format!("Attached by {agent}"),
         None => format!("Added by {person}"),
     })
 }
