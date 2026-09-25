@@ -20,7 +20,7 @@ use crate::controllers::{artifact, project, repo, task, token};
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::Actor;
-use crate::models::task::{next_statuses, TaskRow, HELD};
+use crate::models::task::{next_statuses, TaskRow, HELD, LIVE};
 
 pub const RUNTIMES: [&str; 4] = ["hermes", "claude-code", "codex", "other"];
 
@@ -64,6 +64,13 @@ pub struct Agent {
     pub current_task: Option<Value>,
     /// Notes it wrote per day over the last 14 days, oldest first.
     pub activity: Vec<i64>,
+    /// Whether it may file tasks for its owner (`/api/agent/intake`).
+    pub can_intake: bool,
+    /// The live project its filings go to, once it has filed one.
+    pub intake_project_id: Option<Uuid>,
+    pub intake_project_name: Option<String>,
+    /// What became of what it filed: `{triage, accepted, dismissed}`.
+    pub intake_stats: Value,
 }
 
 fn agent_select() -> String {
@@ -81,7 +88,21 @@ fn agent_select() -> String {
               ORDER BY t.delegated_at DESC NULLS LAST LIMIT 1) AS current_task,
             ARRAY(SELECT count(n.id) FROM generate_series(0, 13) i
                     LEFT JOIN note n ON n.agent_id = a.id AND n.created_at::date = current_date - 13 + i
-                   GROUP BY i ORDER BY i) AS activity
+                   GROUP BY i ORDER BY i) AS activity,
+            a.can_intake,
+            (SELECT pr.id FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
+              AS intake_project_id,
+            (SELECT pr.name FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
+              AS intake_project_name,
+            -- ponytail: read off the task's status today, so an accepted task
+            -- dropped later counts as dismissed. Record the decision on
+            -- task_source if that distinction ever matters.
+            (SELECT json_build_object(
+                      'triage', count(*) FILTER (WHERE t.status = 'triage'),
+                      'accepted', count(*) FILTER (WHERE t.status NOT IN ('triage', 'dropped')),
+                      'dismissed', count(*) FILTER (WHERE t.status = 'dropped'))
+               FROM task_source s JOIN task t ON t.id = s.task_id
+              WHERE s.agent_id = a.id AND NOT s.appended) AS intake_stats
        FROM agent a"
     )
 }
@@ -118,6 +139,7 @@ pub async fn create(
     handle: &str,
     name: &str,
     runtime: &str,
+    can_intake: bool,
     server: &str,
 ) -> AppResult<Minted> {
     let handle = handle.trim().to_lowercase();
@@ -138,12 +160,14 @@ pub async fn create(
 
     let mut tx = state.db.begin().await?;
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO agent (owner_id, handle, name, runtime) VALUES ($1, $2, $3, $4) RETURNING id",
+        "INSERT INTO agent (owner_id, handle, name, runtime, can_intake) VALUES ($1, $2, $3, $4, $5)
+         RETURNING id",
     )
     .bind(owner)
     .bind(&handle)
     .bind(&name)
     .bind(runtime)
+    .bind(can_intake)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
@@ -182,6 +206,21 @@ pub async fn rotate(state: &AppState, owner: Uuid, id: Uuid, server: &str) -> Ap
 
     let prompt = prompt(state, owner, &agent, &raw, server).await?;
     Ok(Minted { agent, token: raw, prompt })
+}
+
+/// Turn intake on or off for one of your agents. Off stops new filings; what
+/// it already filed stays where it is.
+pub async fn set_intake(state: &AppState, owner: Uuid, id: Uuid, can_intake: bool) -> AppResult<Agent> {
+    let found = sqlx::query("UPDATE agent SET can_intake = $3 WHERE id = $1 AND owner_id = $2 AND revoked_at IS NULL")
+        .bind(id)
+        .bind(owner)
+        .bind(can_intake)
+        .execute(&state.db)
+        .await?;
+    if found.rows_affected() == 0 {
+        return Err(AppError::NotFound("no such agent of yours".into()));
+    }
+    one(&state.db, id).await
 }
 
 /// Revoke an agent: its tokens stop working and every unfinished task it held
@@ -1038,7 +1077,7 @@ pub async fn review(
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Attention {
-    /// question or review.
+    /// question, review or triage.
     pub kind: String,
     pub task_id: Uuid,
     pub title: String,
@@ -1047,18 +1086,27 @@ pub struct Attention {
 }
 
 pub async fn needs_attention(state: &AppState, person: Uuid) -> AppResult<Vec<Attention>> {
-    Ok(sqlx::query_as(
-        "SELECT CASE t.agent_state WHEN 'needs_input' THEN 'question' ELSE 'review' END AS kind,
+    Ok(sqlx::query_as(&format!(
+        "SELECT kind, task_id, title, agent_name, body FROM (
+         SELECT CASE t.agent_state WHEN 'needs_input' THEN 'question' ELSE 'review' END AS kind,
                 t.id AS task_id, t.title, a.name AS agent_name,
                 coalesce((SELECT n.body FROM note n
                            WHERE n.task_id = t.id AND n.agent_id = a.id
                              AND n.kind = CASE t.agent_state WHEN 'needs_input' THEN 'question'
                                                              ELSE 'submission' END
-                           ORDER BY n.created_at DESC LIMIT 1), '') AS body
+                           ORDER BY n.created_at DESC LIMIT 1), '') AS body,
+                t.updated_at
            FROM task t JOIN agent a ON a.id = t.delegate_agent_id
           WHERE t.assignee_person_id = $1 AND t.agent_state IN ('needs_input', 'in_review')
-          ORDER BY t.updated_at DESC",
-    )
+         UNION ALL
+         -- What an intake agent filed for me; `body` is its category.
+         SELECT 'triage', t.id, t.title, a.name, coalesce(t.category, ''), t.updated_at
+           FROM task t
+           JOIN task_source s ON s.task_id = t.id AND NOT s.appended
+           JOIN agent a ON a.id = s.agent_id
+          WHERE t.assignee_person_id = $1 AND t.status = 'triage' AND {LIVE}
+         ) x ORDER BY updated_at DESC, task_id",
+    ))
     .bind(person)
     .fetch_all(&state.db)
     .await?)
@@ -1101,5 +1149,330 @@ pub async fn active(state: &AppState) -> AppResult<Vec<Active>> {
                    coalesce(t.agent_now_at, a.last_seen_at) DESC NULLS LAST, t.id",
     )
     .fetch_all(&state.db)
+    .await?)
+}
+
+// ---- Intake ------------------------------------------------------------------
+
+/// Where a filed task came from, as the agent sends it.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Source {
+    /// slack, email, github, …
+    pub kind: String,
+    /// The agent's stable id for the message (a Slack permalink or ts). The
+    /// same key is never filed or appended twice by one agent.
+    pub key: String,
+    pub url: String,
+    pub channel: String,
+    #[serde(default)]
+    pub channel_name: Option<String>,
+    pub author: String,
+    pub text: String,
+    pub received_at: chrono::DateTime<chrono::Utc>,
+    /// A direct message. A Slack channel id starting with `D` is one anyway.
+    #[serde(default)]
+    pub private: Option<bool>,
+}
+
+impl Source {
+    fn is_private(&self) -> bool {
+        self.private.unwrap_or(false) || self.channel.starts_with('D')
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Intake {
+    pub source: Source,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    pub category: String,
+    pub reason: String,
+    pub confidence: f32,
+    #[serde(default)]
+    pub priority: Option<i32>,
+}
+
+struct Intaker {
+    name: String,
+    owner: Uuid,
+    owner_name: String,
+    owner_email: String,
+    project: Option<Uuid>,
+}
+
+/// The agent, locked, if it may file. Locking it serialises one agent's
+/// intakes, so two first filings cannot make two intake projects.
+async fn intaker(tx: &mut PgTransaction<'_>, agent: Uuid) -> AppResult<Intaker> {
+    let (name, owner, owner_name, owner_email, can_intake, project): (String, Uuid, String, String, bool, Option<Uuid>) =
+        sqlx::query_as(
+            "SELECT a.name, a.owner_id, p.name, p.email, a.can_intake,
+                    (SELECT pr.id FROM project pr WHERE pr.id = a.intake_project_id AND pr.archived_at IS NULL)
+               FROM agent a JOIN person p ON p.id = a.owner_id
+              WHERE a.id = $1 FOR UPDATE OF a",
+        )
+        .bind(agent)
+        .fetch_one(&mut **tx)
+        .await?;
+    if !can_intake {
+        return Err(AppError::Forbidden(format!(
+            "{name} is not allowed to create tasks: {owner_name} has not turned on intake for it. \
+             Ask them to enable \"Can create tasks for me\" on your agent card, then try again."
+        )));
+    }
+    Ok(Intaker { name, owner, owner_name, owner_email, project })
+}
+
+fn dedupe_conflict(e: sqlx::Error, key: &str) -> AppError {
+    match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => AppError::Conflict(format!(
+            "The message {key} was already filed or appended by you a moment ago; check intake_recent."
+        )),
+        _ => AppError::Database(e),
+    }
+}
+
+/// The task this agent already filed or appended `key` to, if any.
+async fn seen(tx: &mut PgTransaction<'_>, agent: Uuid, key: &str) -> AppResult<Option<Uuid>> {
+    Ok(sqlx::query_scalar("SELECT task_id FROM task_source WHERE agent_id = $1 AND source_key = $2")
+        .bind(agent)
+        .bind(key)
+        .fetch_optional(&mut **tx)
+        .await?)
+}
+
+/// File a task for the owner from something the agent read. It lands in
+/// triage, assigned to the owner, in the agent's intake project — made on
+/// the first filing, and again if that one has been archived or deleted.
+pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskRow> {
+    let title = i.title.trim();
+    if title.is_empty() {
+        return Err(AppError::BadRequest("a filed task needs a title: one line saying what is wrong or wanted".into()));
+    }
+    task::check_category(&i.category)?;
+    if !(0.0..=1.0).contains(&i.confidence) {
+        return Err(AppError::BadRequest(format!(
+            "confidence is between 0 and 1 (how sure you are this is a real {}); you sent {}",
+            i.category, i.confidence
+        )));
+    }
+    if i.reason.trim().is_empty() {
+        return Err(AppError::BadRequest("say in one sentence why this is a task (reason)".into()));
+    }
+    let priority = i.priority.unwrap_or(2);
+    if !(0..=4).contains(&priority) {
+        return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
+    }
+    let (kind, key) = (i.source.kind.trim().to_lowercase(), i.source.key.trim().to_owned());
+    if kind.is_empty() || key.is_empty() {
+        return Err(AppError::BadRequest("source.kind and source.key are required".into()));
+    }
+
+    let mut tx = state.db.begin().await?;
+    let who = intaker(&mut tx, agent).await?;
+    if let Some(task_id) = seen(&mut tx, agent, &key).await? {
+        return Err(AppError::Conflict(format!(
+            "You already filed this message as task {task_id}; nothing was created. \
+             If it adds something, append it to that task instead."
+        )));
+    }
+
+    let actor = Actor { label: format!("{} (agent)", who.name), person_id: Some(who.owner), can_apply: true };
+    let project = match who.project {
+        Some(p) => p,
+        None => intake_project(&mut tx, &actor, agent, &who, &kind).await?,
+    };
+    let phase = task::first_phase(&mut tx, project).await?;
+
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO task (phase_id, title, body, priority, status, category,
+                           assignee_kind, assignee_person_id, created_by)
+         VALUES ($1, $2, $3, $4, 'triage', $5, 'human', $6, $6) RETURNING id",
+    )
+    .bind(phase)
+    .bind(title)
+    .bind(i.body.trim())
+    .bind(priority)
+    .bind(&i.category)
+    .bind(who.owner)
+    .fetch_one(&mut *tx)
+    .await?;
+    let s = &i.source;
+    sqlx::query(
+        "INSERT INTO task_source (task_id, agent_id, kind, source_key, url, channel, channel_name,
+                                  author, text, private, received_at, reason, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+    )
+    .bind(id)
+    .bind(agent)
+    .bind(&kind)
+    .bind(&key)
+    .bind(&s.url)
+    .bind(&s.channel)
+    .bind(&s.channel_name)
+    .bind(&s.author)
+    .bind(&s.text)
+    .bind(s.is_private())
+    .bind(s.received_at)
+    .bind(i.reason.trim())
+    .bind(i.confidence)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| dedupe_conflict(e, &key))?;
+    crate::models::change::record(
+        &mut tx,
+        &actor,
+        crate::models::change::TargetType::Task,
+        id,
+        crate::models::change::Op::Create,
+        json!({ "phase_id": phase, "title": title, "status": "triage", "category": i.category,
+                "priority": priority, "source": { "kind": kind, "key": key } }),
+    )
+    .await?;
+    tx.commit().await?;
+    task::get(state, id, Some(who.owner)).await
+}
+
+/// "Slack — Anmol", keyed `intake-anmol-slack`. Written here rather than
+/// through `project::create` so it lands in the intake's transaction: a
+/// refused filing leaves no project behind.
+async fn intake_project(
+    tx: &mut PgTransaction<'_>,
+    actor: &Actor,
+    agent: Uuid,
+    who: &Intaker,
+    kind: &str,
+) -> AppResult<Uuid> {
+    let source: String = kind.chars().take(1).flat_map(char::to_uppercase).chain(kind.chars().skip(1)).collect();
+    let first = who.owner_name.split_whitespace().next().unwrap_or(&who.owner_name);
+    let name = format!("{source} \u{2014} {first}");
+    let handle = who.owner_email.split('@').next().unwrap_or_default();
+    let base = project::slug(&format!("intake-{handle}-{kind}"));
+    let description = format!("Tasks {} filed from {source} for {}.", who.name, who.owner_name);
+    // The first free key: an archived intake project keeps its own.
+    let taken: Vec<String> = sqlx::query_scalar("SELECT key FROM project WHERE key = $1 OR key LIKE $1 || '-%'")
+        .bind(&base)
+        .fetch_all(&mut **tx)
+        .await?;
+    let key = std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(|k| !taken.contains(k))
+        .expect("an unbounded range has a free key");
+
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO project (key, name, description, created_by) VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(&key)
+    .bind(&name)
+    .bind(&description)
+    .bind(who.owner)
+    .fetch_one(&mut **tx)
+    .await?;
+    task::first_phase(tx, id).await?;
+    crate::models::change::record(
+        tx,
+        actor,
+        crate::models::change::TargetType::Project,
+        id,
+        crate::models::change::Op::Create,
+        json!({ "key": key, "name": name, "description": description, "intake_agent": agent }),
+    )
+    .await?;
+    sqlx::query("UPDATE agent SET intake_project_id = $2 WHERE id = $1")
+        .bind(agent)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(id)
+}
+
+/// Another message about a task this agent filed: a note with the permalink,
+/// and the message's key remembered so it is never appended twice.
+pub async fn intake_append(state: &AppState, agent: Uuid, task_id: Uuid, s: Source, text: &str) -> AppResult<Note> {
+    let (kind, key) = (s.kind.trim().to_lowercase(), s.key.trim().to_owned());
+    if kind.is_empty() || key.is_empty() {
+        return Err(AppError::BadRequest("source.kind and source.key are required".into()));
+    }
+    let mut tx = state.db.begin().await?;
+    intaker(&mut tx, agent).await?;
+    let filed: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM task_source WHERE task_id = $1 AND agent_id = $2 AND NOT appended)",
+    )
+    .bind(task_id)
+    .bind(agent)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !filed {
+        return Err(AppError::Forbidden(format!(
+            "task {task_id} was not filed by you; you can only append to tasks you filed (see intake_recent)"
+        )));
+    }
+    if let Some(on) = seen(&mut tx, agent, &key).await? {
+        return Err(AppError::Conflict(format!(
+            "You already filed or appended this message (on task {on}); nothing was added."
+        )));
+    }
+    let private = s.is_private();
+    sqlx::query(
+        "INSERT INTO task_source (task_id, agent_id, appended, kind, source_key, url, channel,
+                                  channel_name, author, text, private, received_at)
+         VALUES ($1, $2, true, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(task_id)
+    .bind(agent)
+    .bind(&kind)
+    .bind(&key)
+    .bind(&s.url)
+    .bind(&s.channel)
+    .bind(&s.channel_name)
+    .bind(&s.author)
+    .bind(&s.text)
+    .bind(private)
+    .bind(s.received_at)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| dedupe_conflict(e, &key))?;
+    // Notes are team-visible, so a direct message's words stay in its
+    // source row; the note only says one arrived.
+    let body = if private {
+        format!("Also reported in a direct message.\n{}", s.url)
+    } else {
+        let text = text.trim();
+        let text = if text.is_empty() { s.text.trim() } else { text };
+        format!("{text}\n\u{2014} {} in {}: {}", s.author, s.channel_name.as_deref().unwrap_or(&s.channel), s.url)
+    };
+    let note = note::insert(&mut tx, task_id, Author::Agent(agent), "note", &body).await?;
+    tx.commit().await?;
+    Ok(note)
+}
+
+/// What this agent filed lately, newest first, for its own "have I seen
+/// this?" before filing.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Filed {
+    pub id: Uuid,
+    pub title: String,
+    pub category: Option<String>,
+    pub status: String,
+    /// `{key, url, channel}`.
+    pub source: Value,
+}
+
+pub async fn intake_recent(state: &AppState, agent: Uuid, days: i64) -> AppResult<Vec<Filed>> {
+    let mut tx = state.db.begin().await?;
+    intaker(&mut tx, agent).await?;
+    Ok(sqlx::query_as(
+        "SELECT t.id, t.title, t.category, t.status,
+                json_build_object('key', s.source_key, 'url', s.url, 'channel', s.channel) AS source
+           FROM task_source s JOIN task t ON t.id = s.task_id
+          WHERE s.agent_id = $1 AND NOT s.appended AND s.created_at > now() - make_interval(days => $2)
+          ORDER BY s.created_at DESC, t.id",
+    )
+    .bind(agent)
+    .bind(days.clamp(1, 90) as i32)
+    .fetch_all(&mut *tx)
     .await?)
 }

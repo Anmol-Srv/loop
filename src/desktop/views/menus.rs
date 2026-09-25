@@ -19,14 +19,24 @@ pub(super) enum Pick {
     Handoff(String, String),
     TakeBack,
     Priority(i64),
+    /// Out of triage: into the intake project it was filed in (`None`), or
+    /// moved into another (id, name).
+    Accept(Option<(String, String)>),
+    /// Out of triage, dropped, with a reason asked for first.
+    Dismiss,
 }
 
 /// Who is looking, as far as a menu needs to know.
+#[derive(Clone)]
 pub(super) struct Viewer {
     pub me: String,
     pub can_write: bool,
+    pub admin: bool,
     /// The viewer's agents that can still take work: (id, name).
     pub agents: Vec<(String, String)>,
+    /// Projects a triaged task may be accepted into: (id, name). Empty until
+    /// a view with triage on it has asked for them.
+    pub projects: Vec<(String, String)>,
 }
 
 impl Viewer {
@@ -35,6 +45,8 @@ impl Viewer {
         let net = app.net.as_mut().expect("net is live whenever a view runs");
         net.get_once(AGENTS_KEY, "/api/user/agents");
         let me = net.data("__me").map(|m| str_at(m, "personId").to_owned()).unwrap_or_default();
+        let admin = net.data("__me").is_some_and(|m| str_at(m, "role") == "admin");
+        let projects = super::triage::projects(net);
         let agents = net
             .data(AGENTS_KEY)
             .and_then(Value::as_array)
@@ -45,7 +57,7 @@ impl Viewer {
                     .collect()
             })
             .unwrap_or_default();
-        Self { me, can_write, agents }
+        Self { me, can_write, admin, agents, projects }
     }
 }
 
@@ -70,6 +82,12 @@ pub(super) fn task_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, row: boo
     let mut pick = None;
     if row && viz::menu_item(ui, "Open", false, None) {
         pick = Some(Pick::Open);
+    }
+    if str_at(t, "status") == "triage" {
+        if let Some(p) = triage_items(ui, t, viewer) {
+            pick = Some(p);
+        }
+        viz::menu_rule(ui);
     }
     // Only the assignee hands off or takes back — the task page's rule.
     if !viewer.me.is_empty() && str_at(t, "assigneePersonId") == viewer.me {
@@ -118,6 +136,31 @@ pub(super) fn task_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, row: boo
     let with_project = t.get("projectArchivedAt").is_some_and(|v| !v.is_null());
     let why = with_project.then_some("Archived with its project \u{2014} restoring the project brings it back.");
     pick.or(lifecycle(ui, t, viewer.can_write, "task", why))
+}
+
+/// Accept, Accept into, Dismiss — for a task an intake agent filed. Greyed,
+/// with the rule on hover, for anyone but its owner or an admin.
+fn triage_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer) -> Option<Pick> {
+    let mine = !viewer.me.is_empty() && str_at(t, "assigneePersonId") == viewer.me;
+    let why = (!mine && !viewer.admin).then_some(super::triage::NOT_YOURS);
+    let mut pick = None;
+    if viz::menu_item(ui, "Accept", false, why) {
+        pick = Some(Pick::Accept(None));
+    }
+    let here = str_at(t, "projectId");
+    let others: Vec<&(String, String)> = viewer.projects.iter().filter(|(id, _)| id != here).collect();
+    let why_into = why.or(others.is_empty().then_some("No other project to move it into."));
+    viz::submenu(ui, "Accept into", why_into, |ui| {
+        for (id, name) in others {
+            if viz::menu_item(ui, name, false, None) {
+                pick = Some(Pick::Accept(Some((id.clone(), name.clone()))));
+            }
+        }
+    });
+    if viz::menu_item(ui, "Dismiss\u{2026}", false, why) {
+        pick = Some(Pick::Dismiss);
+    }
+    pick
 }
 
 /// An agent still holds it: it can be taken back. The delegate stays on a
@@ -194,6 +237,10 @@ struct Ask {
 #[derive(Default)]
 pub struct Tasks {
     ask: Option<Ask>,
+    /// A dismiss waiting on its (optional) reason: id, title, what is typed.
+    dismiss: Option<(String, String, String)>,
+    /// The task a triage decision is out for, so its row can say so.
+    pub(super) deciding: Option<String>,
     /// What to say when the reply lands, and the task's id if it deletes it.
     sent: Option<(String, Option<String>)>,
 }
@@ -227,6 +274,22 @@ impl Tasks {
             Pick::TakeBack => {
                 net.post(KEY, &format!("{path}/takeback"), json!({}));
                 "Taken back \u{2014} the agent no longer has this task.".to_owned()
+            }
+            Pick::Dismiss => {
+                self.dismiss = Some((id, str_at(t, "title").to_owned(), String::new()));
+                return;
+            }
+            Pick::Accept(into) => {
+                let body = match &into {
+                    Some((project, _)) => json!({ "projectId": project }),
+                    None => json!({}),
+                };
+                net.post(KEY, &format!("{path}/accept"), body);
+                self.deciding = Some(id);
+                match into {
+                    Some((_, name)) => format!("Accepted into {name}."),
+                    None => "Accepted \u{2014} it is an open task now.".to_owned(),
+                }
             }
             Pick::Priority(p) => {
                 // Against the task as the row showed it, like every details edit.
@@ -262,6 +325,7 @@ impl Tasks {
 pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Option<String> {
     let mut gone = None;
     if let Some((done, deletes)) = s.sent.take_if(|_| !net.is_loading(KEY)) {
+        s.deciding = None;
         match net.peek(KEY) {
             Some(Ok(v)) if str_at(v, "status") == "proposed" => w::toast(
                 ctx,
@@ -280,6 +344,7 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
         net.invalidate(AGENTS_KEY);
     }
 
+    dismiss_dialog(ctx, net, s);
     let Some(a) = s.ask.clone() else { return gone };
     let (mut go, mut close) = (false, false);
     let delete = a.act == Act::Delete;
@@ -309,4 +374,38 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
         s.ask = None;
     }
     gone
+}
+
+/// "Dismiss this?" with room for why. The reason is optional and lands on the
+/// task as a note; Enter in the box dismisses, Escape leaves it in triage.
+fn dismiss_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
+    let Some((id, title, reason)) = s.dismiss.as_mut() else { return };
+    let (mut go, mut close) = (false, false);
+    let modal = super::agents::dialog(ctx, "task:dismiss", super::agents::DIALOG_W * 0.8, |ui| {
+        super::agents::heading(ui, &format!("Dismiss \u{201c}{title}\u{201d}?"));
+        ui.add_space(space::XS);
+        w::muted(ui, "It leaves triage as dropped. The agent will not file this message again.");
+        ui.add_space(space::LG);
+        let field = w::field(ui, "Reason (optional)", reason, false, "Already fixed, not ours, duplicate\u{2026}");
+        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            go = true;
+        }
+        ui.add_space(space::XL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            go |= w::primary(ui, "Dismiss", true).clicked();
+            close = w::ghost(ui, "Cancel").clicked();
+        });
+    });
+    if go {
+        let reason = reason.trim();
+        let body = if reason.is_empty() { json!({}) } else { json!({ "reason": reason }) };
+        net.invalidate(KEY);
+        net.post(KEY, &format!("/api/user/tasks/{id}/dismiss"), body);
+        s.deciding = Some(std::mem::take(id));
+        s.sent = Some(("Dismissed.".to_owned(), None));
+        s.dismiss = None;
+    } else if close || modal.should_close() {
+        s.dismiss = None;
+    }
 }

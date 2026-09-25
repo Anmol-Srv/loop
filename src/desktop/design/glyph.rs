@@ -160,3 +160,26 @@ pub fn repo(p: &Painter, c: Pos2, size: f32, ink: Color32) {
         p.circle_stroke(dot, r, st);
     }
 }
+
+/// A hash: where a message came from in a chat channel. Two leaning uprights
+/// crossed by two rules — a channel mark, deliberately not any vendor's logo.
+pub fn hash(p: &Painter, c: Pos2, size: f32, ink: Color32) {
+    let s = size * 0.34;
+    let st = stroke(size, ink);
+    let lean = s * 0.25;
+    for dx in [-s * 0.4, s * 0.4] {
+        p.line_segment([c + vec2(dx + lean, -s), c + vec2(dx - lean, s)], st);
+    }
+    for dy in [-s * 0.38, s * 0.38] {
+        p.line_segment([c + vec2(-s, dy), c + vec2(s, dy)], st);
+    }
+}
+
+/// Where a source came from, as a mark: a hash for a chat message, a link
+/// for anything the app has no mark for yet.
+pub fn source(p: &Painter, c: Pos2, size: f32, kind: &str, ink: Color32) {
+    match kind {
+        "slack" => hash(p, c, size, ink),
+        _ => evidence(p, c, size, "link", ink),
+    }
+}

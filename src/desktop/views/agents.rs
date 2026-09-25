@@ -98,11 +98,13 @@ struct Draft {
     handle: String,
     name: String,
     runtime: String,
+    /// It may file tasks for you from what it reads (intake).
+    intake: bool,
 }
 
 impl Default for Draft {
     fn default() -> Self {
-        Self { handle: String::new(), name: String::new(), runtime: "hermes".into() }
+        Self { handle: String::new(), name: String::new(), runtime: "hermes".into(), intake: false }
     }
 }
 
@@ -129,6 +131,8 @@ enum Pending {
     Create,
     Rotate,
     Revoke,
+    /// Intake switched on or off from a card: (agent name, now on).
+    Intake,
 }
 
 #[derive(Default)]
@@ -139,6 +143,8 @@ struct Local {
     /// The last action's failure, in the server's words.
     error: Option<String>,
     revoked_open: bool,
+    /// What to say once an intake switch lands.
+    intake_said: Option<String>,
 }
 
 thread_local! {
@@ -156,6 +162,10 @@ enum CardAct {
     Confirm(Confirm),
     Continue(String, String),
     Open(String),
+    /// Switch intake: (id, name, on).
+    Intake(String, String, bool),
+    /// The agent's intake project.
+    Project(String),
 }
 
 fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
@@ -165,7 +175,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
 
     let net = app.net.as_mut().expect("chrome runs signed in");
     net.get_once(AGENTS_KEY, "/api/user/agents");
-    settle(net, local);
+    settle(ui.ctx(), net, local);
 
     let list = net.shared(AGENTS_KEY);
     let all: &[Value] = list.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
@@ -225,6 +235,22 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         Some(CardAct::Open(task)) => {
             app.task = Some(task);
             app.tab = Tab::Agents;
+        }
+        Some(CardAct::Intake(id, name, on)) => {
+            let net = app.net.as_mut().expect("chrome runs signed in");
+            local.error = None;
+            net.invalidate(ACTION_KEY);
+            net.patch(ACTION_KEY, &format!("/api/user/agents/{id}"), json!({ "canIntake": on }));
+            local.pending = Some(Pending::Intake);
+            local.intake_said = Some(if on {
+                format!("{name} can create tasks for you now.")
+            } else {
+                format!("{name} no longer creates tasks for you.")
+            });
+        }
+        Some(CardAct::Project(id)) => {
+            app.project = Some(id);
+            app.tab = Tab::Projects;
         }
         None => {}
     }
@@ -339,6 +365,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
     let current = a.get("currentTask").filter(|t| t.is_object());
     let task_state = current.and_then(|t| str_of(t, "state")).unwrap_or("idle");
     let presence = Presence::of(task_state, str_of(a, "lastSeenAt"));
+    let intake = a.get("canIntake").and_then(Value::as_bool).unwrap_or(false);
     let mut act = None;
     let mut used = 0.0;
 
@@ -367,6 +394,10 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                             if viz::menu_item(ui, "Copy handle", false, None) {
                                 ui.ctx().copy_text(str_of(a, "handle").unwrap_or_default().to_owned());
                                 w::toast(ui.ctx(), "Copied.", false);
+                            }
+                            let label = if intake { "Stop creating tasks" } else { "Allow it to create tasks" };
+                            if viz::menu_item(ui, label, false, None) {
+                                act = Some(CardAct::Intake(id.clone(), name.clone(), !intake));
                             }
                             if viz::menu_item(ui, "Rotate token\u{2026}", false, None) {
                                 act = Some(CardAct::Confirm(Confirm { id: id.clone(), name: name.clone(), revoke: false }));
@@ -401,6 +432,10 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     ui.spacing_mut().item_spacing.x = space::SM;
                     let (words, tone) = status_words(status);
                     c::chip(ui, words, tone, true);
+                    if intake {
+                        c::chip(ui, "Intake", c::Tone::Info, false)
+                            .on_hover_text("Creates tasks for you from what it reads; they land in your Triage.");
+                    }
                     if let Some(at) = str_of(a, "lastSeenAt") {
                         ui.label(RichText::new(format!("seen {}", super::task::ago(at))).size(text::SMALL).color(colour::TEXT_MUTED))
                             .on_hover_text(super::task::exact(at));
@@ -436,6 +471,12 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     ui.label(RichText::new("Hand it one from the task\u{2019}s page.").size(text::SMALL).color(colour::TEXT_MUTED));
                 }
 
+                if intake {
+                    if let Some(to) = intake_stats(ui, a) {
+                        act = Some(to);
+                    }
+                }
+
                 // ---- activity and setup
                 let days: Vec<f32> = a
                     .get("activity")
@@ -465,6 +506,42 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
             .height();
     });
     (used, act)
+}
+
+/// What an intake agent has filed: triage, accepted, dismissed — the numbers
+/// in white, their words muted — and the way to the project it files into.
+fn intake_stats(ui: &mut egui::Ui, a: &Value) -> Option<CardAct> {
+    let stats = a.get("intakeStats").filter(|s| s.is_object());
+    let n = |k: &str| stats.and_then(|s| s.get(k)).and_then(Value::as_i64).unwrap_or(0);
+    let mut act = None;
+    ui.add_space(space::XS);
+    let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        for (i, (k, word)) in [("triage", "in triage"), ("accepted", "accepted"), ("dismissed", "dismissed")].iter().enumerate() {
+            if i > 0 {
+                ui.add_space(space::SM);
+            }
+            ui.label(
+                RichText::new(n(k).to_string())
+                    .size(text::BODY)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT),
+            );
+            ui.label(RichText::new(*word).size(text::SMALL).color(colour::TEXT_MUTED));
+        }
+    });
+    match str_of(a, "intakeProjectId") {
+        Some(project) => {
+            let label = str_of(a, "intakeProjectName").map_or_else(|| "Open its intake project".to_owned(), |n| format!("Files into {n}"));
+            if w::link(ui, &label).on_hover_text("Open the project").clicked() {
+                act = Some(CardAct::Project(project.to_owned()));
+            }
+        }
+        None => w::caption(ui, "Its project is made with the first task it files."),
+    }
+    act
 }
 
 /// The three things a good setup reports, as ticks, crosses and dashes.
@@ -516,12 +593,18 @@ fn revoked_row(ui: &mut egui::Ui, a: &Value, seed: &str) {
 // ---------------------------------------------------------------- actions
 
 /// Fold in the reply to the action started on an earlier frame.
-fn settle(net: &mut Net, local: &mut Local) {
+fn settle(ctx: &egui::Context, net: &mut Net, local: &mut Local) {
     let Some(pending) = local.pending else { return };
     if net.is_loading(ACTION_KEY) {
         return;
     }
     match net.peek(ACTION_KEY) {
+        Some(Ok(_)) if pending == Pending::Intake => {
+            local.error = None;
+            if let Some(said) = local.intake_said.take() {
+                w::toast(ctx, said, false);
+            }
+        }
         Some(Ok(v)) => {
             local.error = None;
             if pending != Pending::Revoke {
@@ -538,6 +621,7 @@ fn settle(net: &mut Net, local: &mut Local) {
         None => {}
     }
     local.pending = None;
+    local.intake_said = None;
     // The reply holds the token; it is not kept anywhere but the dialog.
     net.invalidate(ACTION_KEY);
     // In place, so the cards stay put under the dialog while it lands.
@@ -647,6 +731,14 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
                 w::caption(ui, "How the agent is named in the API and its logs.");
             }
 
+            ui.add_space(space::LG);
+            w::switch(
+                ui,
+                "Can create tasks for me (intake)",
+                "It files what it reads \u{2014} a Slack thread, say \u{2014} as tasks in your Triage, for you to accept or dismiss.",
+                &mut draft.intake,
+            );
+
             if let Some(err) = &local.error {
                 ui.add_space(space::MD);
                 w::error(ui, err);
@@ -674,7 +766,7 @@ fn connect_dialog(ctx: &egui::Context, net: &mut Net, local: &mut Local, my_seed
                 net.post(
                     ACTION_KEY,
                     "/api/user/agents",
-                    json!({ "handle": typed, "name": draft.name.trim(), "runtime": draft.runtime }),
+                    json!({ "handle": typed, "name": draft.name.trim(), "runtime": draft.runtime, "canIntake": draft.intake }),
                 );
                 local.pending = Some(Pending::Create);
             }

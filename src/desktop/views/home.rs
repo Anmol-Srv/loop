@@ -434,15 +434,42 @@ fn attention(
     let today = Local::now().date_naive();
     let mut out = Vec::new();
 
-    for item in list(home, "needsAttention") {
-        let (signal, tone, verb) = match str_at(item, "kind") {
+    // Triage rides in `needsAttention` as `kind: "triage"`, or in a `triage`
+    // array of the same shape: either is read, so the server may pick.
+    let triage = list(home, "triage").into_iter().map(|i| (i, true));
+    for (item, filed) in list(home, "needsAttention").into_iter().map(|i| (i, false)).chain(triage) {
+        let kind = if filed { Some("triage") } else { str_at(item, "kind") };
+        let (signal, tone, verb) = match kind {
             Some("question") => ("Question", c::Tone::Running, "asks"),
             Some("review") => ("Review", c::Tone::Agent, "submitted"),
+            Some("triage") => ("Triage", c::Tone::Info, "filed"),
             _ => continue,
         };
         let Some(id) = str_at(item, "taskId") else { continue };
         let agent = str_at(item, "agentName").unwrap_or("Your agent");
         let body = str_at(item, "body").unwrap_or_default().lines().next().unwrap_or_default();
+        if signal == "Triage" {
+            // The body is the category: "Slack Agent filed a bug".
+            let what = match body {
+                "" => "this",
+                "bug" => "a bug",
+                "feature" => "a feature request",
+                "feedback" => "feedback",
+                "question" => "a question",
+                "chore" => "a chore",
+                _ => "a task",
+            };
+            out.push(Alert {
+                rank: 0,
+                weight: -1,
+                tone,
+                signal,
+                subject: str_at(item, "title").unwrap_or_default().to_owned(),
+                reason: format!("{agent} filed {what} \u{00B7} accept or dismiss"),
+                target: Target::Task(id.to_owned()),
+            });
+            continue;
+        }
         out.push(Alert {
             rank: 0,
             weight: 0,
@@ -914,6 +941,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
         if super::board::archived(t) {
             super::board::archived_chip(ui);
         } else {
+            // Triage files under open for the figures; the chip says what it is.
+            let status = if str_at(t, "status") == Some("triage") { "triage" } else { status };
             c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
         }
     });

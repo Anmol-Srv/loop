@@ -68,13 +68,13 @@ async fn handle(State(state): State<AppState>, caller: Caller, headers: HeaderMa
     let result = match request.method.as_str() {
         "initialize" => Ok(initialize(&state, &caller, &request.params).await),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_list(&caller) })),
+        "tools/list" => Ok(json!({ "tools": tool_list(&state, &caller).await })),
         "tools/call" => {
             let name = str_arg(&request.params, "name").unwrap_or_default();
             // The same filter `tools/list` uses, so a tool the caller cannot
             // see is also a tool it cannot call — a protocol error, not a tool
             // result.
-            if !visible(&caller).iter().any(|t| t.name == name) {
+            if !visible(&state, &caller).await.iter().any(|t| t.name == name) {
                 Err(AppError::BadRequest(format!("unknown tool '{name}'")))
             } else {
                 let args = request.params.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -138,16 +138,28 @@ async fn initialize(state: &AppState, caller: &Caller, params: &Value) -> Value 
     result
 }
 
-fn visible(caller: &Caller) -> Vec<ToolDef> {
-    if caller.agent_id.is_some() {
-        tools::agent_tools()
-    } else {
-        tools::for_scopes(&caller.scopes)
+async fn visible(state: &AppState, caller: &Caller) -> Vec<ToolDef> {
+    let Some(agent) = caller.agent_id else {
+        return tools::for_scopes(&caller.scopes);
+    };
+    let mut tools = tools::agent_tools();
+    // Read per request, so the owner's toggle takes effect on the next call.
+    let intake: bool = sqlx::query_scalar("SELECT can_intake FROM agent WHERE id = $1")
+        .bind(agent)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    if intake {
+        tools.extend(tools::intake_tools());
     }
+    tools
 }
 
-fn tool_list(caller: &Caller) -> Vec<Value> {
-    visible(caller)
+async fn tool_list(state: &AppState, caller: &Caller) -> Vec<Value> {
+    visible(state, caller)
+        .await
         .into_iter()
         .map(|t| json!({
             "name": t.name,
@@ -348,6 +360,17 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
             )
             .await?,
         ),
+        "intake_create" => to_value(agent::intake(state, me, parse(args, "intake_create")?).await?),
+        "intake_append" => {
+            let source = parse(args.get("source").cloned().unwrap_or(Value::Null), "intake_append's source")?;
+            to_value(
+                agent::intake_append(state, me, task()?, source, &opt_str_arg(args, "text").unwrap_or_default())
+                    .await?,
+            )
+        }
+        "intake_recent" => to_value(
+            agent::intake_recent(state, me, args.get("days").and_then(Value::as_i64).unwrap_or(14)).await?,
+        ),
         "events_ack" => {
             let through = args
                 .get("through")
@@ -357,6 +380,11 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
         }
         other => Err(AppError::BadRequest(format!("unknown tool '{other}'"))),
     }
+}
+
+/// Tool arguments as a request body, with serde's complaint as the sentence.
+fn parse<T: serde::de::DeserializeOwned>(args: impl std::borrow::Borrow<Value>, what: &str) -> AppResult<T> {
+    serde_json::from_value(args.borrow().clone()).map_err(|e| AppError::BadRequest(format!("{what}: {e}")))
 }
 
 fn to_value<T: serde::Serialize>(value: T) -> AppResult<Value> {

@@ -60,7 +60,7 @@ pub fn discipline_tone(discipline: &str) -> Tone {
 pub fn status_tone(status: &str) -> Tone {
     match status {
         "shipped" => Tone::Ok,
-        "completed" | "done" => Tone::Info,
+        "completed" | "done" | "triage" => Tone::Info,
         "handoff" => Tone::Agent,
         "in_progress" | "active" => Tone::Running,
         "blocked" => Tone::Blocked,

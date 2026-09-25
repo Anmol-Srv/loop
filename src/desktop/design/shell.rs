@@ -300,6 +300,12 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
                 fg,
             );
         }
+        // No room for the number: an accent dot says something waits here,
+        // and the hover says how much.
+        if item.badge > 0 {
+            p.circle_filled(rect.center() + egui::vec2(space::SM, -space::SM), 3.5, colour::ACCENT);
+            return response.on_hover_text(format!("{} \u{00B7} {}", item.label, item.badge));
+        }
         return response.on_hover_text(item.label);
     }
 
@@ -362,8 +368,10 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
                 egui::pos2(rect.right() - space::SM - w / 2.0, rect.center().y),
                 egui::vec2(w, size::BADGE_H),
             );
-            p.rect_filled(badge, radius::PILL as f32, colour::DANGER);
-            p.galley(badge.center() - galley.size() / 2.0, galley, colour::TEXT);
+            // The accent, as the comment above promises: white on the
+            // danger red it used to be was 2.6:1.
+            p.rect_filled(badge, radius::PILL as f32, colour::ACCENT);
+            p.galley(badge.center() - galley.size() / 2.0, galley, colour::ON_ACCENT);
         }
         Some((galley, false)) => {
             let at = egui::pos2(

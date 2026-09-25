@@ -242,3 +242,61 @@ pub fn agent_tools() -> Vec<ToolDef> {
         ),
     ]
 }
+
+/// The intake tools, for an agent whose owner turned intake on. Absent from
+/// the list otherwise, like any tool the caller would be refused.
+pub fn intake_tools() -> Vec<ToolDef> {
+    let uuid = json!({ "type": "string", "format": "uuid" });
+    let source = json!({
+        "type": "object",
+        "description": "The message this came from.",
+        "properties": {
+            "kind": { "type": "string", "description": "Where it came from: slack, email, github." },
+            "key": { "type": "string", "description": "Your stable id for the message (e.g. the Slack permalink). A key is never filed or appended twice." },
+            "url": { "type": "string", "description": "Permalink to the message." },
+            "channel": { "type": "string", "description": "Channel id; a Slack id starting with D is a direct message." },
+            "channelName": { "type": "string", "description": "Human name, e.g. #issues-and-feedback." },
+            "author": { "type": "string" },
+            "text": { "type": "string", "description": "The message, verbatim." },
+            "receivedAt": { "type": "string", "format": "date-time" },
+            "private": { "type": "boolean", "description": "A direct message: only your owner and admins see its text and author." },
+        },
+        "required": ["kind", "key", "url", "channel", "author", "text", "receivedAt"],
+    });
+    let tool = |name: &'static str, description: &'static str, input_schema: Value| ToolDef { name, description, scope: "agent", input_schema, doc: "" };
+    vec![
+        tool(
+            "intake_create",
+            "File a task for your owner from a message you read. It lands in Triage in your intake project, \
+             assigned to your owner, who accepts or dismisses it. Check intake_recent first: filing the same \
+             source.key twice is refused (409) with the task it was filed as.",
+            schema(
+                json!({
+                    "source": source,
+                    "title": { "type": "string", "description": "One line: what is wrong or wanted." },
+                    "body": { "type": "string", "description": "What you understood, steps, who is affected." },
+                    "category": { "type": "string", "enum": crate::models::task::CATEGORIES },
+                    "reason": { "type": "string", "description": "One sentence: why this is a task." },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "priority": { "type": "integer", "minimum": 0, "maximum": 4, "default": 2 },
+                }),
+                &["source", "title", "category", "reason", "confidence"],
+            ),
+        ),
+        tool(
+            "intake_append",
+            "Add another message to a task you filed (a follow-up, another report of the same thing) as a \
+             note with its permalink. Only on tasks you filed; a source.key already seen is refused (409).",
+            schema(
+                json!({ "taskId": uuid, "source": source, "text": { "type": "string", "description": "What it adds; the message text if empty." } }),
+                &["taskId", "source"],
+            ),
+        ),
+        tool(
+            "intake_recent",
+            "What you filed in the last N days (default 14), newest first: id, title, category, status and \
+             source {key, url, channel}. Read it before filing so you append instead of filing a duplicate.",
+            schema(json!({ "days": { "type": "integer", "minimum": 1, "maximum": 90, "default": 14 } }), &[]),
+        ),
+    ]
+}

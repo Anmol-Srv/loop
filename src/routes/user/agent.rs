@@ -5,7 +5,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -26,6 +26,15 @@ pub struct CreateBody {
     pub name: String,
     #[serde(default = "default_runtime")]
     pub runtime: String,
+    /// May it file tasks for its owner (intake).
+    #[serde(default, rename = "canIntake")]
+    pub can_intake: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchBody {
+    pub can_intake: bool,
 }
 
 fn default_runtime() -> String {
@@ -36,7 +45,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/user/agents", post(create).get(list))
         .route("/api/user/agents/active", get(active))
-        .route("/api/user/agents/{id}", delete(revoke))
+        .route("/api/user/agents/{id}", axum::routing::delete(revoke).patch(update))
         .route("/api/user/agents/{id}/rotate", post(rotate))
         .route("/api/user/tasks/{id}/handoff", post(hand_off))
         .route("/api/user/tasks/{id}/takeback", post(take_back))
@@ -63,7 +72,7 @@ async fn create(
 ) -> AppResult<ApiResponse<Minted>> {
     let owner = person(&caller)?;
     Ok(ApiResponse::ok(
-        agent::create(&state, owner, &body.handle, &body.name, &body.runtime, &server_url(&headers)).await?,
+        agent::create(&state, owner, &body.handle, &body.name, &body.runtime, body.can_intake, &server_url(&headers)).await?,
     ))
 }
 
@@ -75,6 +84,16 @@ async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRes
 async fn active(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<Active>>> {
     person(&caller)?;
     Ok(ApiResponse::ok(agent::active(&state).await?))
+}
+
+/// The owner switching intake on or off.
+async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<PatchBody>,
+) -> AppResult<ApiResponse<Agent>> {
+    Ok(ApiResponse::ok(agent::set_intake(&state, person(&caller)?, id, body.can_intake).await?))
 }
 
 async fn rotate(

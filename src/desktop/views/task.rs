@@ -244,6 +244,8 @@ struct Local {
     pick: Option<Pick>,
     /// A task action from a menu is out.
     archiving: bool,
+    /// This task's Accept or Dismiss is out.
+    deciding: bool,
 }
 
 impl Local {
@@ -267,6 +269,7 @@ impl Local {
             agent_busy: None,
             pick: None,
             archiving: false,
+            deciding: false,
         }
     }
 }
@@ -300,6 +303,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let can_write = app.can_write();
 
     local.archiving = app.board.tasks.busy();
+    local.deciding = app.board.tasks.deciding.as_deref() == Some(task_id);
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     net.get_once(TASK_KEY, &format!("/api/user/tasks/{task_id}"));
     net.get_once(
@@ -366,7 +370,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let mine = !me.is_empty() && str_of(&task, "assigneePersonId") == Some(me.as_str());
     let track = Track::of(str_of(&task, "discipline"));
     let can_act = admin || mine;
-    let moves = legal_moves(net.data(TRACKS_KEY), track, &status);
+    // Nothing leaves triage but Accept and Dismiss, which the title carries.
+    let moves = if status == "triage" { Vec::new() } else { legal_moves(net.data(TRACKS_KEY), track, &status) };
     let updated_at = str_of(&task, "updatedAt").map(str::to_owned);
     // Read out of the cache before the closures borrow `net` mutably: the whole
     // question the gate asks of the list is "is the required kind already here?".
@@ -395,7 +400,16 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             .unwrap_or_default()
     });
     let handoff = Handoff { mine, delegated: super::menus::held(&task), finished: super::menus::finished(&task), agents: &agents };
-    let viewer = Viewer { me: me.clone(), can_write, agents: agents.to_vec() };
+    if status == "triage" {
+        super::triage::want_projects(net);
+    }
+    let viewer = Viewer {
+        me: me.clone(),
+        can_write,
+        admin,
+        agents: agents.to_vec(),
+        projects: super::triage::projects(net),
+    };
 
     // The rail cannot hold `net` — the content column has it — so it reports
     // what was asked for and the request is made once both closures are gone.
@@ -439,6 +453,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                     description(ui, &task);
                 }
                 manual_reason(ui, &task);
+                super::triage::source_card(ui, &task);
 
                 if let Some(d) = delegate {
                     let notes = net.shared(NOTES_KEY);
@@ -579,6 +594,7 @@ fn headline(
 
     let mut go = None;
     let mut close = false;
+    let mut recategorise: Option<String> = None;
     if let Some(Draft { title, body, .. }) = draft.as_mut() {
         w::field(ui, "Title", title, false, "What needs doing");
         ui.add_space(space::MD);
@@ -639,13 +655,19 @@ fn headline(
                 ui.spacing_mut().item_spacing.x = space::SM;
                 let mut pick = None;
                 viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
+                if status == "triage" && super::triage::decides(task, viewer) && !local.deciding {
+                    pick = pick.or(super::triage::actions(ui, task, viewer, local.deciding));
+                }
                 if let Some((copy, next)) = action {
                     if w::primary(ui, copy, !busy).clicked() {
                         go = Some(next);
                     }
                 }
-                if let Some(ask) = handoff_control(ui, handoff, busy) {
-                    agent_action(net, task_id, ask, local);
+                // Not before it is accepted: triage is a yes or a no first.
+                if status != "triage" {
+                    if let Some(ask) = handoff_control(ui, handoff, busy) {
+                        agent_action(net, task_id, ask, local);
+                    }
                 }
                 if can_write && w::ghost(ui, "Edit").clicked() {
                     edit = true;
@@ -654,6 +676,15 @@ fn headline(
                     ui.add(egui::Spinner::new().size(text::BODY));
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let category = str_of(task, "category");
+                    // Offered to set only where it means something: a task
+                    // that has one, or one an intake agent filed.
+                    let editable = can_write && !busy;
+                    if category.is_some() || (editable && task.get("source").is_some_and(|s| s.is_object())) {
+                        if let Some(c) = super::triage::category_chip(ui, category, editable) {
+                            recategorise = Some(c);
+                        }
+                    }
                     let title = ui.add(
                         egui::Label::new(
                             RichText::new(str_of(task, "title").unwrap_or("Untitled"))
@@ -692,6 +723,18 @@ fn headline(
     if let Some(next) = go {
         local.notice = None;
         start_move(net, task_id, status, next, track, held, local);
+    }
+    if let Some(category) = recategorise {
+        let mut body = json!({ "category": category });
+        if let Some(at) = str_of(task, "updatedAt") {
+            body["expectedUpdatedAt"] = json!(at);
+        }
+        save_details(net, task_id, body, false, local);
+    }
+    if status == "triage" && !super::triage::decides(task, viewer) {
+        ui.add_space(space::MD);
+        let who = str_of(task, "assigneeName").and_then(|n| n.split_whitespace().next()).unwrap_or("its owner");
+        w::caption(ui, &format!("In triage \u{2014} waiting on {who} to accept or dismiss it."));
     }
 
     prompt_panel(ui, net, task_id, local);

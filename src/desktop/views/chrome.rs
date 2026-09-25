@@ -9,9 +9,6 @@ use serde_json::Value;
 use crate::desktop::design::{avatar, colour, motion, radius, shell, size, space, text, widgets as w};
 use crate::desktop::{views, App, Tab};
 
-/// Destinations, in sidebar order. The index is the routing contract.
-const DESTINATIONS: [Tab; 4] = [Tab::Home, Tab::MyTasks, Tab::Projects, Tab::Agents];
-
 /// The sidebar's badges. Not under `__`: the 30 s refresh keeps them current.
 /// Anything that changes a task or a project drops it alongside `home`.
 pub const COUNTS: &str = "sidebar:counts";
@@ -37,6 +34,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     };
     let mine_open = count("myOpen");
     let projects_active = count("activeProjects");
+    let triage = count("triage").max(0) as usize;
 
     let me = net.data("__me");
     let field = |k: &str| {
@@ -55,17 +53,25 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let on_task = app.task.is_some();
     let sel = |t: Tab| app.tab == t && !on_task;
 
-    let groups = vec![shell::NavGroup {
-        label: "WORKSPACE",
-        items: vec![
-            shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)),
-            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks))
-                .count(mine_open.to_string()),
-            shell::NavItem::new(icon::SQUARES_FOUR, "Projects", sel(Tab::Projects))
-                .count(projects_active.to_string()),
-            shell::NavItem::new(icon::ROBOT, "Agents", sel(Tab::Agents)),
-        ],
-    }];
+    // Triage is a row of its own only while something waits in it: an
+    // attention badge, under My Tasks, which is where its group sits.
+    let mut items = vec![
+        (shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)), Tab::Home),
+        (
+            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks)).count(mine_open.to_string()),
+            Tab::MyTasks,
+        ),
+    ];
+    if triage > 0 {
+        items.push((shell::NavItem::new(icon::TRAY, "Triage", false).badge(triage), Tab::MyTasks));
+    }
+    items.push((
+        shell::NavItem::new(icon::SQUARES_FOUR, "Projects", sel(Tab::Projects)).count(projects_active.to_string()),
+        Tab::Projects,
+    ));
+    items.push((shell::NavItem::new(icon::ROBOT, "Agents", sel(Tab::Agents)), Tab::Agents));
+    let destinations: Vec<Tab> = items.iter().map(|(_, t)| *t).collect();
+    let groups = vec![shell::NavGroup { label: "WORKSPACE", items: items.into_iter().map(|(i, _)| i).collect() }];
 
     let mut sign_out = false;
     let mut refresh = false;
@@ -151,7 +157,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     match clicked {
         Some((0, i)) => {
-            app.tab = DESTINATIONS[i.min(DESTINATIONS.len() - 1)];
+            app.tab = destinations[i.min(destinations.len() - 1)];
             app.task = None;
             if app.tab != Tab::Projects {
                 app.project = None;

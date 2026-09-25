@@ -42,6 +42,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/inbox", get(inbox))
         .route("/api/agent/skill", get(skill))
         .route("/api/agent/onboarding", get(onboarding))
+        .route("/api/agent/intake", post(intake))
+        .route("/api/agent/intake/recent", get(intake_recent))
+        .route("/api/agent/intake/{id}/append", post(intake_append))
 }
 
 /// Where agents reach this server: `PUBLIC_URL` when set, otherwise what the
@@ -270,4 +273,47 @@ async fn onboarding(
     let body =
         agent::onboarding(&state, caller.agent()?, q.runtime.as_deref(), &server_url(&headers)).await?;
     Ok(text("text/markdown; charset=utf-8", body))
+}
+
+async fn intake(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(b): Json<agent::Intake>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(agent::intake(&state, caller.agent()?, b).await?))
+}
+
+#[derive(Deserialize)]
+pub struct AppendBody {
+    pub source: agent::Source,
+    /// What the new message adds; the source text when empty.
+    #[serde(default)]
+    pub text: String,
+}
+
+async fn intake_append(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<AppendBody>,
+) -> AppResult<ApiResponse<Note>> {
+    Ok(ApiResponse::ok(agent::intake_append(&state, caller.agent()?, id, b.source, &b.text).await?))
+}
+
+#[derive(Deserialize)]
+pub struct RecentQuery {
+    #[serde(default = "fourteen")]
+    pub days: i64,
+}
+
+fn fourteen() -> i64 {
+    14
+}
+
+async fn intake_recent(
+    State(state): State<AppState>,
+    caller: Caller,
+    Query(q): Query<RecentQuery>,
+) -> AppResult<ApiResponse<Vec<agent::Filed>>> {
+    Ok(ApiResponse::ok(agent::intake_recent(&state, caller.agent()?, q.days).await?))
 }

@@ -85,7 +85,7 @@ async fn revoking_a_person_ends_sessions_and_agents(pool: PgPool) {
 
     let (session_raw, _) = token::mint_session(&state, EMAIL).await.unwrap();
     let owner = people::id_of(&state, EMAIL).await.unwrap();
-    let agent_raw = acp_server::controllers::agent::create(&state, owner, "hermes", "", "hermes", "http://x")
+    let agent_raw = acp_server::controllers::agent::create(&state, owner, "hermes", "", "hermes", false, "http://x")
         .await
         .unwrap()
         .token;

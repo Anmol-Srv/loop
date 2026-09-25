@@ -128,7 +128,7 @@ async fn main() {
             // to read it from.
             let server = std::env::var("PUBLIC_URL").unwrap_or_else(|_| "http://localhost:8080".into());
             let made = match people::id_of(&state, &owner).await {
-                Ok(id) => agent::create(&state, id, &handle, &name, &runtime, &server).await,
+                Ok(id) => agent::create(&state, id, &handle, &name, &runtime, false, &server).await,
                 Err(e) => Err(e),
             };
             match made {

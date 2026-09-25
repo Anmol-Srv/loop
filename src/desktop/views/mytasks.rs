@@ -115,17 +115,18 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     });
     let (tasks, order, projects) = &*sorted;
     let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
-    let rows: Vec<&Value> = order.iter().map(|&i| &all[i]).collect();
+    // Triage is its own group above the list: filed for you, not yet taken.
+    let (triage, rows): (Vec<&Value>, Vec<&Value>) =
+        order.iter().map(|&i| &all[i]).partition(|t| str_at(t, "status") == Some("triage") && !state.archived);
     let projects: Vec<&str> = projects.iter().map(String::as_str).collect();
 
     let open = rows.iter().filter(|t| !finished(t)).count();
+    let mut subtitle = format!("{open} open across {}", plural(projects.len(), "project"));
+    if !triage.is_empty() {
+        subtitle += &format!(" \u{00B7} {} to triage", triage.len());
+    }
 
-    shell::page_title(
-        ui,
-        "My Tasks",
-        &format!("{open} open across {}", plural(projects.len(), "project")),
-        |_| {},
-    );
+    shell::page_title(ui, "My Tasks", &subtitle, |_| {});
 
     if let Some(err) = &error {
         w::error(
@@ -134,24 +135,48 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
+    let mut open_task: Option<String> = None;
+    let mut picked: Option<(Value, Pick)> = None;
+    if !state.archived {
+        let net = app.net.as_mut().unwrap();
+        if !triage.is_empty() {
+            super::triage::want_projects(net);
+        }
+        let has_intake = net
+            .data(super::agents::AGENTS_KEY)
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|a| a.get("canIntake").and_then(Value::as_bool) == Some(true)));
+        let viewer = Viewer { projects: super::triage::projects(net), ..viewer.clone() };
+        match super::triage::group(ui, &triage, &viewer, app.board.tasks.deciding.as_deref(), has_intake) {
+            Some(super::triage::Out::Open(id)) => open_task = Some(id),
+            Some(super::triage::Out::Pick(t, p)) => picked = Some((t, p)),
+            None => {}
+        }
+        if !triage.is_empty() || has_intake {
+            ui.add_space(space::XL);
+        }
+    }
+
     // The archived list may be empty; its toggle is still the way back.
+    // With only triage, the group above is the page.
     if rows.is_empty() && !state.archived {
-        if loading {
+        if loading && triage.is_empty() {
             w::loading(ui, "Loading your work");
-        } else {
+        } else if triage.is_empty() {
             w::empty(
                 ui,
                 "Nothing assigned to you.",
                 "When someone hands you a task it shows up here, newest first.",
             );
         }
+        finish(app, open_task, picked);
         return;
     }
 
-    let picked = memo(ui.ctx(), egui::Id::new(SHOWN), (key, generation, state.clone()), || {
+    let shown_ix = memo(ui.ctx(), egui::Id::new(SHOWN), (key, generation, state.clone()), || {
         (0..rows.len()).filter(|&i| keep(rows[i], &state)).collect::<Vec<usize>>()
     });
-    let shown: Vec<&Value> = picked.iter().map(|&i| rows[i]).collect();
+    let shown: Vec<&Value> = shown_ix.iter().map(|&i| rows[i]).collect();
     filter_bar(ui, &mut state, &projects);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state));
 
@@ -166,8 +191,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     w::caption(ui, &count);
     ui.add_space(space::SM);
 
-    let mut open_task: Option<String> = None;
-    let mut picked: Option<(Value, Pick)> = None;
     if rows.is_empty() {
         w::empty(ui, "Nothing archived.", "Tasks of yours that are archived show here.");
     } else if shown.is_empty() {
@@ -190,7 +213,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     ui.add_space(space::XXL);
+    finish(app, open_task, picked);
+}
 
+fn finish(app: &mut App, mut open_task: Option<String>, picked: Option<(Value, Pick)>) {
     match picked {
         Some((t, Pick::Open)) => open_task = str_at(&t, "id").map(str::to_owned),
         Some((t, pick)) => app.board.tasks.pick(app.net.as_mut().unwrap(), &t, pick),
@@ -337,7 +363,7 @@ fn project_of<'a>(t: &'a Value) -> &'a str {
 
 /// "2d", "4h". A table column has room for two characters, and the exact
 /// minute is never the thing being decided.
-fn age(raw: &str) -> String {
+pub(super) fn age(raw: &str) -> String {
     let Ok(then) = DateTime::parse_from_rfc3339(raw) else {
         return String::new();
     };

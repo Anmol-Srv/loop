@@ -5,10 +5,11 @@ use uuid::Uuid;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
+use crate::controllers::note;
 use crate::controllers::project::{only, writer, HeldIn};
 use crate::models::task::{
     can_manage, evidence_for, next_statuses, settle, task_row_select, terminal_of, Task,
-    TaskFilter, TaskRow, task_columns_t, ANYONE, HELD, LIVE, TASK_COLUMNS,
+    TaskFilter, TaskRow, task_columns_t, ANYONE, CATEGORIES, HELD, LIVE, TASK_COLUMNS, TRIAGE,
 };
 
 pub enum Assignee {
@@ -560,6 +561,9 @@ pub struct TaskDetails {
     /// Absent leaves the assignee alone, `null` unassigns, an id reassigns.
     #[serde(default, deserialize_with = "crate::models::present")]
     pub assignee_id: Option<Option<Uuid>>,
+    /// Absent leaves it alone, `null` clears it, a value sets it.
+    #[serde(default, deserialize_with = "crate::models::present", skip_serializing_if = "Option::is_none")]
+    pub category: Option<Option<String>>,
     /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
     /// stays out of the audit patch — and out of a replayed proposal, which is
     /// approved against the row as it is then.
@@ -590,6 +594,9 @@ pub async fn update_details(
         if !(0..=4).contains(&p) {
             return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
         }
+    }
+    if let Some(Some(c)) = &details.category {
+        check_category(c)?;
     }
 
     let patch = json!({ "details": details });
@@ -634,6 +641,7 @@ pub async fn update_details(
             assignee_token_id  = NULL,
             status             = $6,
             done_at            = CASE WHEN $7 THEN coalesce(done_at, now()) ELSE NULL END,
+            category           = CASE WHEN $8 THEN $9 ELSE category END,
             updated_at         = now()
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
@@ -644,12 +652,102 @@ pub async fn update_details(
     .bind(assignee)
     .bind(&status)
     .bind(finished)
+    .bind(details.category.is_some())
+    .bind(details.category.flatten())
     .fetch_one(&mut *tx)
     .await?;
 
     record(&mut tx, actor, TargetType::Task, id, Op::Update, patch).await?;
     tx.commit().await?;
     Ok(Outcome::Applied { entity: task })
+}
+
+pub fn check_category(c: &str) -> AppResult<()> {
+    if CATEGORIES.contains(&c) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!("category must be one of {}", CATEGORIES.join(", "))))
+    }
+}
+
+/// Accept a task out of triage (to `open`, optionally into another project's
+/// first phase) or dismiss it (to `dropped`, the reason left as a note).
+/// Only from triage, and only by whoever `transition` lets move it: its
+/// assignee or an admin.
+pub async fn triage(
+    state: &AppState,
+    actor: &Actor,
+    id: Uuid,
+    accept: bool,
+    project_id: Option<Uuid>,
+    reason: Option<String>,
+) -> AppResult<TaskRow> {
+    writer(actor)?;
+    let mut tx = state.db.begin().await?;
+    let current: String = sqlx::query_scalar("SELECT status FROM task WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    if current != TRIAGE {
+        return Err(AppError::Conflict(format!(
+            "This task is not in triage \u{2014} it is {} now, so there is nothing to {}.",
+            current.replace('_', " "),
+            if accept { "accept" } else { "dismiss" }
+        )));
+    }
+    let to = if accept { "open" } else { "dropped" };
+    transition(&mut tx, actor, id, to.into(), None, None).await?;
+
+    if let (true, Some(project)) = (accept, project_id) {
+        let archived: Option<bool> =
+            sqlx::query_scalar("SELECT archived_at IS NOT NULL FROM project WHERE id = $1")
+                .bind(project)
+                .fetch_optional(&mut *tx)
+                .await?;
+        match archived {
+            None => return Err(AppError::NotFound("That project does not exist.".into())),
+            Some(true) => {
+                return Err(AppError::BadRequest(
+                    "That project is archived \u{2014} pick a live project, or accept it where it is.".into(),
+                ))
+            }
+            Some(false) => {}
+        }
+        let phase = first_phase(&mut tx, project).await?;
+        sqlx::query("UPDATE task SET phase_id = $2, updated_at = now() WHERE id = $1")
+            .bind(id)
+            .bind(phase)
+            .execute(&mut *tx)
+            .await?;
+        record(&mut tx, actor, TargetType::Task, id, Op::Update, json!({ "phase_id": phase })).await?;
+    }
+    if let Some(reason) = reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        note::insert(&mut tx, id, note::Author::Person(actor.person_id), "note", &format!("Dismissed: {reason}"))
+            .await?;
+    }
+    tx.commit().await?;
+    get(state, id, actor.person_id).await
+}
+
+/// A project's first phase by position, made if it has none: the phase that
+/// means "the work".
+pub(crate) async fn first_phase(tx: &mut PgTransaction<'_>, project: Uuid) -> AppResult<Uuid> {
+    let found: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM phase WHERE project_id = $1 ORDER BY position LIMIT 1")
+            .bind(project)
+            .fetch_optional(&mut **tx)
+            .await?;
+    match found {
+        Some(id) => Ok(id),
+        None => Ok(sqlx::query_scalar(
+            "INSERT INTO phase (project_id, position, name, status) VALUES ($1, 0, $2, 'active') RETURNING id",
+        )
+        .bind(project)
+        .bind(crate::controllers::project::DEFAULT_PHASE)
+        .fetch_one(&mut **tx)
+        .await?),
+    }
 }
 
 /// Refuse an edit made against a version of the row that is no longer there.

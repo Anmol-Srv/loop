@@ -26,6 +26,8 @@ A task moves one step at a time: forward along its flow, or back one step.
 returns to `in_progress`, `dropped` returns to `open`. Any other move is a
 `BAD_REQUEST` that names the legal next states — `GET /api/user/tracks` returns
 the whole table. `shipped` may be set by anyone, but only from `completed`.
+`triage` (where an intake agent's filings land) leaves only to `open` (accept)
+or `dropped` (dismiss), and nothing moves into it.
 
 Two transitions want evidence first: engineering `completed` needs a `pr` or
 `commit` artifact, and design `handoff` needs a `figma` one. Either will accept

@@ -500,6 +500,56 @@ pub fn link(ui: &mut Ui, label: &str) -> Response {
     button(ui, label, Emphasis::Link, true)
 }
 
+/// A switch: a painted track and knob, then its label and a quieter line on
+/// what it means. The whole row is the target; Space or Enter flips it once
+/// Tab has reached it. The knob eases across in `motion::FAST`, and simply
+/// jumps with reduced motion.
+pub fn switch(ui: &mut Ui, label: &str, detail: &str, on: &mut bool) -> Response {
+    const TRACK: Vec2 = Vec2::new(30.0, 18.0);
+    let font = egui::FontId::proportional(text::BODY);
+    let title = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT);
+    let text_w = ui.available_width() - TRACK.x - space::MD;
+    let note = (!detail.is_empty()).then(|| {
+        let mut job = egui::text::LayoutJob::simple(
+            detail.to_owned(),
+            egui::FontId::proportional(text::SMALL),
+            colour::TEXT_MUTED,
+            text_w,
+        );
+        job.wrap.max_width = text_w;
+        ui.painter().layout_job(job)
+    });
+    let h = title.size().y + note.as_ref().map_or(0.0, |g| space::XXS + g.size().y);
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), h.max(TRACK.y)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *on, label));
+    let response = super::motion::operable(ui, response, radius::SM as f32);
+    if response.clicked() {
+        *on = !*on;
+    }
+    let hot = response.hovered() || response.has_focus();
+    let t = super::motion::to(ui, response.id.with("knob"), *on, super::motion::FAST);
+    let track = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.top() + (title.size().y - TRACK.y) / 2.0),
+        TRACK,
+    );
+    let p = ui.painter();
+    let off_fill = if hot { colour::LINE_STRONG } else { colour::LINE };
+    p.rect_filled(track, radius::PILL as f32, off_fill.lerp_to_gamma(colour::ACCENT, t));
+    let r = TRACK.y / 2.0 - 2.0;
+    let x = egui::lerp(track.left() + 2.0 + r..=track.right() - 2.0 - r, t);
+    p.circle_filled(egui::pos2(x, track.center().y), r, colour::TEXT.lerp_to_gamma(colour::ON_ACCENT, t));
+    let x = track.right() + space::MD;
+    p.galley(egui::pos2(x, rect.top()), title, colour::TEXT);
+    if let Some(g) = note {
+        p.galley(egui::pos2(x, rect.top() + h - g.size().y), g, colour::TEXT_MUTED);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 /// A labelled input. The label sits above in caption type, which keeps forms
 /// scannable without a second column.
 ///

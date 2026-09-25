@@ -901,6 +901,24 @@ pub fn context_menu(response: &Response, items: impl FnOnce(&mut Ui)) -> bool {
         .is_some()
 }
 
+/// The action menu, opened under `response` by a click on it — a control
+/// that is itself a menu (a split button's caret, a chip that picks). Escape
+/// or a click outside closes it.
+pub fn click_menu(response: &Response, items: impl FnOnce(&mut Ui)) -> bool {
+    egui::Popup::menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .gap(space::XS)
+        .frame(menu_frame())
+        .width(ACTION_MENU_W)
+        .show(|ui| {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ui.close();
+            }
+            menu_body(ui, items)
+        })
+        .is_some()
+}
+
 fn menu_body(ui: &mut Ui, items: impl FnOnce(&mut Ui)) {
     ui.spacing_mut().item_spacing.y = 0.0;
     // Arrow keys walk focus spatially; without this they walk off the bottom

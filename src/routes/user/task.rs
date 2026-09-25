@@ -94,6 +94,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/claim", post(claim))
         .route("/api/user/tasks/{id}/release", post(release))
         .route("/api/user/tasks/{id}/blockers", patch(blockers))
+        .route("/api/user/tasks/{id}/accept", post(accept))
+        .route("/api/user/tasks/{id}/dismiss", post(dismiss))
         .route("/api/user/tracks", get(tracks))
 }
 
@@ -264,3 +266,55 @@ async fn blockers(
     ))
 }
 
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptBody {
+    /// Move it into this project's first phase; absent keeps it where it is.
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct DismissBody {
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// A body that may be left off entirely: a plain "Accept" sends nothing.
+fn optional_body<T: serde::de::DeserializeOwned + Default>(bytes: &[u8]) -> AppResult<T> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    serde_json::from_slice(bytes).map_err(|e| AppError::BadRequest(format!("the body is not valid JSON: {e}")))
+}
+
+/// Triage is the owner's call, made in the app: a signed-in person only.
+fn session(caller: &Caller) -> AppResult<()> {
+    if caller.kind != "session" {
+        return Err(AppError::Forbidden("only a signed-in person can accept or dismiss triage".into()));
+    }
+    Ok(())
+}
+
+async fn accept(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    body: axum::body::Bytes,
+) -> AppResult<ApiResponse<TaskRow>> {
+    session(&caller)?;
+    let project = optional_body::<AcceptBody>(&body)?.project_id;
+    Ok(ApiResponse::ok(controllers::task::triage(&state, &caller.actor, id, true, project, None).await?))
+}
+
+async fn dismiss(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    body: axum::body::Bytes,
+) -> AppResult<ApiResponse<TaskRow>> {
+    session(&caller)?;
+    let reason = optional_body::<DismissBody>(&body)?.reason;
+    Ok(ApiResponse::ok(controllers::task::triage(&state, &caller.actor, id, false, None, reason).await?))
+}

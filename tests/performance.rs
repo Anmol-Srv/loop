@@ -151,9 +151,10 @@ async fn counts_are_my_live_tasks_and_active_projects(pool: PgPool) {
     task(&pool, ph, "shipped", true, Some(me), &[]).await;
     task(&pool, ph, "dropped", false, Some(me), &[]).await;
     task(&pool, ph, "open", false, Some(other), &[]).await;
+    task(&pool, ph, "triage", false, Some(me), &[]).await; // counted apart, not as open
 
     let body = json(&pool, "/api/user/counts", &token).await;
-    assert_eq!(body["data"], serde_json::json!({ "myOpen": 2, "activeProjects": 2 }));
+    assert_eq!(body["data"], serde_json::json!({ "myOpen": 2, "activeProjects": 2, "triage": 1 }));
 }
 
 #[sqlx::test]

@@ -14,6 +14,14 @@ pub const DESIGN_FLOW: [&str; 4] = ["open", "in_progress", "handoff", "completed
 /// Reachable from anywhere on either track, and not part of either's order.
 pub const ASIDE: [&str; 2] = ["blocked", "dropped"];
 
+/// Where an agent's intake lands, on either track. The owner accepts it
+/// (`open`) or dismisses it (`dropped`); nothing else leaves it and nothing
+/// enters it — an intake is the only way in.
+pub const TRIAGE: &str = "triage";
+
+/// What an intake may call a task. The column's CHECK says the same.
+pub const CATEGORIES: [&str; 5] = ["bug", "feature", "feedback", "question", "chore"];
+
 /// The flow for a department. An unassigned task has no department and so no
 /// track; engineering is the default because it is the larger half of the
 /// team and because `open` is all an unassigned task can be anyway.
@@ -42,12 +50,12 @@ pub const BLOCKER_RESOLVED: &str = "('handoff', 'completed', 'shipped', 'dropped
 /// Every state either track can produce. For a schema or a filter menu that
 /// has no one task in hand; `statuses_for` is what a real task is checked
 /// against.
-pub const ALL_STATUSES: [&str; 7] =
-    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+pub const ALL_STATUSES: [&str; 8] =
+    ["triage", "open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
 
 /// Every state a task on this track may hold.
 pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
-    flow_of(department).iter().chain(ASIDE.iter()).copied().collect()
+    std::iter::once(TRIAGE).chain(flow_of(department).iter().chain(ASIDE.iter()).copied()).collect()
 }
 
 /// Where a task may go next. The one table: `set_status` refuses anything not
@@ -62,6 +70,7 @@ pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
 pub fn next_statuses(department: Option<&str>, from: &str) -> &'static [&'static str] {
     let design = department == Some("design");
     match (design, from) {
+        (_, "triage") => &["open", "dropped"],
         (_, "open") => &["in_progress", "blocked", "dropped"],
         (false, "in_progress") => &["completed", "open", "blocked", "dropped"],
         (false, "completed") => &["shipped", "in_progress", "blocked", "dropped"],
@@ -158,6 +167,9 @@ pub struct Task {
     /// runtime, ownerName, state, now, nowAt, delegatedAt, lastSeenAt}`. Built in SQL so every query
     /// that returns a task carries it without a second round trip.
     pub delegate: Option<serde_json::Value>,
+    /// bug, feature, feedback, question or chore; set at intake or by any
+    /// writer later.
+    pub category: Option<String>,
 }
 
 /// A task plus the names a list needs to render a row, and a count of how many
@@ -189,6 +201,11 @@ pub struct TaskRow {
     /// Whether the viewer may read the agent's private side of this task —
     /// questions, answers, instructions, the step log: `sees_agent_private`.
     pub can_see_agent_private: bool,
+    /// Where an intake agent found it: `{kind, url, channel, channelName,
+    /// author, text, receivedAt, reason, confidence, private}`, or null. A
+    /// direct message's author and text are only for `sees_agent_private`;
+    /// everyone else reads "From a direct message".
+    pub source: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default)]
@@ -242,7 +259,7 @@ macro_rules! plain_task_columns {
         "id, phase_id, title, body, status, priority, \
          assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
          claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at, \
-         review_target, archived_at"
+         review_target, archived_at, category"
     };
 }
 
@@ -285,7 +302,16 @@ pub fn task_row_select(viewer: &str) -> String {
                   WHERE b.id = ANY(t.blocked_by) AND b.status IN {RESOLVED}) AS blockers_done,
                 pr.archived_at AS project_archived_at,
                 {can} AS can_archive, {can} AS can_delete,
-                {private} AS can_see_agent_private
+                {private} AS can_see_agent_private,
+                (SELECT json_build_object('kind', s.kind, 'url', s.url, 'channel', s.channel,
+                        'channelName', s.channel_name, 'receivedAt', s.received_at,
+                        'reason', CASE WHEN NOT s.private OR {private} THEN s.reason END,
+                        'confidence', s.confidence, 'private', s.private,
+                        'agentName', (SELECT a.name FROM agent a WHERE a.id = s.agent_id),
+                        'author', CASE WHEN NOT s.private OR {private} THEN s.author END,
+                        'text', CASE WHEN NOT s.private OR {private} THEN s.text
+                                     ELSE 'From a direct message' END)
+                   FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source
            FROM task t
            JOIN phase ph ON ph.id = t.phase_id
            JOIN project pr ON pr.id = ph.project_id

@@ -39,7 +39,8 @@ pub struct Home {
     pub waiting_on_me: Vec<ChangeRow>,
     pub projects: Vec<ProjectProgress>,
     pub team: Vec<Capacity>,
-    /// Questions and submissions from my agents, on tasks assigned to me.
+    /// Questions and submissions from my agents, on tasks assigned to me,
+    /// and (`kind: "triage"`) tasks an intake agent filed for me.
     pub needs_attention: Vec<agent::Attention>,
 }
 
@@ -100,14 +101,19 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Counts {
+    /// Unfinished and accepted: triage is counted on its own, not here.
     pub my_open: i64,
     pub active_projects: i64,
+    /// My tasks an intake agent filed that I have not accepted or dismissed.
+    pub triage: i64,
 }
 
 pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
-    let my_open = sqlx::query_scalar(&format!(
-        "SELECT count(*) FROM task t
-          WHERE t.assignee_person_id = $1 AND t.done_at IS NULL AND t.status <> 'dropped' AND {}",
+    let (my_open, triage): (i64, i64) = sqlx::query_as(&format!(
+        "SELECT count(*) FILTER (WHERE t.done_at IS NULL AND t.status NOT IN ('dropped', 'triage')),
+                count(*) FILTER (WHERE t.status = 'triage')
+           FROM task t
+          WHERE t.assignee_person_id = $1 AND {}",
         crate::models::task::LIVE
     ))
     .bind(person_id)
@@ -117,7 +123,7 @@ pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
         sqlx::query_scalar("SELECT count(*) FROM project WHERE status = 'active' AND archived_at IS NULL")
         .fetch_one(&state.db)
         .await?;
-    Ok(Counts { my_open, active_projects })
+    Ok(Counts { my_open, active_projects, triage })
 }
 
 pub async fn home(state: &AppState, person_id: Uuid) -> AppResult<Home> {

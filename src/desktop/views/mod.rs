@@ -9,3 +9,4 @@ pub mod home;
 pub mod mytasks;
 pub mod palette;
 pub mod menus;
+pub mod triage;

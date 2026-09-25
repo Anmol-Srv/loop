@@ -264,6 +264,7 @@ pub fn status_colour(status: &str) -> Color32 {
         "in_progress" | "active" => colour::WARN,
         "blocked" => colour::DANGER,
         "dropped" => colour::TEXT_FAINT,
+        "triage" => colour::INFO,
         _ => colour::IDLE,
     }
 }
@@ -275,6 +276,7 @@ pub fn status_label(status: &str) -> &str {
     // half the call sites did and half did not.
     match status {
         "open" => "Open",
+        "triage" => "Triage",
         "in_progress" => "In progress",
         "handoff" => "Handoff",
         "completed" => "Completed",
