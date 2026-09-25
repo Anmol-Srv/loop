@@ -136,3 +136,27 @@ pub fn evidence(p: &Painter, c: Pos2, size: f32, kind: &str, ink: Color32) {
         }
     }
 }
+
+/// A repository: a branch — a trunk between two commits, and a second commit
+/// that curves into it.
+pub fn repo(p: &Painter, c: Pos2, size: f32, ink: Color32) {
+    let s = size / 2.0;
+    let st = stroke(size, ink);
+    let (top, bottom, side) = (pos2(c.x - s * 0.45, c.y - s * 0.7), pos2(c.x - s * 0.45, c.y + s * 0.7), pos2(c.x + s * 0.5, c.y - s * 0.35));
+    let r = size * 0.12;
+    p.line_segment([top + vec2(0.0, r), bottom - vec2(0.0, r)], st);
+    let bend: Vec<Pos2> = (0..=8)
+        .map(|i| {
+            let t = i as f32 / 8.0;
+            let a = side + vec2(0.0, r);
+            let b = pos2(top.x, c.y + s * 0.3);
+            let ctrl = pos2(side.x, b.y);
+            let u = 1.0 - t;
+            pos2(u * u * a.x + 2.0 * u * t * ctrl.x + t * t * b.x, u * u * a.y + 2.0 * u * t * ctrl.y + t * t * b.y)
+        })
+        .collect();
+    p.add(egui::Shape::line(bend, st));
+    for dot in [top, bottom, side] {
+        p.circle_stroke(dot, r, st);
+    }
+}

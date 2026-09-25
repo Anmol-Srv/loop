@@ -155,7 +155,8 @@ pub fn agent_tools() -> Vec<ToolDef> {
         tool(
             "task_context",
             "Everything about one of your tasks: the task with its track and allowed next statuses, the \
-             project, the owner, every note oldest first, artifacts by kind, and related work (tasks it \
+             project (with its repositories and localPath, the folder on your owner's Mac to work in), \
+             the owner, every note oldest first, artifacts by kind, and related work (tasks it \
              waits on and tasks waiting on it, with their PRs, commits and Figma links).",
             task_only(),
         ),

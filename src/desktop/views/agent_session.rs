@@ -55,6 +55,8 @@ pub(super) struct State {
     /// "Request changes" was pressed: the note it needs is open.
     changes_open: bool,
     instruction: String,
+    /// The missing-folder hint's link was followed: the page opens the project.
+    pub(super) open_project: bool,
 }
 
 impl State {
@@ -90,6 +92,9 @@ pub(super) struct Session<'a> {
     /// The viewer may read the private parts: the owner, or an admin.
     pub private: bool,
     pub busy: bool,
+    /// A repository of the project the owner has not set a folder for, which
+    /// the agent will ask about: said to the owner while the agent holds it.
+    pub unset_repo: Option<&'a str>,
 }
 
 /// The kinds of note that belong to the session rather than the team thread.
@@ -156,6 +161,21 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
 
     // ---- what it is doing now
     now_line(ui, d, state, s.mine, owner_first, short);
+    if let Some(repo) = s.unset_repo.filter(|_| s.mine && held) {
+        ui.add_space(space::SM);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(
+                RichText::new(format!("{short} won\u{2019}t know where the code is \u{2014} "))
+                    .size(text::SMALL)
+                    .color(colour::TEXT_MUTED),
+            );
+            if w::link(ui, &format!("set the folder for {repo} on the project")).clicked() {
+                st.open_project = true;
+            }
+            ui.label(RichText::new(".").size(text::SMALL).color(colour::TEXT_MUTED));
+        });
+    }
 
     // ---- what it has said
     let entries: Vec<&Value> = s

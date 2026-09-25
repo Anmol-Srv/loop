@@ -16,7 +16,7 @@ use sqlx::PgTransaction;
 use uuid::Uuid;
 
 use crate::controllers::note::{self, Author, Note};
-use crate::controllers::{artifact, project, task, token};
+use crate::controllers::{artifact, project, repo, task, token};
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
 use crate::models::change::Actor;
@@ -376,6 +376,17 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
 
     let project = project::get(state, row.project_id, None).await?;
     let resources = artifact::list(state, None, "project".into(), row.project_id).await?;
+    // Each repo with the folder its owner keeps it in: the agent works on the
+    // owner's Mac, so the owner's path is the one that means anything here.
+    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    let repos: Vec<Value> = repo::list(state, Some(owner_id), row.project_id)
+        .await?
+        .into_iter()
+        .map(|r| json!({ "name": r.name, "url": r.url, "localPath": r.my_path }))
+        .collect();
     let owner: Option<(Uuid, String, String, String)> = sqlx::query_as(
         "SELECT id, name, email, department FROM person WHERE id = $1",
     )
@@ -420,6 +431,7 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
             "description": project.description,
             "labels": project.labels,
             "resources": resources,
+            "repos": repos,
         },
         "owner": owner.map(|(id, name, email, department)| json!({
             "id": id, "name": name, "email": email, "department": department,

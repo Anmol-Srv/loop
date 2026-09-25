@@ -24,13 +24,13 @@ use serde_json::{json, Value};
 
 use super::menus::{project_items, task_items, Pick, Viewer};
 use super::projects::{
-    health, label_tone, owned, parse_date, priority_tone, relative_day, Health,
+    health, label_badge, label_picker, owned, parse_date, priority_tone, relative_day, Health,
     DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
 };
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::tokens::discipline_colour;
 use crate::desktop::design::{
-    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
+    avatar, cards as c, colour, glyph, motion, radius, shell, size, space, status_label, text, theme,
     viz, widgets as w,
 };
 use crate::desktop::net::{memo, Net};
@@ -139,6 +139,22 @@ struct Page {
     resource_error: Option<String>,
     /// The task table shows the archived tasks instead.
     archived: bool,
+    /// The open add-or-edit repository form.
+    repo_form: Option<RepoForm>,
+    /// The repository whose Remove is waiting on a yes.
+    repo_removing: Option<String>,
+    /// Each repository's folder as typed, by repo id, until it is saved.
+    paths: HashMap<String, String>,
+    /// How the last repository change failed, as the server said it.
+    repo_error: Option<String>,
+}
+
+/// The repository form: a new one, or `editing` that one.
+#[derive(Default)]
+struct RepoForm {
+    editing: Option<String>,
+    name: String,
+    url: String,
 }
 
 /// Name and description while Edit is open, with what they were when editing
@@ -240,6 +256,10 @@ struct Keys {
     artifacts_path: String,
     attach: String,
     remove: String,
+    /// Every repository change — add, edit, remove, a folder — one at a time.
+    repo: String,
+    /// A label made from the rail's picker, to be added once it exists.
+    new_label: String,
 }
 
 impl Keys {
@@ -257,6 +277,8 @@ impl Keys {
             artifacts_path: format!("/api/user/artifacts?parentType=project&parentId={id}"),
             attach: format!("project:attach:{id}"),
             remove: format!("project:remove:{id}"),
+            repo: format!("project:repo:{id}"),
+            new_label: format!("project:new-label:{id}"),
         }
     }
 }
@@ -267,6 +289,9 @@ enum Request {
     Patch(Value),
     Attach(Value),
     Remove(String),
+    /// `(method, path, body)` for a repository change.
+    Repo(reqwest::Method, String, Value),
+    NewLabel(Value),
 }
 
 fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
@@ -348,7 +373,8 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut back = false;
     let mut open_task: Option<String> = None;
     let mut task_pick: Option<(Value, Pick)> = None;
-    let requests: Vec<Request> = Vec::new();
+    let mut requests: Vec<Request> = Vec::new();
+    let repo_busy = net.is_loading(&keys.repo);
 
     if shell::back(ui, "Projects").clicked() {
         back = true;
@@ -356,6 +382,22 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
 
     let fallback = Value::Null;
     let head = detail.as_deref().or(flow.as_deref()).unwrap_or(&fallback);
+
+    // A label made from the rail: it exists now, so it joins the set.
+    if let Some(label) = net.data(&keys.new_label).cloned() {
+        net.invalidate(&keys.new_label);
+        net.invalidate(LABELS_KEY);
+        let mut picked: Vec<String> = page.labels.clone().unwrap_or_else(|| {
+            array(head.get("labels")).iter().map(|l| str_at(l, "id").to_owned()).collect()
+        });
+        let id = str_at(&label, "id").to_owned();
+        if !id.is_empty() && !picked.contains(&id) {
+            picked.push(id);
+            requests.push(Request::Patch(json!({ "labelIds": picked })));
+            page.labels = Some(picked);
+        }
+    }
+    let label_error = net.error(&keys.new_label).map(str::to_string);
     let (done, total) = flow
         .as_ref()
         .map(|f| (num_at(f, "done"), num_at(f, "total")))
@@ -424,6 +466,9 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 attach_error.as_deref(),
                 requests,
             );
+
+            shell::divider(ui);
+            repos(ui, project_id, head, page, can_write, repo_busy, requests);
 
             shell::divider(ui);
             let finished = tasks.iter().filter(|t| is_finished(t)).count();
@@ -509,6 +554,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 page,
                 live,
                 &all_labels,
+                label_error.as_deref(),
                 (done, total),
                 can_write,
                 requests,
@@ -574,6 +620,15 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                     Value::Null,
                 );
             }
+            Request::Repo(method, path, body) => {
+                page.repo_error = None;
+                net.invalidate(&keys.repo);
+                net.send(&keys.repo, method, &path, body);
+            }
+            Request::NewLabel(body) => {
+                net.invalidate(&keys.new_label);
+                net.post(&keys.new_label, "/api/user/labels", body);
+            }
         }
     }
     // Last, so its dialog is drawn over the page it is about.
@@ -627,6 +682,24 @@ fn settle(net: &mut Net, keys: &Keys, page: &mut Page) {
         // A second Remove of the same link is a 404 that says so; the list
         // refresh already tells the truth, so that one is not an error.
         page.resource_error = result.err().filter(|e| !e.contains("already gone"));
+    }
+    if let Some(result) = net.peek(&keys.repo).cloned() {
+        net.invalidate(&keys.repo);
+        // In place, so the block keeps its rows until the new ones land.
+        net.get(&keys.detail, &keys.detail_path);
+        match result {
+            Ok(reply) => {
+                page.repo_form = None;
+                page.repo_removing = None;
+                // A folder reply is the saved folder: the field shows it.
+                if let Some(id) = reply.get("id").and_then(Value::as_str) {
+                    if page.paths.contains_key(id) {
+                        page.paths.insert(id.to_owned(), str_at(&reply, "myPath").to_owned());
+                    }
+                }
+            }
+            Err(e) => page.repo_error = Some(e),
+        }
     }
 }
 
@@ -749,6 +822,7 @@ fn rail(
     page: &mut Page,
     tasks: &[Value],
     all_labels: &[Value],
+    label_error: Option<&str>,
     (done, total): (i64, i64),
     can_write: bool,
     requests: &mut Vec<Request>,
@@ -802,17 +876,20 @@ fn rail(
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
                 for l in &labels {
-                    c::chip(ui, str_at(l, "name"), label_tone(str_at(l, "colour")), false);
+                    label_badge(ui, l);
                 }
             });
             return;
         }
-        let options: Vec<(String, String)> = all_labels
-            .iter()
-            .map(|l| (str_at(l, "id").to_owned(), str_at(l, "name").to_owned()))
-            .collect();
         let mut picked = chosen.clone();
-        viz::multi_select(ui, "Add labels", &options, &mut picked);
+        ui.vertical(|ui| {
+            if let Some(body) = label_picker(ui, "Add labels", all_labels, &mut picked) {
+                requests.push(Request::NewLabel(body));
+            }
+            if let Some(err) = label_error {
+                ui.label(RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+            }
+        });
         if picked != chosen {
             requests.push(Request::Patch(json!({ "labelIds": picked })));
             page.labels = Some(picked);
@@ -1172,6 +1249,240 @@ fn attach_form(
     });
 }
 
+
+// ------------------------------------------------------------- repositories
+
+/// Where the project's code lives. The repo is the team's; the folder under it
+/// is the viewer's own and only theirs — it is what an agent working for them
+/// is told to work in.
+fn repos(
+    ui: &mut egui::Ui,
+    project_id: &str,
+    head: &Value,
+    page: &mut Page,
+    can_write: bool,
+    busy: bool,
+    requests: &mut Vec<Request>,
+) {
+    let rows = array(head.get("repos"));
+    let mut add = false;
+    shell::section_count_with(ui, "Repositories", rows.len(), |ui| {
+        if can_write && page.repo_form.is_none() && w::ghost(ui, "+ Add repository").clicked() {
+            add = true;
+        }
+    });
+    if add {
+        page.repo_form = Some(RepoForm::default());
+    }
+    if let Some(err) = &page.repo_error {
+        w::error(ui, err);
+        ui.add_space(space::SM);
+    }
+    if page.repo_form.as_ref().is_some_and(|f| f.editing.is_none()) {
+        repo_form(ui, project_id, page, busy, requests);
+        ui.add_space(space::MD);
+    }
+    if rows.is_empty() {
+        if page.repo_form.is_none() {
+            w::empty(ui, "No repositories yet.", "Add the repo this project's code lives in, so an agent knows where to work.");
+        }
+        return;
+    }
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(space::LG);
+            }
+            if page.repo_form.as_ref().is_some_and(|f| f.editing.as_deref() == Some(str_at(row, "id"))) {
+                repo_form(ui, project_id, page, busy, requests);
+            } else {
+                repo_row(ui, row, page, can_write, busy, requests);
+            }
+        }
+    });
+}
+
+/// The URL a repo opens at in a browser: itself, or the web page behind a
+/// `git@host:org/repo` clone address. `None` for anything else.
+fn repo_web(url: &str) -> Option<String> {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return Some(url.to_owned());
+    }
+    let (host, path) = url.strip_prefix("git@")?.split_once(':')?;
+    Some(format!("https://{host}/{}", path.trim_end_matches(".git")))
+}
+
+/// What is wrong with a folder as typed, in the server's words, or `None`.
+fn path_problem(path: &str) -> Option<&'static str> {
+    let path = path.trim();
+    if path.is_empty() {
+        None
+    } else if !path.starts_with('/') {
+        Some("Needs a full path starting with /, like /Users/you/code/api.")
+    } else if path.len() > 500 {
+        Some("That path is longer than 500 characters.")
+    } else {
+        None
+    }
+}
+
+/// The folder field's label column, so "On my Mac" lines up under the name.
+const REPO_LABEL_W: f32 = 72.0;
+/// The privacy note beside the folder: the lock and its words.
+const PRIVATE_W: f32 = 132.0;
+
+fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, busy: bool, requests: &mut Vec<Request>) {
+    let id = str_at(row, "id").to_owned();
+    let name = str_at(row, "name");
+    let url = str_at(row, "url");
+    let can_edit = row["canEdit"].as_bool() == Some(true);
+
+    if page.repo_removing.as_deref() == Some(id.as_str()) {
+        ui.horizontal(|ui| {
+            ui.set_min_height(size::CONTROL);
+            faint(ui, &format!("Remove {name} from this project? Everyone's folders for it go too."));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if w::danger(ui, "Remove", !busy).clicked() {
+                    requests.push(Request::Repo(reqwest::Method::DELETE, format!("/api/user/repos/{id}"), Value::Null));
+                }
+                if w::ghost(ui, "Keep").clicked() {
+                    page.repo_removing = None;
+                }
+            });
+        });
+        return;
+    }
+
+    // Name and address, with the actions at the far end.
+    ui.horizontal(|ui| {
+        ui.set_min_height(size::CONTROL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if can_write {
+                let why = (!can_edit).then_some("Only whoever added it, or an admin, can change it.");
+                viz::more(ui, |ui| {
+                    if viz::menu_item(ui, "Edit repository\u{2026}", false, why) {
+                        page.repo_form =
+                            Some(RepoForm { editing: Some(id.clone()), name: name.to_owned(), url: url.to_owned() });
+                    }
+                    if viz::menu_item(ui, "Remove repository\u{2026}", true, why) {
+                        page.repo_removing = Some(id.clone());
+                    }
+                });
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                let (g, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                glyph::repo(ui.painter(), g.center(), 14.0, colour::TEXT_MUTED);
+                ui.label(
+                    RichText::new(name)
+                        .size(text::BODY)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT),
+                );
+                let shown = elide(ui, host_path(url), ui.available_width());
+                let link = ui.add(
+                    egui::Label::new(RichText::new(shown).size(text::SMALL).color(colour::TEXT_MUTED))
+                        .sense(egui::Sense::click())
+                        .selectable(false),
+                );
+                if let Some(web) = repo_web(url) {
+                    let link = motion::operable(ui, link, radius::SM as f32);
+                    if link.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if link.on_hover_text(url).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(web));
+                    }
+                } else {
+                    link.on_hover_text(url);
+                }
+            });
+        });
+    });
+
+    // The viewer's own folder for it.
+    let saved = str_at(row, "myPath").to_owned();
+    let draft = page.paths.entry(id.clone()).or_insert_with(|| saved.clone());
+    let problem = path_problem(draft);
+    ui.add_space(space::XS);
+    let field = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            let (r, _) = ui.allocate_exact_size(egui::vec2(REPO_LABEL_W, size::CONTROL), egui::Sense::hover());
+            let width = (ui.available_width() - PRIVATE_W - space::SM).max(160.0);
+            let field = ui.add_sized(
+                [width, size::CONTROL],
+                egui::TextEdit::singleline(draft)
+                    .hint_text(RichText::new("Not set — paste this repo's folder").size(text::BODY).color(colour::TEXT_DISABLED))
+                    .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
+            );
+            field.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("Folder for {name} on my Mac"))
+            });
+            // On the field's centre line, which is not the row's: the edit's
+            // margins make it a little taller than a control.
+            let mid = field.rect.center().y;
+            ui.painter().text(
+                egui::pos2(r.left(), mid),
+                egui::Align2::LEFT_CENTER,
+                "On my Mac",
+                egui::FontId::proportional(text::SMALL),
+                colour::TEXT_MUTED,
+            );
+            let (l, _) = ui.allocate_exact_size(egui::vec2(12.0, size::CONTROL), egui::Sense::hover());
+            glyph::lock(ui.painter(), egui::pos2(l.center().x, mid), 10.0, colour::TEXT_MUTED);
+            ui.label(RichText::new("Only you see this").size(text::CAPTION).color(colour::TEXT_MUTED));
+            field
+        })
+        .inner;
+    if let Some(why) = problem {
+        super::projects::invalid(ui, field.rect, why);
+    }
+    // Saved when the field is left or Enter is pressed, as the rail's
+    // properties save when they are picked: no Save button for one line.
+    if field.lost_focus() && problem.is_none() && draft.trim() != saved && !busy {
+        let path = draft.trim().to_owned();
+        requests.push(Request::Repo(reqwest::Method::PUT, format!("/api/user/repos/{id}/path"), json!({ "path": path })));
+    }
+}
+
+/// Add a repository, or edit the one `form.editing` names.
+fn repo_form(ui: &mut egui::Ui, project_id: &str, page: &mut Page, busy: bool, requests: &mut Vec<Request>) {
+    let Some(form) = page.repo_form.as_mut() else { return };
+    let mut close = false;
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        w::field(ui, "Name", &mut form.name, false, "e.g. API, Web\u{2026}");
+        ui.add_space(space::MD);
+        let url = form.url.trim().to_owned();
+        let bad = !url.is_empty() && !super::projects::repo_url_ok(&url);
+        let entry = w::field(ui, "URL", &mut form.url, false, "https://github.com/org/repo or git@github.com:org/repo");
+        if bad {
+            super::projects::invalid(ui, entry.rect, "Needs a URL starting https:// or git@.");
+        }
+        ui.add_space(space::LG);
+        let ready = !form.name.trim().is_empty() && !url.is_empty() && !bad && !busy;
+        ui.horizontal(|ui| {
+            let verb = if form.editing.is_some() { "Save" } else { "Add repository" };
+            if w::primary(ui, if busy { "Saving\u{2026}" } else { verb }, ready).clicked() {
+                let body = json!({ "name": form.name.trim(), "url": url });
+                requests.push(match &form.editing {
+                    Some(id) => Request::Repo(reqwest::Method::PATCH, format!("/api/user/repos/{id}"), body),
+                    None => Request::Repo(reqwest::Method::POST, format!("/api/user/projects/{project_id}/repos"), body),
+                });
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        page.repo_form = None;
+        page.repo_error = None;
+    }
+}
 
 /// Open work first, then what is finished, then what was abandoned; inside a
 /// group the urgent thing on top, and ties broken by age so the order does not

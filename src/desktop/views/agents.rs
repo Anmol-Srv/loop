@@ -54,7 +54,7 @@ pub fn state_words(state: &str) -> &str {
         "handed_off" => "Handed off",
         "acknowledged" => "Acknowledged",
         "working" => "Working",
-        "needs_input" => "Needs your input",
+        "needs_input" => "Needs input",
         "in_review" => "In review",
         "done" => "Done",
         "stopped" => "Stopped",

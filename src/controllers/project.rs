@@ -85,7 +85,12 @@ pub async fn create(
     target_date: Option<chrono::NaiveDate>,
     label_ids: Vec<Uuid>,
     tasks: Vec<NewTask>,
+    repo_url: Option<String>,
 ) -> AppResult<Outcome<Project>> {
+    let repo_url = repo_url.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
+    if let Some(url) = &repo_url {
+        super::repo::check_url(url)?;
+    }
     if !(0..=4).contains(&priority) {
         return Err(AppError::BadRequest("priority must be between 0 and 4".into()));
     }
@@ -125,6 +130,7 @@ pub async fn create(
         "target_date": target_date,
         "label_ids": label_ids,
         "tasks": tasks,
+        "repo_url": repo_url,
     });
 
     if !actor.can_apply {
@@ -197,6 +203,11 @@ pub async fn create(
     .await?;
     for t in &tasks {
         insert_task(&mut tx, actor, phase_id, t).await?;
+    }
+    // The form's one repository, named after the project it is the code for.
+    if let Some(url) = &repo_url {
+        let repo_name: String = name.trim().chars().take(80).collect();
+        super::repo::insert(&mut tx, actor.person_id, id, &repo_name, url).await?;
     }
 
     tx.commit().await?;
@@ -362,6 +373,7 @@ pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<
         .await?
         .remove(&id)
         .unwrap_or_default();
+    project.repos = Some(super::repo::list(state, viewer, id).await?);
     Ok(project)
 }
 

@@ -407,6 +407,23 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // without its word, the owner and admins are exactly who it names.
     let private = task.get("canSeeAgentPrivate").and_then(Value::as_bool).unwrap_or(mine || admin);
 
+    // The project's repositories as the viewer sees them, for the session's
+    // missing-folder hint. Only asked for when there is a session to hint in,
+    // under the key the project page reads, so either page warms the other.
+    let project_id = str_of(&task, "projectId").unwrap_or_default().to_owned();
+    let project_key = format!("board:project:{project_id}");
+    if delegate.is_some() && mine && !project_id.is_empty() {
+        net.get_once(&project_key, &format!("/api/user/projects/{project_id}"));
+    }
+    let unset_repo: Option<String> = net
+        .data(&project_key)
+        .and_then(|p| p.get("repos"))
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.iter().find(|r| r["myPath"].is_null()))
+        .and_then(|r| str_of(r, "name"))
+        .map(str::to_owned);
+    let mut hint_open = false;
+
     let mut editing = false;
     shell::with_rail(
         ui,
@@ -436,10 +453,12 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                         mine,
                         private,
                         busy: local.agent_busy.is_some(),
+                        unset_repo: unset_repo.as_deref(),
                     };
                     if let Some(ask) = session::show(ui, net, &s, &mut local.session) {
                         agent_action(net, task_id, ask.into(), local);
                     }
+                    hint_open |= std::mem::take(&mut local.session.open_project);
                 }
 
                 shell::divider(ui);
@@ -464,6 +483,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         },
     );
 
+    if hint_open {
+        open_project = Some(project_id.clone());
+    }
     match from_rail {
         Some(Ask::Move(next)) => {
             local.notice = None;

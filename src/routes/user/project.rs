@@ -37,6 +37,9 @@ pub struct CreateProjectBody {
     /// Work handed out in the same breath as the project is made.
     #[serde(default)]
     pub tasks: Vec<NewTask>,
+    /// Optional: one repository, named after the project.
+    #[serde(default)]
+    pub repo_url: Option<String>,
 }
 
 fn default_priority() -> i32 {
@@ -70,6 +73,7 @@ async fn create(
         body.target_date,
         body.label_ids,
         body.tasks,
+        body.repo_url,
     )
     .await?;
     Ok(ApiResponse::ok(project))

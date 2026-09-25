@@ -110,6 +110,63 @@ pub fn chip(ui: &mut Ui, label: &str, tone: Tone, dot: bool) -> Response {
     response
 }
 
+/// A label's badge height, the same wherever a label appears.
+pub const BADGE_H: f32 = 20.0;
+/// The widest a badge grows before its name is cut with an ellipsis.
+const BADGE_MAX_W: f32 = 160.0;
+/// The × a removable badge carries, and the room it takes.
+const BADGE_X: f32 = 14.0;
+
+/// A label: a pill filled with its hue at low alpha, its name in `ink`. Every
+/// hue/ink pair the label palette uses clears 4.5:1 over that fill.
+pub fn badge(ui: &mut Ui, label: &str, hue: Color32, ink: Color32) -> Response {
+    paint_badge(ui, label, hue, ink, 0.0).1
+}
+
+/// A badge with a painted × that takes it off. True on the frame it is
+/// pressed (or Enter/Space on it, once Tab has reached it).
+pub fn removable_badge(ui: &mut Ui, label: &str, hue: Color32, ink: Color32) -> bool {
+    let (rect, badge) = paint_badge(ui, label, hue, ink, BADGE_X);
+    let x_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - BADGE_X - space::XXS, rect.top()),
+        rect.max,
+    );
+    let x = ui.interact(x_rect, badge.id.with("remove"), Sense::click());
+    x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove {label}")));
+    let x = motion::operable(ui, x, radius::PILL as f32);
+    let hot = x.hovered() || x.has_focus();
+    if x.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    super::glyph::cross(
+        ui.painter(),
+        egui::pos2(x_rect.center().x - space::XXS / 2.0, rect.center().y),
+        9.0,
+        if hot { colour::TEXT } else { ink },
+    );
+    x.clicked()
+}
+
+fn paint_badge(ui: &mut Ui, label: &str, hue: Color32, ink: Color32, trailing: f32) -> (egui::Rect, Response) {
+    let pad_x = space::SM;
+    let galley = super::widgets::truncated(
+        ui,
+        label,
+        egui::FontId::proportional(text::SMALL),
+        ink,
+        BADGE_MAX_W - pad_x * 2.0 - trailing,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(galley.size().x + pad_x * 2.0 + trailing, BADGE_H),
+        Sense::hover(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+    let p = ui.painter();
+    p.rect_filled(rect, radius::PILL as f32, hue.gamma_multiply(0.16));
+    p.galley(egui::pos2(rect.left() + pad_x, rect.center().y - galley.size().y / 2.0), galley, ink);
+    (rect, response)
+}
+
 /// A stat tile: a quiet label, a delta chip, a large numeral, and whatever
 /// evidence belongs beside it.
 pub fn stat(

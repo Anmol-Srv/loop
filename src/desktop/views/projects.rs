@@ -25,7 +25,7 @@ use super::menus::{project_items, Pick};
 use super::board::{archived, archived_chip, array, fraction, num_at, project_action, project_ask, str_at, title_ink, Ask};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    cards as c, colour, shell, size, space, status_label, text, theme, viz, widgets as w,
+    cards as c, colour, radius, shell, size, space, status_label, text, theme, viz, widgets as w,
 };
 use crate::desktop::net::memo;
 use crate::desktop::App;
@@ -115,8 +115,6 @@ const COLS: [Col; 8] = [
 const TASK_CONTROLS_W: f32 = 420.0;
 /// Below this the title input stops giving ground; the row wraps instead.
 const TASK_TITLE_MIN_W: f32 = 160.0;
-/// A label name is one or two words; wider only invites a sentence.
-const NEW_LABEL_W: f32 = 180.0;
 
 /// Priority, as the server stores it and as a person reads it. The value is a
 /// string because that is what `viz::select` slots hold; it becomes an int on
@@ -131,20 +129,17 @@ pub(super) const PRIORITIES: [(&str, &str); 5] = [
 /// The middle of the scale, where a new row starts.
 pub(super) const DEFAULT_PRIORITY: &str = "2";
 
-/// The colours the label API accepts, exactly, paired with how the menu says
-/// them. Sending anything else is a 400, so the list is closed on purpose.
-const LABEL_COLOURS: [(&str, &str); 7] = [
+/// The colours a new label may take: the API's names, in the picker's order.
+/// Pink is left out — the tokens have no pink, and it draws in purple's
+/// violet, so offering both would be two identical swatches.
+const LABEL_COLOURS: [(&str, &str); 6] = [
     ("slate", "Slate"),
     ("blue", "Blue"),
     ("green", "Green"),
     ("amber", "Amber"),
     ("red", "Red"),
     ("purple", "Purple"),
-    ("pink", "Pink"),
 ];
-/// The quietest of the seven, which is the right default for a label whose
-/// colour the person did not think about.
-const DEFAULT_LABEL_COLOUR: &str = "slate";
 
 /// What the create form holds. `None` on `State::creating` means the form is
 /// closed, which is also how the Create project button knows not to redraw
@@ -161,11 +156,8 @@ pub struct Draft {
     pub target: Option<NaiveDate>,
     /// Label ids, in the order they were picked.
     pub labels: Vec<String>,
-    /// Whether the make-a-label row is showing, and what is in it. Draft state
-    /// rather than a widget's own memory, so Cancel clears it with the rest.
-    pub new_label: bool,
-    pub new_label_name: String,
-    pub new_label_colour: Option<String>,
+    /// Optional: the project's code, made into a repository named after it.
+    pub repo_url: String,
     /// The project's first tasks. Rows with no title are dropped on submit,
     /// so an accidental Add task costs nothing.
     pub tasks: Vec<DraftTask>,
@@ -180,9 +172,7 @@ impl Default for Draft {
             start: None,
             target: None,
             labels: Vec::new(),
-            new_label: false,
-            new_label_name: String::new(),
-            new_label_colour: Some(DEFAULT_LABEL_COLOUR.to_owned()),
+            repo_url: String::new(),
             tasks: Vec::new(),
         }
     }
@@ -241,7 +231,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             if !id.is_empty() && !draft.labels.contains(&id) {
                 draft.labels.push(id);
             }
-            draft.new_label_name.clear();
         }
     }
     let net = app.net.as_mut().unwrap();
@@ -521,10 +510,11 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
             table::strong_label(ui, str_at(p, "name"), title_ink(p));
         });
         for label in labels.iter().take(shown) {
-            c::chip(ui, str_at(label, "name"), label_tone(str_at(label, "colour")), false);
+            label_badge(ui, label);
         }
         if extra > 0 {
-            c::chip(ui, &format!("+{extra}"), c::Tone::Quiet, false);
+            let rest: Vec<&str> = labels.iter().skip(shown).map(|l| str_at(l, "name")).collect();
+            c::badge(ui, &format!("+{extra}"), colour::TEXT_MUTED, colour::TEXT_2).on_hover_text(rest.join(", "));
         }
     });
 
@@ -599,23 +589,58 @@ pub(super) fn priority_tone(priority: i64) -> c::Tone {
     }
 }
 
-/// The seven server colour names mapped onto the chip vocabulary that already
-/// exists. Not a new palette: a label sits in the same row as a status and a
-/// priority, and an eighth hue would only make that row louder.
+/// A label colour as a badge draws it: `(hue, ink)`. The server's seven names
+/// on the tokens that already exist, not a new palette. Each ink clears 4.5:1
+/// over its hue at the badge's alpha on every surface a badge sits on; slate's
+/// own muted grey does not, so its name is in `TEXT_2`.
 ///
-/// slate/blue/green/amber/red/purple land on Quiet/Info/Ok/Running/Blocked/
-/// Agent, each the same hue. Pink has no token of its own and takes Agent's
-/// violet, the nearest hue that is not already a state colour — mapping it to
-/// the rose `DANGER` would make a "Marketing" chip read as a failure.
-pub(super) fn label_tone(name: &str) -> c::Tone {
+/// Pink has no token of its own and takes the agent violet, the nearest hue
+/// that is not a state colour — rose `DANGER` would make a "Marketing" label
+/// read as a failure.
+pub(super) fn label_colours(name: &str) -> (egui::Color32, egui::Color32) {
     match name {
-        "blue" => c::Tone::Info,
-        "green" => c::Tone::Ok,
-        "amber" => c::Tone::Running,
-        "red" => c::Tone::Blocked,
-        "purple" | "pink" => c::Tone::Agent,
-        _ => c::Tone::Quiet,
+        "blue" => (colour::INFO, colour::INFO),
+        "green" => (colour::OK, colour::OK),
+        "amber" => (colour::WARN, colour::WARN),
+        "red" => (colour::DANGER, colour::DANGER),
+        "purple" | "pink" => (colour::AGENT, colour::AGENT),
+        _ => (colour::TEXT_MUTED, colour::TEXT_2),
     }
+}
+
+/// One label, as a badge.
+pub(super) fn label_badge(ui: &mut egui::Ui, label: &Value) -> egui::Response {
+    let (hue, ink) = label_colours(str_at(label, "colour"));
+    c::badge(ui, str_at(label, "name"), hue, ink)
+}
+
+/// The searchable label picker: picked labels as removable badges, then
+/// "add". Returns the body of a label to create when one was asked for; the
+/// caller posts it and adds the reply's id to `chosen`.
+pub(super) fn label_picker(
+    ui: &mut egui::Ui,
+    add: &str,
+    all: &[Value],
+    chosen: &mut Vec<String>,
+) -> Option<Value> {
+    let tags: Vec<viz::Tag<'_>> = all
+        .iter()
+        .map(|l| {
+            let (hue, ink) = label_colours(str_at(l, "colour"));
+            viz::Tag { id: str_at(l, "id"), name: str_at(l, "name"), hue, ink }
+        })
+        .collect();
+    let swatches: Vec<(&str, egui::Color32)> =
+        LABEL_COLOURS.iter().map(|(v, name)| (*name, label_colours(v).0)).collect();
+    // The next colour nobody has used yet, so a run of new labels does not
+    // come out all one grey.
+    let default = LABEL_COLOURS
+        .iter()
+        .position(|(v, _)| !all.iter().any(|l| str_at(l, "colour") == *v))
+        .unwrap_or(all.len() % LABEL_COLOURS.len());
+    viz::tag_picker(ui, add, &tags, chosen, &swatches, default).map(|new| {
+        serde_json::json!({ "name": new.name, "colour": LABEL_COLOURS[new.swatch].0 })
+    })
 }
 
 /// How a project stands against its target date.
@@ -757,9 +782,21 @@ fn create_form(
         );
         ui.add_space(space::MD);
 
-        properties_row(ui, draft, labels);
-        ui.add_space(space::SM);
-        new_label_row(ui, draft, &mut post, label_error);
+        if let Some(body) = properties_row(ui, draft, labels) {
+            post = Some(Post::Label(body));
+        }
+        if let Some(err) = label_error {
+            ui.add_space(space::XS);
+            w::error(ui, &format!("Could not make that label: {err}"));
+        }
+        ui.add_space(space::MD);
+
+        let url = draft.repo_url.trim();
+        let bad_url = !url.is_empty() && !repo_url_ok(url);
+        let entry = w::field(ui, "Repository URL (optional)", &mut draft.repo_url, false, "https://github.com/org/repo or git@github.com:org/repo");
+        if bad_url {
+            invalid(ui, entry.rect, "Needs a URL starting https:// or git@.");
+        }
         ui.add_space(space::LG);
 
         // A task goes to anyone here. The project has no roster of its own:
@@ -780,7 +817,8 @@ fn create_form(
             w::caption(ui, "The target date is before the start date.");
             ui.add_space(space::SM);
         }
-        let ready = !draft.title.trim().is_empty() && dates_ok && !busy;
+        let url = draft.repo_url.trim();
+        let ready = !draft.title.trim().is_empty() && dates_ok && !busy && (url.is_empty() || repo_url_ok(url));
         ui.horizontal(|ui| {
             if w::primary(ui, if busy { "Creating…" } else { "Create" }, ready).clicked() {
                 post = Some(Post::Project(project_body(draft)));
@@ -830,6 +868,9 @@ fn project_body(draft: &Draft) -> Value {
     if !draft.labels.is_empty() {
         fields.insert("labelIds".to_owned(), serde_json::json!(draft.labels));
     }
+    if !draft.repo_url.trim().is_empty() {
+        fields.insert("repoUrl".to_owned(), serde_json::json!(draft.repo_url.trim()));
+    }
     body
 }
 
@@ -837,13 +878,10 @@ fn project_body(draft: &Draft) -> Value {
 /// two dates, labels. A row rather than a column because none of them is
 /// required — four stacked fields read as a form to fill in, where four
 /// controls side by side read as four things you may set.
-fn properties_row(ui: &mut egui::Ui, draft: &mut Draft, labels: &[Value]) {
+fn properties_row(ui: &mut egui::Ui, draft: &mut Draft, labels: &[Value]) -> Option<Value> {
     let priorities: Vec<(String, String)> =
         PRIORITIES.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
-    let options: Vec<(String, String)> = labels
-        .iter()
-        .map(|l| (str_at(l, "id").to_owned(), str_at(l, "name").to_owned()))
-        .collect();
+    let mut create = None;
 
     // Wrapped, so four slots that do not fit at 820 fall to a second line
     // instead of running off the form's edge.
@@ -860,9 +898,10 @@ fn properties_row(ui: &mut egui::Ui, draft: &mut Draft, labels: &[Value]) {
             viz::date_picker(ui, "Not set", &mut draft.target);
         });
         labelled(ui, "Labels", |ui| {
-            viz::multi_select(ui, "None", &options, &mut draft.labels);
+            create = label_picker(ui, "Add labels", labels, &mut draft.labels);
         });
     });
+    create
 }
 
 /// A caption over a control, so a picker in the properties row carries its
@@ -876,48 +915,21 @@ fn labelled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 
-/// Making a label without leaving the form.
-///
-/// Collapsed behind a link, because the common path is picking one that
-/// already exists: a name box and a colour menu sitting open would make "new"
-/// look like the expected move and turn one control into three.
-fn new_label_row(
-    ui: &mut egui::Ui,
-    draft: &mut Draft,
-    post: &mut Option<Post>,
-    error: Option<&str>,
-) {
-    if !draft.new_label {
-        if w::link(ui, "+ New label").clicked() {
-            draft.new_label = true;
-        }
-        return;
-    }
+/// Whether the server will take this as a repository URL: the web, or the
+/// `git@host:path` form a clone uses. The server's rule, checked early so the
+/// form can say so before Create.
+pub(super) fn repo_url_ok(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let ssh = url.strip_prefix("git@").and_then(|r| r.split_once(':')).is_some_and(|(h, p)| !h.is_empty() && !p.is_empty());
+    !url.chars().any(char::is_whitespace) && (lower.starts_with("https://") || lower.starts_with("http://") || ssh)
+}
 
-    let colours: Vec<(String, String)> =
-        LABEL_COLOURS.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        row_input(ui, NEW_LABEL_W, "e.g. Platform…", &mut draft.new_label_name);
-        viz::select(ui, "Slate", &colours, &mut draft.new_label_colour);
-        // The endpoint is idempotent, so a name that already exists comes back
-        // as that label rather than as a duplicate or an error — which makes
-        // this safe to press on a name you are not sure about.
-        let ready = !draft.new_label_name.trim().is_empty();
-        if w::secondary(ui, "Add label", ready).clicked() {
-            *post = Some(Post::Label(serde_json::json!({
-                "name": draft.new_label_name.trim(),
-                "colour": draft.new_label_colour.as_deref().unwrap_or(DEFAULT_LABEL_COLOUR),
-            })));
-        }
-        if w::ghost(ui, "Close").clicked() {
-            draft.new_label = false;
-            draft.new_label_name.clear();
-        }
-        if let Some(err) = error {
-            w::error(ui, err);
-        }
-    });
+/// A field's "this will be refused": a danger hairline on the box, and the
+/// reason in words under it for whoever cannot tell that red from the line.
+pub(super) fn invalid(ui: &mut egui::Ui, field: egui::Rect, why: &str) {
+    ui.painter().rect_stroke(field, radius::SM as f32, egui::Stroke::new(1.0, colour::DANGER), egui::StrokeKind::Inside);
+    ui.add_space(space::XXS);
+    w::caption(ui, why);
 }
 
 /// The first tasks, one row each. Empty by default: a project that is only a

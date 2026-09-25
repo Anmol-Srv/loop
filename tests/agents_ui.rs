@@ -263,7 +263,7 @@ fn question_takes_an_answer() {
     let fixtures = task_fixtures("needs_input");
     let mut p = page(&app, &fixtures, Tab::Home, Some(TASK), 1440.0, false);
     assert!(p.harness.query_by_label("asked").is_some());
-    assert!(p.harness.query_by_label("Needs your input").is_some());
+    assert!(p.harness.query_by_label("Needs input").is_some());
     assert!(p.harness.query_by_label("Take back").is_some());
     assert!(p.harness.get_by_label("Send answer").accesskit_node().is_disabled());
 

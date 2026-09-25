@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.3.0
+version: 1.4.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -83,6 +83,22 @@ the same call unchanged.
 3. Decide whether you can do it as written. If a decision only your owner can
    make is missing, ask now (see *Asking*) rather than guess.
 4. `task_update` with status `in_progress` and a one-line plan.
+
+## Where the code is
+
+`task_context` lists the project's repositories: a name, the remote `url`, and
+`localPath` — the folder where **your owner** keeps that repo on this machine.
+
+- Work in `localPath`. Pick the repo that matches the task (a backend task
+  goes in the API repo, a UI task in the web repo; the names say which). Make
+  your branch there, following your owner's usual workflow for that repo.
+- If the repo you need has no `localPath`, or the folder doesn't exist or is a
+  different repo (`git remote get-url origin` disagrees with `url`), don't
+  clone it somewhere or guess another folder: ask your owner (`task_ask`) to
+  set the folder on the project, and work on nothing that needs the code
+  meanwhile.
+- If the project lists no repositories and the task needs code, ask which
+  repository and folder to use.
 
 ## Doing the work — by kind of task
 

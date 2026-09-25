@@ -16,6 +16,11 @@ pub struct Project {
     /// Filled by the controller after the row is read; not a column.
     #[sqlx(skip)]
     pub labels: Vec<crate::controllers::label::Label>,
+    /// The detail screen's repositories, with the viewer's own folders. Absent
+    /// from list rows, which have no use for them.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<crate::controllers::repo::Repo>>,
     pub archived_at: Option<DateTime<Utc>>,
     /// Whether the viewer may archive, restore or delete it: `can_manage`.
     pub can_archive: bool,

@@ -471,7 +471,7 @@ fn menu_frame() -> egui::Frame {
 /// set you are building up, a tick on the right for a choice that replaces the
 /// last one. Both are painted, both are the same row otherwise — a menu whose
 /// rows differ in height between the two pickers reads as two components.
-fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool) -> Response {
+fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool, lit: bool) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), size::CONTROL), Sense::click());
     // Painted, so it names itself: a screen reader, and a test picking a row.
@@ -480,18 +480,20 @@ fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool) -> Response {
     });
     let response = motion::operable(ui, response, radius::SM as f32);
 
-    let fill = if selected {
+    // A tick box already says a multi-select row is on; a fill as well reads
+    // as a second, blue selection. Single-choice rows keep the soft fill.
+    let fill = if selected && !check {
         colour::ACCENT_SOFT
     } else {
         motion::hover_fill(
             ui,
             response.id.with("fill"),
-            response.hovered(),
+            response.hovered() || lit,
             colour::TRANSPARENT,
             colour::SURFACE_HOVER,
         )
     };
-    let ink = if selected || response.hovered() {
+    let ink = if selected || lit || response.hovered() {
         colour::TEXT
     } else {
         colour::TEXT_2
@@ -596,11 +598,11 @@ fn select_styled(
         .width(response.rect.width().max(MENU_MIN_W))
         .show(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            if menu_row(ui, any, slot.is_none(), false).clicked() {
+            if menu_row(ui, any, slot.is_none(), false, false).clicked() {
                 *slot = None;
             }
             for (value, label) in options {
-                if menu_row(ui, label, slot.as_deref() == Some(value), false).clicked() {
+                if menu_row(ui, label, slot.as_deref() == Some(value), false, false).clicked() {
                     *slot = Some(value.clone());
                 }
             }
@@ -608,55 +610,227 @@ fn select_styled(
     response
 }
 
-/// A `filter` that opens a menu of checkable people.
-///
-/// `chosen` holds person ids in the order they were picked. The control's
-/// label summarises the set: the placeholder when empty, the one name when
-/// there is one, "Anmol +2" past that.
-pub fn multi_select(
-    ui: &mut Ui,
-    placeholder: &str,
-    options: &[(String, String)],
-    chosen: &mut Vec<String>,
-) -> Response {
-    let name = |id: &String| {
-        options
-            .iter()
-            .find(|(v, _)| v == id)
-            .map(|(_, l)| l.as_str())
-            .unwrap_or("?")
-    };
-    let shown = match chosen.as_slice() {
-        [] => placeholder.to_owned(),
-        [one] => name(one).to_owned(),
-        [first, rest @ ..] => format!("{} +{}", name(first), rest.len()),
-    };
+/// One entry in a `tag_picker`: an id, what it is called, and its badge
+/// colours (a hue for the fill, an ink for the name).
+pub struct Tag<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub hue: Color32,
+    pub ink: Color32,
+}
 
-    let response = filter(ui, &shown, !chosen.is_empty(), true);
-    egui::Popup::menu(&response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .frame(menu_frame())
-        .width(response.rect.width().max(MENU_MIN_W))
-        .show(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (value, label) in options {
-                let on = chosen.contains(value);
-                if menu_row(ui, label, on, true).clicked() {
-                    if on {
-                        chosen.retain(|c| c != value);
-                    } else {
-                        chosen.push(value.clone());
+/// What a `tag_picker` was asked to make: a name, and which of the
+/// `swatches` it should wear.
+pub struct NewTag {
+    pub name: String,
+    pub swatch: usize,
+}
+
+/// The picker popup's own memory: what is typed, which row the arrows are on,
+/// the colour picked for a new one, and whether focus has been placed yet.
+#[derive(Clone, Default)]
+struct TagSearch {
+    query: String,
+    lit: usize,
+    swatch: Option<usize>,
+    focused: bool,
+}
+
+const TAG_MENU_W: f32 = 240.0;
+const SWATCH: f32 = 14.0;
+
+/// A searchable multi-select whose picks show as removable badges.
+///
+/// The control comes first and the picked badges follow it in the flow.
+/// Its popup is a search box over the options: type to filter, arrows move,
+/// Enter ticks or unticks, Backspace in an empty box takes the last badge
+/// off, Escape closes. When nothing is named exactly what was typed, the last
+/// row offers to make it, with a colour from `swatches` (`default_swatch`
+/// until another is picked) — returned for the caller to create and then
+/// add to `chosen`.
+pub fn tag_picker(
+    ui: &mut Ui,
+    add_label: &str,
+    options: &[Tag<'_>],
+    chosen: &mut Vec<String>,
+    swatches: &[(&str, Color32)],
+    default_swatch: usize,
+) -> Option<NewTag> {
+    let mut create = None;
+    let mut drop: Option<usize> = None;
+    // Keyed to the picker rather than the control's auto id, so the popup
+    // survives the row reflowing as badges come and go.
+    let popup_id = ui.make_persistent_id(("tag-picker", add_label));
+    let trigger = ui
+        .horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
+            // The control first: badges after it can wrap without moving the
+            // popup out from under the pointer.
+            let trigger = filter(ui, add_label, false, true);
+            for (i, id) in chosen.iter().enumerate() {
+                if let Some(t) = options.iter().find(|t| t.id == id) {
+                    if super::cards::removable_badge(ui, t.name, t.hue, t.ink) {
+                        drop = Some(i);
                     }
                 }
             }
-            // Picking a set leaves the menu open, so it needs a way out that is
-            // not "click somewhere harmless".
-            menu_rule(ui);
-            if menu_row(ui, "Done", false, false).clicked() {
+            trigger
+        })
+        .inner;
+    if let Some(i) = drop {
+        chosen.remove(i);
+    }
+
+    let state_id = popup_id.with("search");
+    let shown = egui::Popup::menu(&trigger)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .frame(menu_frame())
+        .width(TAG_MENU_W)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let mut st: TagSearch = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
+            let needle = st.query.trim().to_lowercase();
+            let hits: Vec<&Tag<'_>> =
+                options.iter().filter(|t| t.name.to_lowercase().contains(&needle)).collect();
+            let offer = !needle.is_empty() && !options.iter().any(|t| t.name.to_lowercase() == needle);
+            let rows = hits.len() + usize::from(offer);
+
+            // Taken before the box sees them: a single-line edit would
+            // otherwise hand the arrows to egui's focus walk, and Enter would
+            // drop focus out of the box.
+            let (down, up, enter, back, escape) = ui.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                    st.query.is_empty() && i.key_pressed(egui::Key::Backspace),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if rows > 0 {
+                if down {
+                    st.lit = (st.lit + 1) % rows;
+                }
+                if up {
+                    st.lit = (st.lit + rows - 1) % rows;
+                }
+            }
+            st.lit = st.lit.min(rows.saturating_sub(1));
+
+            let search_id = state_id.with("box");
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEIGHT), Sense::hover());
+            let focused = ui.memory(|m| m.has_focus(search_id));
+            ui.painter().rect_filled(rect, radius::SM as f32, colour::INSET);
+            ui.painter().rect_stroke(
+                rect,
+                radius::SM as f32,
+                egui::Stroke::new(1.0, if focused { colour::LINE_STRONG } else { colour::LINE }),
+                egui::StrokeKind::Inside,
+            );
+            let mut inner = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(space::SM, 0.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let before = st.query.clone();
+            let edit = inner.add(
+                egui::TextEdit::singleline(&mut st.query)
+                    .id(search_id)
+                    .frame(egui::Frame::NONE)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(RichText::new("Search or create\u{2026}").size(text::SMALL).color(colour::TEXT_FAINT))
+                    .font(egui::FontId::proportional(text::SMALL))
+                    .text_color(colour::TEXT)
+                    .margin(egui::Margin::ZERO),
+            );
+            edit.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search labels"));
+            if !st.focused {
+                edit.request_focus();
+                st.focused = true;
+            }
+            if st.query != before {
+                st.lit = 0;
+            }
+            ui.add_space(space::XS);
+
+            let toggle = |id: &str, chosen: &mut Vec<String>| {
+                if let Some(i) = chosen.iter().position(|c| c == id) {
+                    chosen.remove(i);
+                } else {
+                    chosen.push(id.to_owned());
+                }
+            };
+            // A click on a row takes focus off the box; typing goes on there.
+            let mut clicked = false;
+            for (i, t) in hits.iter().enumerate() {
+                let on = chosen.iter().any(|c| c == t.id);
+                let row = menu_row(ui, t.name, on, true, st.lit == i).clicked();
+                clicked |= row;
+                if row || (enter && st.lit == i) {
+                    toggle(t.id, chosen);
+                }
+            }
+            if hits.is_empty() && !offer {
+                ui.add_space(space::XS);
+                ui.label(RichText::new("No labels yet \u{2014} type a name to make one.").size(text::SMALL).color(colour::TEXT_MUTED));
+                ui.add_space(space::XS);
+            }
+            if offer {
+                if !hits.is_empty() {
+                    menu_rule(ui);
+                }
+                let name = st.query.trim().to_owned();
+                let label = format!("Create label \u{201c}{name}\u{201d}");
+                let swatch = st.swatch.unwrap_or(default_swatch).min(swatches.len().saturating_sub(1));
+                if menu_row(ui, &label, false, false, st.lit == hits.len()).clicked() || (enter && st.lit == hits.len()) {
+                    create = Some(NewTag { name, swatch });
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    ui.add_space(space::SM);
+                    ui.label(RichText::new("Colour").size(text::CAPTION).color(colour::TEXT_MUTED));
+                    ui.add_space(space::XS);
+                    for (i, (name, hue)) in swatches.iter().enumerate() {
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(SWATCH + space::XS), Sense::click());
+                        resp.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, i == swatch, *name)
+                        });
+                        let resp = motion::operable(ui, resp, radius::PILL as f32);
+                        let p = ui.painter();
+                        p.circle_filled(r.center(), SWATCH / 2.0 - 1.0, *hue);
+                        if i == swatch {
+                            p.circle_stroke(r.center(), SWATCH / 2.0 + 1.5, egui::Stroke::new(1.5, colour::TEXT));
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if resp.on_hover_text(*name).clicked() {
+                            st.swatch = Some(i);
+                        }
+                    }
+                });
+                ui.add_space(space::XS);
+            }
+
+            if back {
+                chosen.pop();
+            }
+            if create.is_some() {
+                st = TagSearch { focused: true, ..TagSearch::default() };
+            }
+            if enter || clicked || create.is_some() {
+                edit.request_focus();
+            }
+            ui.data_mut(|d| d.insert_temp(state_id, st));
+            if escape {
                 ui.close();
             }
         });
-    response
+    if shown.is_none() {
+        ui.data_mut(|d| d.remove::<TagSearch>(state_id));
+    }
+    create
 }
 
 /// A hairline between groups of menu rows.
@@ -768,7 +942,7 @@ pub fn submenu(ui: &mut Ui, label: &str, why: Option<&str>, items: impl FnOnce(&
 
 /// A submenu's pick-one row: ticked when it is the current value.
 pub fn menu_choice(ui: &mut Ui, label: &str, current: bool) -> bool {
-    if menu_row(ui, label, current, false).clicked() {
+    if menu_row(ui, label, current, false, false).clicked() {
         ui.close();
         return true;
     }
@@ -1020,10 +1194,10 @@ pub fn date_picker(ui: &mut Ui, placeholder: &str, value: &mut Option<NaiveDate>
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
             ui.painter().rect_filled(rule, 0.0, colour::LINE);
             ui.add_space(space::XXS);
-            if menu_row(ui, "Today", false, false).clicked() {
+            if menu_row(ui, "Today", false, false, false).clicked() {
                 picked = Some(Some(today));
             }
-            if value.is_some() && menu_row(ui, "Clear", false, false).clicked() {
+            if value.is_some() && menu_row(ui, "Clear", false, false, false).clicked() {
                 picked = Some(None);
             }
             if picked.is_some() {

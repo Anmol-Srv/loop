@@ -10,3 +10,4 @@ pub mod label;
 pub mod people;
 pub mod note;
 pub mod home;
+pub mod repo;

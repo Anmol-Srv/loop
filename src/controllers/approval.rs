@@ -168,6 +168,7 @@ async fn replay(state: &AppState, actor: &Actor, change: &ChangeRow) -> AppResul
                 .map(|a| a.iter().filter_map(Value::as_str).filter_map(|s| s.parse().ok()).collect())
                 .unwrap_or_default(),
             Vec::new(),
+            p.get("repo_url").and_then(Value::as_str).map(str::to_owned),
         )
         .await?
         {
