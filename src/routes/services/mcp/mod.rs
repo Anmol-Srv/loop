@@ -350,6 +350,18 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
             .await?,
         ),
         "task_now" => to_value(agent::now(state, me, task()?, &str_arg(args, "text")?).await?),
+        "task_plan" => to_value(
+            agent::plan(state, me, task()?, &str_arg(args, "summary")?, &str_arg(args, "plan")?).await?,
+        ),
+        "workspace_set" => agent::set_workspace(
+            state,
+            me,
+            task()?,
+            &str_arg(args, "path")?,
+            opt_str_arg(args, "name").as_deref(),
+            opt_uuid_arg(args, "repoId")?,
+        )
+        .await,
         "task_log" => {
             let lines: Vec<String> = args
                 .get("lines")

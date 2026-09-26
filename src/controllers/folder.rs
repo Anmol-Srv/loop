@@ -85,6 +85,36 @@ pub async fn add(state: &AppState, me: Uuid, name: &str, path: &str) -> AppResul
     one(state, me, id).await
 }
 
+/// The owner's folder named `name`, made if it doesn't exist yet — for an
+/// agent pinning a standalone task's workspace (`workspace_set`) without a
+/// round trip through the app. Reused as-is when its path already matches;
+/// refused when the name is already taken by a different path, so an agent
+/// can never silently repoint a folder it didn't create.
+pub async fn find_or_create(state: &AppState, me: Uuid, name: &str, path: &str) -> AppResult<Folder> {
+    let name = name.trim();
+    check_name(name)?;
+    let path = path.trim();
+    check_path(path)?;
+    if let Some(existing) = sqlx::query_as::<_, Folder>(&format!(
+        "SELECT {COLUMNS} FROM user_folder WHERE person_id = $1 AND name = $2"
+    ))
+    .bind(me)
+    .bind(name)
+    .fetch_optional(&state.db)
+    .await?
+    {
+        return if existing.path == path {
+            Ok(existing)
+        } else {
+            Err(AppError::BadRequest(format!(
+                "you already have a folder named \"{name}\" at {} \u{2014} pick a different name",
+                existing.path
+            )))
+        };
+    }
+    add(state, me, name, path).await
+}
+
 pub async fn remove(state: &AppState, me: Uuid, id: Uuid) -> AppResult<()> {
     let result = sqlx::query("DELETE FROM user_folder WHERE person_id = $1 AND id = $2")
         .bind(me)

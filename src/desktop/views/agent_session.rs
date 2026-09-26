@@ -57,6 +57,13 @@ pub(super) struct State {
     instruction: String,
     /// The missing-folder hint's link was followed: the page opens the project.
     pub(super) open_project: bool,
+    /// "Ask for changes" on the plan card was pressed: its note is open.
+    plan_changes: String,
+    plan_changes_open: bool,
+    /// The full plan text, behind its own disclosure.
+    plan_open: bool,
+    /// "Earlier plans", collapsed by default.
+    plan_history_open: bool,
 }
 
 impl State {
@@ -66,6 +73,8 @@ impl State {
         self.changes.clear();
         self.changes_open = false;
         self.instruction.clear();
+        self.plan_changes.clear();
+        self.plan_changes_open = false;
     }
 }
 
@@ -75,6 +84,8 @@ pub(super) enum Ask {
     Approve,
     Changes(String),
     Instruct(String),
+    ApprovePlan,
+    PlanChanges(String),
 }
 
 /// Everything the section reads.
@@ -95,6 +106,10 @@ pub(super) struct Session<'a> {
     /// A repository of the project the owner has not set a folder for, which
     /// the agent will ask about: said to the owner while the agent holds it.
     pub unset_repo: Option<&'a str>,
+    /// This delegation's plan revisions, newest first — `plans[0]` is current.
+    /// Empty until the owner-only fetch lands (or if no plan was ever sent).
+    pub plans: &'a [Value],
+    pub plans_loaded: bool,
 }
 
 /// The kinds of note that belong to the session rather than the team thread.
@@ -167,7 +182,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     // ---- where it is
     let (steps, current, complete) = stages(state, s, owner_first);
     let tone = match state {
-        "needs_input" => colour::WARN,
+        "needs_input" | "plan_review" => colour::WARN,
         "in_review" => colour::AGENT,
         _ => colour::INFO,
     };
@@ -191,6 +206,17 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             ui.label(RichText::new(".").size(text::SMALL).color(colour::TEXT_MUTED));
         });
     }
+
+    // ---- the owner's note at hand-off, and the plan
+    if let Some(brief) = str_of(s.task, "brief").filter(|_| s.private) {
+        ui.add_space(space::MD);
+        ui.scope(|ui| {
+            ui.set_max_width(PROSE_W.min(ui.available_width()));
+            w::muted(ui, "Your note");
+            prose(ui, brief, colour::TEXT_2);
+        });
+    }
+    plan_section(ui, s, st, short, &mut ask);
 
     // ---- what it has said
     let entries: Vec<&Value> = s
@@ -282,6 +308,144 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     ask
 }
 
+// -------------------------------------------------------------------- plan
+
+/// The plan card: the owner sees the summary, the full plan behind a
+/// disclosure, and — while one waits — Approve/Ask for changes. Anyone else
+/// sees one neutral line, no content, built only from what is already public
+/// (the agent's state and whether a plan was ever approved).
+fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask: &mut Option<Ask>) {
+    if !s.private {
+        let state = str_of(s.delegate, "state");
+        let line = if state == Some("plan_review") {
+            Some("Planning")
+        } else if s.task.get("planApprovedAt").is_some_and(|v| !v.is_null()) {
+            Some("Plan approved")
+        } else {
+            None
+        };
+        if let Some(line) = line {
+            ui.add_space(space::SM);
+            w::caption(ui, line);
+        }
+        return;
+    }
+    if !s.plans_loaded {
+        return;
+    }
+    let Some(current) = s.plans.first() else {
+        return;
+    };
+    let decision = str_of(current, "decision");
+
+    ui.add_space(space::MD);
+    egui::Frame::new()
+        .fill(colour::SURFACE)
+        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = space::SM;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                ui.label(
+                    RichText::new("Plan")
+                        .size(text::SMALL)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT),
+                );
+                let (label, tone) = match decision {
+                    Some("approved") => ("Approved", c::Tone::Ok),
+                    Some("changes_requested") => ("Changes requested", c::Tone::Running),
+                    _ => ("Waiting for your review", c::Tone::Running),
+                };
+                c::chip(ui, label, tone, true);
+                if let Some(at) = str_of(current, "createdAt") {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT)).on_hover_text(exact(at));
+                    });
+                }
+            });
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                prose(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT);
+                if decision == Some("changes_requested") {
+                    if let Some(note) = str_of(current, "changesNote") {
+                        ui.add_space(space::XS);
+                        w::muted(ui, &format!("You asked: {note}"));
+                    }
+                }
+            });
+
+            let plan_id = egui::Id::new(("session:plan", s.task_id));
+            face::disclosure(ui, plan_id, "Full plan", None, &mut st.plan_open);
+            if st.plan_open {
+                ui.scope(|ui| {
+                    ui.set_max_width(PROSE_W.min(ui.available_width()));
+                    super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2);
+                });
+            }
+            let earlier = &s.plans[1..];
+            if !earlier.is_empty() {
+                let history_id = egui::Id::new(("session:plan:history", s.task_id));
+                face::disclosure(ui, history_id, "Earlier plans", Some(earlier.len()), &mut st.plan_history_open);
+                if st.plan_history_open {
+                    for p in earlier {
+                        ui.add_space(space::XS);
+                        ui.scope(|ui| {
+                            ui.set_max_width(PROSE_W.min(ui.available_width()));
+                            prose(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED);
+                        });
+                    }
+                }
+            }
+
+            if decision.is_some() {
+                return;
+            }
+            ui.add_space(space::XS);
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+            if st.plan_changes_open {
+                let field = w::field_multiline(
+                    ui,
+                    "",
+                    &mut st.plan_changes,
+                    2,
+                    &format!("What should {short} change?  Cmd+Enter to send"),
+                );
+                let ready = !st.plan_changes.trim().is_empty() && !s.busy;
+                if ready && submit_key(ui, &field) {
+                    *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if st.plan_changes_open {
+                    let ready = !st.plan_changes.trim().is_empty() && !s.busy;
+                    let r = w::primary(ui, "Send back", ready);
+                    if st.plan_changes.trim().is_empty() {
+                        r.clone().on_disabled_hover_text("Say what needs to change first.");
+                    }
+                    if r.clicked() {
+                        *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
+                    }
+                    if w::ghost(ui, "Cancel").clicked() {
+                        st.plan_changes_open = false;
+                    }
+                } else {
+                    if w::primary(ui, "Approve plan", !s.busy).clicked() {
+                        *ask = Some(Ask::ApprovePlan);
+                    }
+                    if w::secondary(ui, "Ask for changes", !s.busy).clicked() {
+                        st.plan_changes_open = true;
+                    }
+                }
+            });
+        });
+}
+
 /// "Hermes" out of "Hermes (Anmol's Mac)": the name a sentence can carry.
 pub(super) fn short_name(name: &str) -> &str {
     name.split(" (").next().unwrap_or(name).trim()
@@ -308,8 +472,8 @@ fn stages(state: &str, s: &Session, owner_first: &str) -> (Vec<Step>, usize, boo
     let last = |kind: &str| s.notes.iter().rev().find(|n| str_of(n, "kind") == Some(kind)).and_then(|n| str_of(n, "createdAt"));
     let when = |at: Option<&str>| at.map(exact).filter(|e| !e.is_empty());
     let third = match state {
-        "needs_input" if s.mine => "Needs you".to_owned(),
-        "needs_input" => format!("Needs {owner_first}"),
+        "needs_input" | "plan_review" if s.mine => "Needs you".to_owned(),
+        "needs_input" | "plan_review" => format!("Needs {owner_first}"),
         _ => "In review".to_owned(),
     };
     let third_at = if state == "needs_input" { last("question") } else { last("submission") };
@@ -323,7 +487,7 @@ fn stages(state: &str, s: &Session, owner_first: &str) -> (Vec<Step>, usize, boo
     let (current, complete) = match state {
         "handed_off" => (0, false),
         "acknowledged" | "working" => (1, false),
-        "needs_input" | "in_review" => (2, false),
+        "needs_input" | "in_review" | "plan_review" => (2, false),
         "done" => (3, true),
         _ => (3, false),
     };
@@ -354,13 +518,15 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
             "handed_off" => format!("Waiting for {short} to pick this up"),
             "needs_input" if mine => "Waiting on your answer".to_owned(),
             "needs_input" => format!("Waiting on {owner_first}\u{2019}s answer"),
+            "plan_review" if mine => "Waiting on your plan review".to_owned(),
+            "plan_review" => format!("Waiting on {owner_first}\u{2019}s plan review"),
             "in_review" if mine => "Waiting on your review".to_owned(),
             "in_review" => format!("Waiting on {owner_first}\u{2019}s review"),
             "done" => "Finished \u{2014} the review approved it".to_owned(),
             "stopped" => format!("Taken back from {short}"),
             other => state_words(other).to_owned(),
         };
-        let ink = if state == "needs_input" { colour::WARN } else { colour::TEXT_MUTED };
+        let ink = if matches!(state, "needs_input" | "plan_review") { colour::WARN } else { colour::TEXT_MUTED };
         ui.label(RichText::new(words).size(text::SMALL).color(ink));
     });
 }
@@ -890,6 +1056,7 @@ fn active_row(ui: &mut egui::Ui, row: &Value, email: Option<String>) -> bool {
             let (words, ink) = match (state, now) {
                 ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED),
                 ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::WARN),
+                ("plan_review", _) => ("Plan review".to_owned(), colour::WARN),
                 ("in_review", _) => ("In review".to_owned(), colour::AGENT),
                 ("acknowledged", None) => ("Picked up".to_owned(), colour::TEXT_MUTED),
                 _ => (state_words(state).to_owned(), colour::TEXT_MUTED),

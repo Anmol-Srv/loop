@@ -311,7 +311,8 @@ pub async fn revoke(state: &AppState, owner: Uuid, id: Uuid) -> AppResult<Agent>
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "UPDATE task SET delegate_agent_id = NULL, agent_state = 'stopped', review_target = NULL
+        "UPDATE task SET delegate_agent_id = NULL, agent_state = 'stopped', review_target = NULL,
+                         brief = NULL, plan_approved_at = NULL
           WHERE delegate_agent_id = $1 AND done_at IS NULL AND status <> 'dropped'",
     )
     .bind(id)
@@ -655,6 +656,20 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
     .fetch_optional(&state.db)
     .await?;
 
+    // The owner's note at hand-off, and the current plan. Unmasked here for
+    // the same reason `source` is above: the agent works for the owner, who
+    // may read their own note and plan.
+    let brief: Option<String> = sqlx::query_scalar("SELECT brief FROM task WHERE id = $1")
+        .bind(task_id)
+        .fetch_one(&state.db)
+        .await?;
+    let plan: Option<Plan> = sqlx::query_as(&format!(
+        "SELECT {PLAN_COLUMNS} FROM task_plan WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1"
+    ))
+    .bind(task_id)
+    .fetch_optional(&state.db)
+    .await?;
+
     Ok(json!({
         "task": row,
         "track": track,
@@ -668,6 +683,8 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
         "artifacts": artifacts,
         "related": { "blockedBy": blocked_by, "blocks": blocks },
         "source": source,
+        "brief": brief,
+        "plan": plan,
     }))
 }
 
@@ -686,6 +703,9 @@ struct Delegated {
     agent_state: Option<String>,
     department: Option<String>,
     attached: Vec<String>,
+    /// Set once the owner has approved the current hand-off's plan; the gate
+    /// `submit` and a `pr` attach check.
+    plan_approved_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<Delegated> {
@@ -694,7 +714,7 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         .bind(agent.to_string())
         .execute(&mut *tx)
         .await?;
-    let (status, agent_state, finished, department, attached, name, owner): (
+    let (status, agent_state, finished, department, attached, name, owner, plan_approved_at): (
         String,
         Option<String>,
         bool,
@@ -702,10 +722,11 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         Vec<String>,
         String,
         Uuid,
+        Option<chrono::DateTime<chrono::Utc>>,
     ) = sqlx::query_as(
         "SELECT t.status, t.agent_state, t.done_at IS NOT NULL, own.department,
                 ARRAY(SELECT a.kind FROM artifact a WHERE a.parent_type = 'task' AND a.parent_id = t.id),
-                ag.name, ag.owner_id
+                ag.name, ag.owner_id, t.plan_approved_at
            FROM task t
            JOIN agent ag ON ag.id = t.delegate_agent_id
            LEFT JOIN person own ON own.id = t.assignee_person_id
@@ -746,6 +767,7 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         agent_state,
         department,
         attached,
+        plan_approved_at,
     })
 }
 
@@ -910,6 +932,11 @@ pub async fn note(state: &AppState, agent: Uuid, task_id: Uuid, body: &str) -> A
     Ok(note)
 }
 
+/// Refused until the current hand-off has an approved plan: `task_submit` and
+/// attaching a `pr` both go through this, so evidence of finished work can
+/// never land before the approach behind it was seen.
+const NO_PLAN: &str = "Send a plan with task_plan and wait for approval first";
+
 pub async fn attach(
     state: &AppState,
     agent: Uuid,
@@ -920,6 +947,9 @@ pub async fn attach(
 ) -> AppResult<crate::models::artifact::Artifact> {
     artifact::validate("task", kind, url)?;
     let mut d = delegated(state, agent, task_id).await?;
+    if kind == "pr" && d.plan_approved_at.is_none() {
+        return Err(AppError::Conflict(NO_PLAN.into()));
+    }
     let a = artifact::insert(&mut d.tx, &d.actor, "task", task_id, kind, url, title).await?;
     d.tx.commit().await?;
     Ok(a)
@@ -937,6 +967,9 @@ pub async fn submit(
     manual_reason: Option<String>,
 ) -> AppResult<TaskRow> {
     let mut d = delegated(state, agent, task_id).await?;
+    if d.plan_approved_at.is_none() {
+        return Err(AppError::Conflict(NO_PLAN.into()));
+    }
     let finishing: &[&str] = match d.department.as_deref() {
         Some("design") => &["handoff", "completed"],
         _ => &["completed", "shipped"],
@@ -978,6 +1011,252 @@ pub async fn submit(
     .await?;
     d.tx.commit().await?;
     task::get(state, task_id, None).await
+}
+
+// ---- Plans ------------------------------------------------------------------
+
+/// A short line the owner can skim, and a limit generous enough for a real
+/// plan without inviting a novel.
+const PLAN_SUMMARY_MAX: usize = 600;
+const PLAN_MAX: usize = 20_000;
+
+/// One revision of a task's plan, as the owner reads it. Only the owner and
+/// admins ever see this — like the rest of the agent's private side.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub id: Uuid,
+    pub summary: String,
+    pub plan: String,
+    /// NULL while it waits on the owner; else `approved` or `changes_requested`.
+    pub decision: Option<String>,
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What to change, when the owner sent it back.
+    pub changes_note: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+const PLAN_COLUMNS: &str = "id, summary, plan, decision, decided_at, changes_note, created_at";
+
+/// Send a plan for the owner to approve before building. Every call is a new
+/// revision — the newest is current, the rest are its history — and clears
+/// any earlier approval, so an approved plan never outlives the revision it
+/// was given for.
+pub async fn plan(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    summary: &str,
+    plan_text: &str,
+) -> AppResult<TaskRow> {
+    let summary = summary.trim();
+    let plan_text = plan_text.trim();
+    if summary.is_empty() || summary.chars().count() > PLAN_SUMMARY_MAX {
+        return Err(AppError::BadRequest(format!(
+            "summary is 1 to {PLAN_SUMMARY_MAX} characters: a short, plain-language line your owner can skim"
+        )));
+    }
+    if plan_text.is_empty() || plan_text.chars().count() > PLAN_MAX {
+        return Err(AppError::BadRequest(format!(
+            "plan is 1 to {PLAN_MAX} characters: the concrete steps, files and approach"
+        )));
+    }
+    let mut d = delegated(state, agent, task_id).await?;
+    sqlx::query("INSERT INTO task_plan (task_id, agent_id, summary, plan) VALUES ($1, $2, $3, $4)")
+        .bind(task_id)
+        .bind(agent)
+        .bind(summary)
+        .bind(plan_text)
+        .execute(&mut *d.tx)
+        .await?;
+    sqlx::query("UPDATE task SET plan_approved_at = NULL WHERE id = $1")
+        .bind(task_id)
+        .execute(&mut *d.tx)
+        .await?;
+    set_state(&mut d.tx, task_id, "plan_review", None).await?;
+    d.tx.commit().await?;
+    task::get(state, task_id, None).await
+}
+
+/// A task's plan revisions, newest first: the current one is `plans[0]`.
+/// Owner and admins only, like the step log (`run_log::read`).
+pub async fn plans(state: &AppState, viewer: Option<Uuid>, task_id: Uuid) -> AppResult<Vec<Plan>> {
+    let allowed: bool = sqlx::query_scalar(&format!(
+        "SELECT {} FROM task t WHERE t.id = $1",
+        crate::models::task::sees_agent_private("$2")
+    ))
+    .bind(task_id)
+    .bind(viewer)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    if !allowed {
+        return Err(AppError::Forbidden(
+            "only the person this task is assigned to, or an admin, can read its plans".into(),
+        ));
+    }
+    Ok(sqlx::query_as(&format!(
+        "SELECT {PLAN_COLUMNS} FROM task_plan WHERE task_id = $1 ORDER BY created_at DESC"
+    ))
+    .bind(task_id)
+    .fetch_all(&state.db)
+    .await?)
+}
+
+/// Approve the current plan — the agent may build — or send it back with what
+/// to change. Refused unless one is actually waiting.
+pub async fn review_plan(
+    state: &AppState,
+    person: Uuid,
+    task_id: Uuid,
+    approve: bool,
+    note: Option<&str>,
+) -> AppResult<TaskRow> {
+    let mut tx = state.db.begin().await?;
+    let (delegate, agent_state, ..) =
+        owned(&mut tx, person, task_id, "decide on its agent's plan").await?;
+    let no_plan = || {
+        AppError::Conflict("there is no plan waiting for your review on this task".into())
+    };
+    if delegate.is_none() || agent_state.as_deref() != Some("plan_review") {
+        return Err(no_plan());
+    }
+    let agent_id = delegate.expect("checked above");
+    let plan_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM task_plan WHERE task_id = $1 AND decision IS NULL
+          ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(no_plan)?;
+
+    if approve {
+        sqlx::query("UPDATE task_plan SET decision = 'approved', decided_at = now() WHERE id = $1")
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE task SET plan_approved_at = now() WHERE id = $1")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+        set_state(&mut tx, task_id, "working", None).await?;
+        sqlx::query("SELECT agent_event_emit($1, $2, 'plan_approved', '{}'::jsonb)")
+            .bind(agent_id)
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+    } else {
+        let note = note
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| AppError::BadRequest("say what needs to change".into()))?;
+        sqlx::query(
+            "UPDATE task_plan SET decision = 'changes_requested', decided_at = now(), changes_note = $2
+              WHERE id = $1",
+        )
+        .bind(plan_id)
+        .bind(note)
+        .execute(&mut *tx)
+        .await?;
+        set_state(&mut tx, task_id, "working", None).await?;
+        sqlx::query("SELECT agent_event_emit($1, $2, 'plan_changes', jsonb_build_object('body', $3::text))")
+            .bind(agent_id)
+            .bind(task_id)
+            .bind(note)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    task::get(state, task_id, Some(person)).await
+}
+
+// ---- Workspace ----------------------------------------------------------
+
+/// Set where this task's code lives, instead of asking the owner to do it in
+/// the app: the owner's local path for one of the project's repos, or —
+/// standalone — a folder from the owner's own list, made if it's new. Only on
+/// a task actually delegated to this agent and not finished (`delegated`).
+pub async fn set_workspace(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    path: &str,
+    name: Option<&str>,
+    repo_id: Option<Uuid>,
+) -> AppResult<Value> {
+    let path = path.trim();
+    repo::check_path(path)?;
+    let mut d = delegated(state, agent, task_id).await?;
+    let (owner_id, project_id): (Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT ag.owner_id, ph.project_id
+           FROM agent ag
+           JOIN task t ON t.id = $2
+           LEFT JOIN phase ph ON ph.id = t.phase_id
+          WHERE ag.id = $1",
+    )
+    .bind(agent)
+    .bind(task_id)
+    .fetch_one(&mut *d.tx)
+    .await?;
+    let repo_ids: Vec<Uuid> = match project_id {
+        Some(project_id) => {
+            sqlx::query_scalar(
+                "SELECT id FROM project_repo WHERE project_id = $1 ORDER BY created_at",
+            )
+            .bind(project_id)
+            .fetch_all(&mut *d.tx)
+            .await?
+        }
+        None => Vec::new(),
+    };
+    // Nothing left needs the row locked: the actual writes go through the
+    // per-person setters below, which never contend with it.
+    d.tx.commit().await?;
+
+    let (line, result) = if !repo_ids.is_empty() {
+        let chosen = match (repo_id, repo_ids.as_slice()) {
+            (Some(id), _) if repo_ids.contains(&id) => id,
+            (Some(_), _) => {
+                return Err(AppError::NotFound(
+                    "that repository is not on this task's project".into(),
+                ))
+            }
+            (None, [only]) => *only,
+            (None, _) => {
+                return Err(AppError::BadRequest(
+                    "this project has more than one repository; say which with repoId".into(),
+                ))
+            }
+        };
+        let repo = repo::set_path(state, owner_id, chosen, Some(path)).await?;
+        (
+            format!("Set the working folder to {} \u{2192} {path}", repo.name),
+            json!({ "localPath": repo.my_path }),
+        )
+    } else {
+        let name = name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                path.rsplit('/').find(|p| !p.is_empty()).unwrap_or(path).to_owned()
+            });
+        let folder = crate::controllers::folder::find_or_create(state, owner_id, &name, path).await?;
+        sqlx::query("UPDATE task SET folder_name = $2 WHERE id = $1")
+            .bind(task_id)
+            .bind(&folder.name)
+            .execute(&state.db)
+            .await?;
+        (
+            format!("Set the working folder to {} \u{2192} {path}", folder.name),
+            json!({ "folder": folder }),
+        )
+    };
+    // A visible step, owner-only — the same step log a run's commands land in
+    // — so the owner sees where it decided to work without being asked.
+    log(state, agent, task_id, &[line]).await?;
+    Ok(result)
 }
 
 // ---- Events and the inbox --------------------------------------------------
@@ -1224,12 +1503,29 @@ async fn owned(
     Ok((row.1, row.2, row.3, row.4, row.5))
 }
 
+const BRIEF_MAX: usize = 8_000;
+
+/// The owner's optional note at hand-off, trimmed, or `None` for an empty one.
+fn check_brief(brief: Option<&str>) -> AppResult<Option<&str>> {
+    let brief = brief.map(str::trim).filter(|b| !b.is_empty());
+    if let Some(b) = brief {
+        if b.chars().count() > BRIEF_MAX {
+            return Err(AppError::BadRequest(format!(
+                "that note is over {BRIEF_MAX} characters; trim it down"
+            )));
+        }
+    }
+    Ok(brief)
+}
+
 pub async fn hand_off(
     state: &AppState,
     person: Uuid,
     task_id: Uuid,
     agent: Uuid,
+    brief: Option<&str>,
 ) -> AppResult<TaskRow> {
+    let brief = check_brief(brief)?;
     let mut tx = state.db.begin().await?;
     let (delegate, agent_state, _, _, finished) =
         owned(&mut tx, person, task_id, "hand it off").await?;
@@ -1255,18 +1551,26 @@ pub async fn hand_off(
         }
         Some((true, true, _)) => {}
     }
-    // Handing it to the agent that already holds it is a no-op, not a
-    // second `handed_off` for it to act on.
+    // Handing it to the agent that already holds it is a no-op on the
+    // delegation itself, not a second `handed_off` for it to act on — but the
+    // note and the plan gate are this call's own, so they are set either way.
     if delegate != Some(agent) || agent_state.as_deref() != Some("handed_off") {
         sqlx::query(
             "UPDATE task SET delegate_agent_id = $2, agent_state = 'handed_off', review_target = NULL,
-                             delegated_at = now()
+                             delegated_at = now(), brief = $3, plan_approved_at = NULL
               WHERE id = $1",
         )
         .bind(task_id)
         .bind(agent)
+        .bind(brief)
         .execute(&mut *tx)
         .await?;
+    } else {
+        sqlx::query("UPDATE task SET brief = $2, plan_approved_at = NULL WHERE id = $1")
+            .bind(task_id)
+            .bind(brief)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     task::get(state, task_id, Some(person)).await
@@ -1279,7 +1583,8 @@ pub async fn take_back(state: &AppState, person: Uuid, task_id: Uuid) -> AppResu
         return Err(AppError::Conflict("this task is not handed off".into()));
     }
     sqlx::query(
-        "UPDATE task SET delegate_agent_id = NULL, agent_state = 'stopped', review_target = NULL
+        "UPDATE task SET delegate_agent_id = NULL, agent_state = 'stopped', review_target = NULL,
+                         brief = NULL, plan_approved_at = NULL
           WHERE id = $1",
     )
     .bind(task_id)
@@ -1455,7 +1760,7 @@ pub async fn active(state: &AppState) -> AppResult<Vec<Active>> {
            JOIN person p ON p.id = a.owner_id
            LEFT JOIN phase ph ON ph.id = t.phase_id
            LEFT JOIN project pr ON pr.id = ph.project_id
-          WHERE t.agent_state IN ('acknowledged', 'working', 'needs_input', 'in_review')
+          WHERE t.agent_state IN ('acknowledged', 'working', 'needs_input', 'in_review', 'plan_review')
             AND t.done_at IS NULL AND t.status <> 'dropped' AND a.revoked_at IS NULL
             AND t.archived_at IS NULL AND pr.archived_at IS NULL
           ORDER BY t.agent_state = 'working' DESC,

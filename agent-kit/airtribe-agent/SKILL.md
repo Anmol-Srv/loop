@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.5.0
+version: 1.6.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -33,8 +33,10 @@ use whichever your environment has.
 | My handed-off tasks | `agent_tasks` | `GET /api/agent/tasks` |
 | Everything about one task | `task_context` | `GET /api/agent/tasks/{id}` |
 | I've seen it, starting soon | `task_ack` | `POST …/{id}/ack` |
+| Send a plan, wait for approval | `task_plan` | `POST …/{id}/plan {summary, plan}` |
 | Progress, optionally a status move | `task_update` | `POST …/{id}/update {body, status?}` |
 | I'm blocked on a decision | `task_ask` | `POST …/{id}/ask {body}` |
+| Set where the code is | `workspace_set` | `POST …/{id}/workspace {path, name?, repoId?}` |
 | What you're doing right now | `task_now` | `POST …/{id}/now {text}` |
 | Your step log | `task_log` | `POST …/{id}/log {lines}` |
 | Link a PR, commit, Figma, doc | `task_attach` | `POST …/{id}/attach {kind, url, title}` |
@@ -69,6 +71,10 @@ the same call unchanged.
    - `changes_requested` — your submission was sent back. Read the review
      note, fix, resubmit.
    - `approved` — finished. Nothing more to do on it.
+   - `plan_approved` — your plan was approved. Start working (see *Starting a
+     task*): `task_update` to `in_progress` and begin, if you haven't.
+   - `plan_changes` — your plan was sent back. Read the note, revise it, and
+     send `task_plan` again — then end the run and wait again.
    - `taken_back` or `dropped` — **stop now.** See *Stopping*.
 3. **Ack the events** you handled (`events_ack` with the highest id), so the
    inbox reflects what's left. Ack only what you actually handled.
@@ -77,12 +83,22 @@ the same call unchanged.
 
 1. `task_ack` straight away, so your owner sees you have it.
 2. `task_context`. Read all of it before touching anything: the description,
-   every note (oldest first), the artifacts, the project, and **related work**
-   — the tasks this one waits on and the tasks waiting on it, with their PRs,
-   commits and Figma links. Most of what you need to start is already there.
-3. Decide whether you can do it as written. If a decision only your owner can
-   make is missing, ask now (see *Asking*) rather than guess.
-4. `task_update` with status `in_progress` and a one-line plan.
+   every note (oldest first), the artifacts, the project, **related work** —
+   the tasks this one waits on and the tasks waiting on it, with their PRs,
+   commits and Figma links — and `brief`, your owner's own note on this
+   hand-off, if they left one. Most of what you need to start is already there.
+3. Look around read-only as needed — the code, related tasks, the repo's own
+   docs — enough to know what you would actually do. Change nothing yet.
+4. `task_plan`: a short, plain-language `summary` your owner can skim, and a
+   concrete `plan` — the steps, the files, the approach. Include what `brief`
+   asked for. Then **end the run**: you wait for `plan_approved` or
+   `plan_changes`, not for a person in a loop.
+5. On `plan_approved`: `task_update` with status `in_progress` and begin. On
+   `plan_changes`: read the note, revise, and send `task_plan` again — a new
+   revision, not an edit of the old one — then end the run and wait again.
+
+`task_submit` and attaching a `pr` are refused until your plan for this
+hand-off is approved — send one and wait if you skipped this.
 
 ## Where the code is
 
@@ -98,12 +114,13 @@ absent, meaning your owner has set up no folder for this either.
   names say which). Make your branch there, following your owner's usual
   workflow for that repo.
 - With `folder` instead: work in `folder.path`.
-- Only if neither is there — no `localPath` and no `folder` — or the folder
-  doesn't exist or is a different repo (`git remote get-url origin` disagrees
-  with `url`), ask your owner (`task_ask`) for the folder to use (on the
-  project, or in their Settings if the task has none) and work on nothing that
-  needs the code meanwhile. Never clone it somewhere else or guess another
-  folder.
+- If neither is there — no `localPath` and no `folder` — or the folder doesn't
+  exist or is a different repo (`git remote get-url origin` disagrees with
+  `url`): if you know which folder it should be, set it yourself
+  (`workspace_set` — give `repoId` when the project has more than one
+  repository) instead of asking your owner to do it in the app. If you are not
+  sure which folder is right, `task_ask` first, then `workspace_set` once they
+  say. Never clone it somewhere else or guess a folder without asking.
 
 ## Doing the work — by kind of task
 

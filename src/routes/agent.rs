@@ -34,6 +34,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/tasks/{id}/ask", post(ask))
         .route("/api/agent/tasks/{id}/attach", post(attach))
         .route("/api/agent/tasks/{id}/note", post(note))
+        .route("/api/agent/tasks/{id}/plan", post(plan))
+        .route("/api/agent/tasks/{id}/workspace", post(workspace))
         .route("/api/agent/tasks/{id}/submit", post(submit))
         .route("/api/agent/tasks/{id}/now", post(now))
         .route("/api/agent/tasks/{id}/log", post(log))
@@ -204,6 +206,44 @@ async fn attach(
     Json(b): Json<AttachBody>,
 ) -> AppResult<ApiResponse<Artifact>> {
     Ok(ApiResponse::ok(agent::attach(&state, caller.agent()?, id, &b.kind, &b.url, &b.title).await?))
+}
+
+#[derive(Deserialize)]
+pub struct PlanBody {
+    pub summary: String,
+    pub plan: String,
+}
+
+async fn plan(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<PlanBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(
+        agent::plan(&state, caller.agent()?, id, &b.summary, &b.plan).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBody {
+    pub path: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub repo_id: Option<Uuid>,
+}
+
+async fn workspace(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<WorkspaceBody>,
+) -> AppResult<ApiResponse<Value>> {
+    Ok(ApiResponse::ok(
+        agent::set_workspace(&state, caller.agent()?, id, &b.path, b.name.as_deref(), b.repo_id).await?,
+    ))
 }
 
 #[derive(Deserialize)]

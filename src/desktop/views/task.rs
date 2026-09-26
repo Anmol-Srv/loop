@@ -49,6 +49,8 @@ const PATCH_KEY: &str = "task:patch";
 const ARTIFACTS_KEY: &str = "task:artifacts";
 const ATTACH_KEY: &str = "task:artifact:new";
 const NOTES_KEY: &str = "task:notes";
+/// This delegation's plan revisions, owner-only.
+const PLANS_KEY: &str = "task:plans";
 const NOTE_KEY: &str = "task:note:new";
 const DETAILS_KEY: &str = "task:details";
 /// A label made from the rail; its reply joins the task's set.
@@ -262,6 +264,8 @@ struct Local {
     /// The labels just picked, shown until the save lands and the task is
     /// read again.
     labels: Option<Vec<String>>,
+    /// The hand-off modal, open on the agent it was opened for.
+    handoff_modal: Option<HandoffModal>,
 }
 
 impl Local {
@@ -287,8 +291,16 @@ impl Local {
             archiving: false,
             deciding: false,
             labels: None,
+            handoff_modal: None,
         }
     }
+}
+
+/// The hand-off modal's own draft: which agent, and the optional brief.
+struct HandoffModal {
+    agent_id: String,
+    agent_name: String,
+    brief: String,
 }
 
 thread_local! {
@@ -522,6 +534,14 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         .map(str::to_owned);
     let mut hint_open = false;
 
+    // The plan card's own data: owner-only, and only worth asking for once
+    // there is a delegation to have one.
+    if delegate.is_some() && private {
+        net.get_once(PLANS_KEY, &format!("/api/user/tasks/{task_id}/plans"));
+    }
+    let plans = net.shared(PLANS_KEY);
+    let plans_loaded = plans.is_some() || net.error(PLANS_KEY).is_some();
+
     let mut editing = false;
     shell::with_rail(
         ui,
@@ -559,6 +579,11 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                         private,
                         busy: local.agent_busy.is_some(),
                         unset_repo: unset_repo.as_deref(),
+                        plans: plans
+                            .as_deref()
+                            .and_then(Value::as_array)
+                            .map_or(&[], Vec::as_slice),
+                        plans_loaded,
                     };
                     if let Some(ask) = session::show(ui, net, &s, &mut local.session) {
                         agent_action(net, task_id, ask.into(), local);
@@ -639,7 +664,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // they always have; archive and delete share every other menu's dialog.
     match local.pick.take() {
         Some(Pick::Handoff(id, name)) => {
-            agent_action(net, task_id, AgentAsk::Handoff(id, name), local)
+            agent_action(net, task_id, AgentAsk::Handoff(id, name, None), local)
         }
         Some(Pick::TakeBack) => agent_action(net, task_id, AgentAsk::TakeBack, local),
         Some(Pick::Priority(p)) => {
@@ -796,7 +821,7 @@ fn headline(
                 }
                 // Not before it is accepted: triage is a yes or a no first.
                 if status != "triage" {
-                    if let Some(ask) = handoff_control(ui, handoff, busy) {
+                    if let Some(ask) = handoff_control(ui, handoff, busy, local) {
                         agent_action(net, task_id, ask, local);
                     }
                 }
@@ -897,6 +922,10 @@ fn headline(
             w::caption(ui, message);
         }
     }
+
+    if let Some(ask) = handoff_dialog(&ui.ctx().clone(), local, busy) {
+        agent_action(net, task_id, ask, local);
+    }
     editing
 }
 
@@ -960,12 +989,15 @@ struct Handoff<'a> {
 
 /// An agent action to send.
 enum AgentAsk {
-    Handoff(String, String),
+    /// Agent id, name, and the owner's optional note.
+    Handoff(String, String, Option<String>),
     TakeBack,
     Answer(String),
     Approve,
     Changes(String),
     Instruct(String),
+    ApprovePlan,
+    PlanChanges(String),
 }
 
 impl From<session::Ask> for AgentAsk {
@@ -975,15 +1007,18 @@ impl From<session::Ask> for AgentAsk {
             session::Ask::Approve => AgentAsk::Approve,
             session::Ask::Changes(b) => AgentAsk::Changes(b),
             session::Ask::Instruct(b) => AgentAsk::Instruct(b),
+            session::Ask::ApprovePlan => AgentAsk::ApprovePlan,
+            session::Ask::PlanChanges(b) => AgentAsk::PlanChanges(b),
         }
     }
 }
 
 /// The hand-off control in the title's actions: "Take back" while an agent
 /// holds the task, otherwise "Hand off to …" — a button for one agent, a
-/// picker for several. Nothing at all for anyone but the assignee, or for an
-/// assignee with no agent to hand to.
-fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAsk> {
+/// picker for several, either opening the hand-off modal (`handoff_dialog`)
+/// rather than sending straight away. Nothing at all for anyone but the
+/// assignee, or for an assignee with no agent to hand to.
+fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool, local: &mut Local) -> Option<AgentAsk> {
     if !h.mine {
         return None;
     }
@@ -1004,24 +1039,71 @@ fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<AgentAs
             );
             None
         }
-        [(id, name)] => w::secondary(ui, &format!("Hand off to {name}"), !busy)
-            .clicked()
-            .then(|| AgentAsk::Handoff(id.clone(), name.clone())),
+        [(id, name)] => {
+            if w::secondary(ui, &format!("Hand off to {name}"), !busy).clicked() {
+                local.handoff_modal = Some(HandoffModal {
+                    agent_id: id.clone(),
+                    agent_name: name.clone(),
+                    brief: String::new(),
+                });
+            }
+            None
+        }
         many => {
             let options: Vec<(String, String)> = many.to_vec();
             let mut slot: Option<String> = None;
             ui.add_enabled_ui(!busy, |ui| {
                 viz::select(ui, "Hand off to\u{2026}", &options, &mut slot);
             });
-            let id = slot?;
-            let name = many
-                .iter()
-                .find(|(i, _)| *i == id)
-                .map(|(_, n)| n.clone())
-                .unwrap_or_default();
-            Some(AgentAsk::Handoff(id, name))
+            if let Some(id) = slot {
+                let name = many
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default();
+                local.handoff_modal = Some(HandoffModal { agent_id: id, agent_name: name, brief: String::new() });
+            }
+            None
         }
     }
+}
+
+/// "Explain the task (optional)", agent already chosen: Cancel or Hand off,
+/// Cmd+Enter to submit. Nothing while no hand-off is being asked for.
+fn handoff_dialog(ctx: &egui::Context, local: &mut Local, busy: bool) -> Option<AgentAsk> {
+    let m = local.handoff_modal.as_mut()?;
+    let (mut go, mut close) = (false, false);
+    let modal = super::agents::dialog(ctx, "task:handoff", super::agents::DIALOG_W, |ui| {
+        super::agents::heading(ui, &format!("Hand off to {}", m.agent_name));
+        ui.add_space(space::MD);
+        let field = w::field_multiline(
+            ui,
+            "Explain the task (optional)",
+            &mut m.brief,
+            4,
+            "Anything the task doesn't say \u{2014} context, constraints, what done looks like.",
+        );
+        if field.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
+            go = true;
+        }
+        ui.add_space(space::SM);
+        w::caption(ui, &format!("{} will send a plan for your approval before it builds.", m.agent_name));
+        ui.add_space(space::LG);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            go |= w::primary(ui, "Hand off", !busy).clicked();
+            close = w::ghost(ui, "Cancel").clicked();
+        });
+    });
+    if go {
+        let m = local.handoff_modal.take().expect("checked above");
+        let brief = m.brief.trim().to_owned();
+        return Some(AgentAsk::Handoff(m.agent_id, m.agent_name, (!brief.is_empty()).then_some(brief)));
+    }
+    if close || modal.should_close() {
+        local.handoff_modal = None;
+    }
+    None
 }
 
 fn agent_action(
@@ -1032,9 +1114,9 @@ fn agent_action(
 ) {
     let base = format!("/api/user/tasks/{task_id}");
     let (path, body, done) = match ask {
-        AgentAsk::Handoff(id, name) => (
+        AgentAsk::Handoff(id, name, brief) => (
             format!("{base}/handoff"),
-            json!({ "agentId": id }),
+            json!({ "agentId": id, "brief": brief }),
             format!("Handed off to {name}."),
         ),
         AgentAsk::TakeBack => (
@@ -1061,6 +1143,16 @@ fn agent_action(
             format!("{base}/instruct"),
             json!({ "body": body }),
             "Sent \u{2014} the agent hears it at its next step.".to_owned(),
+        ),
+        AgentAsk::ApprovePlan => (
+            format!("{base}/plan/approve"),
+            json!({}),
+            "Plan approved.".to_owned(),
+        ),
+        AgentAsk::PlanChanges(body) => (
+            format!("{base}/plan/changes"),
+            json!({ "body": body }),
+            "Changes requested.".to_owned(),
         ),
     };
     local.notice = None;

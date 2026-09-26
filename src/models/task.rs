@@ -177,6 +177,11 @@ pub struct Task {
     /// person, and `controllers::agent::context` resolves it against
     /// whoever the task is delegated to, the only place that person is known.
     pub folder_name: Option<String>,
+    /// When the owner approved the current hand-off's plan, or `None` before
+    /// that (or once a fresh plan clears it). No content, so — unlike `brief`
+    /// on `TaskRow` — every viewer reads it: it is what a teammate's neutral
+    /// "Plan approved" line is built from.
+    pub plan_approved_at: Option<DateTime<Utc>>,
 }
 
 /// A task plus the names a list needs to render a row, and a count of how many
@@ -219,6 +224,10 @@ pub struct TaskRow {
     pub source: Option<serde_json::Value>,
     /// `[{id, name, colour}]`, by name; the shared label vocabulary.
     pub labels: serde_json::Value,
+    /// The owner's optional note at hand-off, set on the current delegation
+    /// only. Masked the same as the agent's private side —
+    /// `sees_agent_private` — since it is the owner's alone to write and read.
+    pub brief: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -274,7 +283,7 @@ macro_rules! plain_task_columns {
         "id, phase_id, title, body, status, priority, \
          assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
          claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at, \
-         review_target, archived_at, category, folder_name"
+         review_target, archived_at, category, folder_name, plan_approved_at"
     };
 }
 
@@ -332,7 +341,8 @@ pub fn task_row_select(viewer: &str) -> String {
                 coalesce((SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'colour', l.colour)
                                           ORDER BY l.name)
                             FROM task_label tl JOIN label l ON l.id = tl.label_id
-                           WHERE tl.task_id = t.id), '[]') AS labels
+                           WHERE tl.task_id = t.id), '[]') AS labels,
+                CASE WHEN {private} THEN t.brief END AS brief
            FROM task t
            LEFT JOIN phase ph ON ph.id = t.phase_id
            LEFT JOIN project pr ON pr.id = ph.project_id

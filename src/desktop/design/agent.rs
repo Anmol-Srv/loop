@@ -72,6 +72,7 @@ pub enum Presence {
     Working,
     /// Created, not yet heard from: the connect flow's last step.
     Waiting,
+    /// Waiting on you: a question, or a plan for your review.
     NeedsInput,
     Offline,
 }
@@ -81,7 +82,7 @@ impl Presence {
     /// Waiting on you beats everything — the agent is parked either way —
     /// and a silent agent is offline whatever it last claimed to be doing.
     pub fn of(state: &str, last_seen: Option<&str>) -> Self {
-        if state == "needs_input" {
+        if matches!(state, "needs_input" | "plan_review") {
             return Presence::NeedsInput;
         }
         let away = last_seen

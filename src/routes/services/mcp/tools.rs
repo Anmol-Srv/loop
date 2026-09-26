@@ -173,9 +173,10 @@ pub fn agent_tools() -> Vec<ToolDef> {
              when there is none to work in, folder — a folder from your owner's own list ({name, path, \
              source}, source being 'pinned' if the task named it or 'default' otherwise) — \
              the owner, every note oldest first, artifacts by kind, and related work (tasks it \
-             waits on and tasks waiting on it, with their PRs, commits and Figma links), and, for a \
-             task filed from a message, source: the message, the earlier messages in its thread and \
-             its files.",
+             waits on and tasks waiting on it, with their PRs, commits and Figma links), brief (your \
+             owner's own note on this hand-off, if they left one), plan (the current plan you sent, with \
+             its decision), and, for a task filed from a message, source: the message, the earlier \
+             messages in its thread and its files.",
             task_only(),
         ),
         tool("task_ack", "Acknowledge a task handed to you, so your owner sees you have it.", task_only()),
@@ -202,7 +203,8 @@ pub fn agent_tools() -> Vec<ToolDef> {
         ),
         tool(
             "task_attach",
-            "Attach evidence or context to your task: a pr, commit, figma, doc or link.",
+            "Attach evidence or context to your task: a pr, commit, figma, doc or link. A pr is refused \
+             until your plan for this hand-off is approved (task_plan).",
             schema(
                 json!({
                     "taskId": uuid,
@@ -238,9 +240,42 @@ pub fn agent_tools() -> Vec<ToolDef> {
         ),
         tool("task_note", "Leave a plain note on your task for the team.", with_body()),
         tool(
+            "task_plan",
+            "Send your owner a plan before you build, and wait for their approval: task_submit and \
+             attaching a pr are refused until they approve it. Every call is a new revision; send another \
+             after 'plan_changes' with what you changed. End your run once you've sent it — you'll get a \
+             'plan_approved' or 'plan_changes' event when they decide.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "summary": { "type": "string", "maxLength": 600, "description": "A short, plain-language line your owner can skim." },
+                    "plan": { "type": "string", "maxLength": 20000, "description": "The concrete steps, files and approach." },
+                }),
+                &["taskId", "summary", "plan"],
+            ),
+        ),
+        tool(
+            "workspace_set",
+            "Set where this task's code lives on your owner's Mac, instead of asking them to do it in the \
+             app: their local path for one of the project's repositories (give repoId if it has more than \
+             one), or, for a task with no project, a folder of theirs (made if it's new; name defaults to \
+             path's last component). Use it when task_context's localPath or folder is missing or wrong — \
+             ask your owner first (task_ask) if you aren't sure which folder is right.",
+            schema(
+                json!({
+                    "taskId": uuid,
+                    "path": { "type": "string", "description": "Absolute path on your owner's Mac." },
+                    "name": { "type": "string", "description": "For a project-less task's folder; defaults to path's last component." },
+                    "repoId": uuid,
+                }),
+                &["taskId", "path"],
+            ),
+        ),
+        tool(
             "task_submit",
             "Submit your task for your owner to approve, asking to move it to a finishing status \
-             (engineering: completed or shipped; design: handoff or completed). Evidence is checked now: \
+             (engineering: completed or shipped; design: handoff or completed). Refused until your plan for \
+             this hand-off is approved (task_plan). Evidence is checked now: \
              engineering completed needs a pr or commit attached, design handoff needs a figma link, \
              unless you give manualReason.",
             schema(

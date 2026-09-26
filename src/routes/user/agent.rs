@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::controllers::agent::{self, Active, Agent, Minted};
+use crate::controllers::agent::{self, Active, Agent, Minted, Plan};
 use crate::controllers::note::Note;
 use crate::db::AppState;
 use crate::errors::{AppError, AppResult};
@@ -66,6 +66,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/answer", post(answer))
         .route("/api/user/tasks/{id}/instruct", post(instruct))
         .route("/api/user/tasks/{id}/review", post(review))
+        .route("/api/user/tasks/{id}/plans", get(plans))
+        .route("/api/user/tasks/{id}/plan/approve", post(approve_plan))
+        .route("/api/user/tasks/{id}/plan/changes", post(request_plan_changes))
 }
 
 /// The person behind a session. An agent carries its owner's person id, so
@@ -154,6 +157,10 @@ async fn revoke(
 #[serde(rename_all = "camelCase")]
 pub struct HandOffBody {
     pub agent_id: Uuid,
+    /// Anything the task doesn't say: context, constraints, what done looks
+    /// like. Shown on the task as "Your note", owner-only.
+    #[serde(default)]
+    pub brief: Option<String>,
 }
 
 async fn hand_off(
@@ -163,7 +170,7 @@ async fn hand_off(
     Json(body): Json<HandOffBody>,
 ) -> AppResult<ApiResponse<TaskRow>> {
     Ok(ApiResponse::ok(
-        agent::hand_off(&state, person(&caller)?, id, body.agent_id).await?,
+        agent::hand_off(&state, person(&caller)?, id, body.agent_id, body.brief.as_deref()).await?,
     ))
 }
 
@@ -230,5 +237,38 @@ async fn review(
     };
     Ok(ApiResponse::ok(
         agent::review(&state, &caller.actor, me, id, approve, body.body.as_deref()).await?,
+    ))
+}
+
+/// A task's plan revisions, newest first. Owner and admins only — the server
+/// enforces it (`agent::plans`), same as the step log.
+async fn plans(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Vec<Plan>>> {
+    Ok(ApiResponse::ok(
+        agent::plans(&state, caller.actor.person_id, id).await?,
+    ))
+}
+
+async fn approve_plan(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(
+        agent::review_plan(&state, person(&caller)?, id, true, None).await?,
+    ))
+}
+
+async fn request_plan_changes(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(body): Json<AnswerBody>,
+) -> AppResult<ApiResponse<TaskRow>> {
+    Ok(ApiResponse::ok(
+        agent::review_plan(&state, person(&caller)?, id, false, Some(&body.body)).await?,
     ))
 }
