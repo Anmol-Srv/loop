@@ -175,6 +175,9 @@ fn profile(ui: &mut egui::Ui, net: &Net, scopes: &[String]) {
     ui.add_space(space::XXL);
 }
 
+/// Room for the Choose… button beside a path field.
+pub(super) const CHOOSE_W: f32 = 100.0;
+
 /// Bigger than the sidebar's: this is the page about you.
 const PROFILE_AVATAR: f32 = 56.0;
 const TILE: egui::Vec2 = egui::vec2(156.0, 98.0);
@@ -297,6 +300,25 @@ pub(super) fn appearance_compact(ui: &mut egui::Ui) {
     }
 }
 
+/// The system folder panel, opened at `start` when that is a folder. `None`
+/// when it is cancelled. Blocks the frame while the panel is up, which is
+/// what a modal panel means; macOS runs its own loop meanwhile.
+pub(super) fn choose_folder(title: &str, start: &str) -> Option<String> {
+    let mut panel = rfd::FileDialog::new().set_title(title);
+    let start = std::path::Path::new(start.trim());
+    if start.is_dir() {
+        panel = panel.set_directory(start);
+    }
+    panel.pick_folder().map(|p| p.display().to_string())
+}
+
+/// The button beside a path field that opens the panel.
+pub(super) fn choose_button(ui: &mut egui::Ui, enabled: bool) -> bool {
+    w::icon_button(ui, egui_phosphor::regular::FOLDER_OPEN, "Choose\u{2026}", w::Emphasis::Secondary, enabled)
+        .on_hover_text("Pick the folder in Finder")
+        .clicked()
+}
+
 fn sentence(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map(|f| f.to_uppercase().chain(chars).collect()).unwrap_or_default()
@@ -394,13 +416,29 @@ fn add_form(ui: &mut egui::Ui, net: &mut Net, s: &mut State) {
         ui.set_width(ui.available_width());
         w::field(ui, "Name", &mut s.name, false, "e.g. mycohort-api\u{2026}");
         ui.add_space(space::MD);
-        w::field(
-            ui,
-            "Path",
-            &mut s.path,
-            false,
-            "/Users/you/code/mycohort-api",
-        );
+        ui.horizontal(|ui| {
+            let room = ui.available_width() - CHOOSE_W - space::SM;
+            ui.allocate_ui_with_layout(
+                egui::vec2(room, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| w::field(ui, "Path", &mut s.path, false, "/Users/you/code/mycohort-api"),
+            );
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                if choose_button(ui, true) {
+                    if let Some(path) = choose_folder("Choose a folder for your agent", &s.path) {
+                        // The folder's own name is almost always what it
+                        // should be called here.
+                        if s.name.trim().is_empty() {
+                            s.name = std::path::Path::new(&path)
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                        }
+                        s.path = path;
+                    }
+                }
+            });
+        });
         let path_typed = !s.path.trim().is_empty();
         let path_ok = s.path.trim().starts_with('/');
         if path_typed && !path_ok {

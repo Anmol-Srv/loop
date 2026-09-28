@@ -33,8 +33,13 @@ egui_extras = { version = "0.36.2", features = ["image"], optional = true }
 egui = { version = "0.36.2", optional = true }
 argon2 = "0.6.0"
 rpassword = "7.5.4"
-egui-phosphor = { version = "0.14.0", optional = true }
+# Regular is the weight drawn; `thin` stays compiled so code naming
+# `egui_phosphor::thin` still resolves (every weight shares codepoints).
+egui-phosphor = { version = "0.14.0", features = ["thin"], optional = true }
 egui-notify = { version = "0.23.0", optional = true }
+# The system folder panel. macOS only needs the AppKit bindings winit already
+# brings; the Linux portal backends stay off.
+rfd = { version = "0.17", default-features = false, optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
 tower-http = { version = "0.7.1", features = ["trace"] }
 # Already in the tree (reqwest, sqlx); intake uploads arrive as base64 JSON.
@@ -49,7 +54,7 @@ image = "0.25.10"
 [features]
 # The desktop app's GUI stack is opt-in so the server binary's build stays lean.
 #   cargo build --features app --bin acp-app
-app = ["dep:eframe", "dep:egui", "dep:egui_extras", "dep:egui-phosphor", "dep:egui-notify", "dep:image"]
+app = ["dep:eframe", "dep:egui", "dep:egui_extras", "dep:egui-phosphor", "dep:egui-notify", "dep:image", "dep:rfd"]
 
 [[bin]]
 name = "acp-app"

@@ -1414,18 +1414,31 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
     let saved = str_at(row, "myPath").to_owned();
     let draft = page.paths.entry(id.clone()).or_insert_with(|| saved.clone());
     let problem = path_problem(draft);
+    // A folder picked in the panel saves at once, like one typed and left.
+    let mut picked = false;
     ui.add_space(space::XS);
     let field = ui
         .horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let (r, _) = ui.allocate_exact_size(egui::vec2(REPO_LABEL_W, size::CONTROL), egui::Sense::hover());
-            let width = (ui.available_width() - PRIVATE_W - space::SM).max(160.0);
+            let width =
+                (ui.available_width() - PRIVATE_W - super::settings::CHOOSE_W - space::SM * 2.0).max(160.0);
             let field = ui.add_sized(
                 [width, size::CONTROL],
                 egui::TextEdit::singleline(draft)
-                    .hint_text(RichText::new("Not set — paste this repo's folder").size(text::BODY).color(colour::TEXT_DISABLED()))
+                    .hint_text(
+                        RichText::new("Not set \u{2014} choose or paste this repo's folder")
+                            .size(text::BODY)
+                            .color(colour::TEXT_DISABLED()),
+                    )
                     .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
+            if super::settings::choose_button(ui, !busy) {
+                if let Some(path) = super::settings::choose_folder(&format!("Choose the folder for {name}"), draft) {
+                    *draft = path;
+                    picked = true;
+                }
+            }
             field.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("Folder for {name} on my Mac"))
             });
@@ -1450,7 +1463,8 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
     }
     // Saved when the field is left or Enter is pressed, as the rail's
     // properties save when they are picked: no Save button for one line.
-    if field.lost_focus() && problem.is_none() && draft.trim() != saved && !busy {
+    let problem = path_problem(draft);
+    if (field.lost_focus() || picked) && problem.is_none() && draft.trim() != saved && !busy {
         let path = draft.trim().to_owned();
         requests.push(Request::Repo(reqwest::Method::PUT, format!("/api/user/repos/{id}/path"), json!({ "path": path })));
     }
