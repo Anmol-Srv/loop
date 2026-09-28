@@ -381,7 +381,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         }
         let ctx = ui.ctx().clone();
         let net = app.net.as_mut().expect("chrome runs signed in");
-        connect_dialog(&ctx, net, local, &my_seed, &my_first);
+        connect_dialog(&ctx, net, local, &my_first);
         confirm_dialog(&ctx, net, local);
         return;
     }
@@ -423,7 +423,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
     } else if live.is_empty() {
         connect |= empty_state(ui, &my_seed);
     } else {
-        act = grid(ui, &live, &my_seed);
+        act = grid(ui, &live);
     }
 
     if !revoked.is_empty() {
@@ -440,7 +440,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
             w::card_list(ui, |ui| {
                 ui.set_width(ui.available_width());
                 for a in &revoked {
-                    revoked_row(ui, a, &my_seed);
+                    revoked_row(ui, a);
                 }
             });
         }
@@ -457,7 +457,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
 
     let ctx = ui.ctx().clone();
     let net = app.net.as_mut().expect("chrome runs signed in");
-    connect_dialog(&ctx, net, local, &my_seed, &my_first);
+    connect_dialog(&ctx, net, local, &my_first);
     confirm_dialog(&ctx, net, local);
 }
 
@@ -577,7 +577,7 @@ fn per_row(width: f32) -> usize {
 /// The cards, a few to a row, each row one height: a row of cards of four
 /// different heights reads as four unrelated things. Last frame's tallest is
 /// the floor, as `viz::row` does it.
-fn grid(ui: &mut egui::Ui, agents: &[&Value], my_seed: &str) -> Option<CardAct> {
+fn grid(ui: &mut egui::Ui, agents: &[&Value]) -> Option<CardAct> {
     let n = per_row(ui.available_width());
     let mut act = None;
     for (r, chunk) in agents.chunks(n).enumerate() {
@@ -586,7 +586,7 @@ fn grid(ui: &mut egui::Ui, agents: &[&Value], my_seed: &str) -> Option<CardAct> 
         let mut tallest = 0.0_f32;
         ui.columns(n, |cols| {
             for (col, a) in cols.iter_mut().zip(chunk) {
-                let (h, asked) = card(col, a, my_seed, floor);
+                let (h, asked) = card(col, a, floor);
                 tallest = tallest.max(h);
                 act = act.take().or(asked);
             }
@@ -601,7 +601,7 @@ fn grid(ui: &mut egui::Ui, agents: &[&Value], my_seed: &str) -> Option<CardAct> 
 }
 
 /// One agent: face and name, what it is on, and whether it is set up.
-fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option<CardAct>) {
+fn card(ui: &mut egui::Ui, a: &Value, floor: f32) -> (f32, Option<CardAct>) {
     let id = str_of(a, "id").unwrap_or_default().to_owned();
     let name = str_of(a, "name").unwrap_or("Agent").to_owned();
     let status = str_of(a, "status").unwrap_or("waiting");
@@ -645,10 +645,12 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                 // ---- face, name, menu
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::MD;
+                    // Seeded from the agent's own id, not its owner's: two of
+                    // one person's agents must not read as the same agent.
                     if waiting {
-                        face::avatar_still(ui, my_seed, face::LG, Presence::Waiting, &name);
+                        face::avatar_still(ui, &id, face::LG, Presence::Waiting, &name);
                     } else {
-                        face::avatar(ui, my_seed, face::LG, presence, &name);
+                        face::avatar(ui, &id, face::LG, presence, &name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                         viz::more(ui, |ui| {
@@ -847,8 +849,9 @@ pub(super) fn setup_checks(ui: &mut egui::Ui, setup: &Value, wrap: bool) {
     }
 }
 
-fn revoked_row(ui: &mut egui::Ui, a: &Value, seed: &str) {
+fn revoked_row(ui: &mut egui::Ui, a: &Value) {
     let name = str_of(a, "name").unwrap_or("Agent");
+    let seed = str_of(a, "id").unwrap_or(name);
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), size::ROW),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -980,7 +983,6 @@ fn connect_dialog(
     ctx: &egui::Context,
     net: &mut Net,
     local: &mut Local,
-    my_seed: &str,
     my_first: &str,
 ) {
     let busy = local.pending.is_some();
@@ -1252,7 +1254,9 @@ fn connect_dialog(
                     } else {
                         Presence::Waiting
                     };
-                    face::avatar(ui, my_seed, face::XXL, presence, name);
+                    // The new agent's own id, once it is created — not the
+                    // owner's — so it wears its own colour from the start.
+                    face::avatar(ui, id, face::XXL, presence, name);
                     ui.add_space(space::MD);
                     if connected {
                         w::muted(

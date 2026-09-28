@@ -114,7 +114,7 @@ pub(super) fn show(
     // Narrow, the rail's facts would stand a screen tall between the header
     // and the figures; they fold into one wrapped line instead.
     if ui.available_width() < NARROW {
-        if let Some(a) = header(ui, &agent, owned, seed, &name, &short) {
+        if let Some(a) = header(ui, &agent, owned, &name, &short) {
             ask = Some(a);
         }
         ui.add_space(space::MD);
@@ -138,7 +138,7 @@ pub(super) fn show(
         ui,
         |ui, part| match part {
             shell::Part::Header => {
-                if let Some(a) = header(ui, &agent, owned, seed, &name, &short) {
+                if let Some(a) = header(ui, &agent, owned, &name, &short) {
                     ask = Some(a);
                 }
             }
@@ -171,13 +171,15 @@ fn header(
     ui: &mut egui::Ui,
     a: &Value,
     owned: bool,
-    seed: &str,
     name: &str,
     short: &str,
 ) -> Option<Ask> {
     let status = str_of(a, "status").unwrap_or("waiting");
     let current = a.get("currentTask").filter(|t| t.is_object());
     let state = current.and_then(|t| str_of(t, "state")).unwrap_or("idle");
+    // The agent's own id, not its owner's: two agents one person owns must
+    // not wear the same globe.
+    let agent_seed = str_of(a, "id").unwrap_or(name);
     let mut ask = None;
 
     ui.add_space(space::SM);
@@ -186,13 +188,13 @@ fn header(
         match status {
             "connected" => face::avatar(
                 ui,
-                seed,
+                agent_seed,
                 face::XL,
                 Presence::of(state, str_of(a, "lastSeenAt")),
                 name,
             ),
-            "revoked" => face::avatar_still(ui, seed, face::XL, Presence::Offline, name),
-            _ => face::avatar_still(ui, seed, face::XL, Presence::Waiting, name),
+            "revoked" => face::avatar_still(ui, agent_seed, face::XL, Presence::Offline, name),
+            _ => face::avatar_still(ui, agent_seed, face::XL, Presence::Waiting, name),
         };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if owned {

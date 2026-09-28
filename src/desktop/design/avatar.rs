@@ -31,10 +31,20 @@ fn initials(seed: &str) -> String {
 }
 
 /// A stable hue per person. Same seed, same colour, forever.
+///
+/// FNV-1a alone leaves short, similar seeds close together in hash space —
+/// "Airtribe Agent" and "Slack Agent" landed two degrees apart before the
+/// finalizer below, indistinguishable at a glance. A Murmur3-style mix
+/// scatters neighbouring inputs across the full circle before the modulo.
 fn hue_of(seed: &str) -> f32 {
-    let h = seed
+    let mut h = seed
         .bytes()
         .fold(2166136261u32, |acc, b| (acc ^ b as u32).wrapping_mul(16777619));
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35);
+    h ^= h >> 16;
     (h % 360) as f32
 }
 

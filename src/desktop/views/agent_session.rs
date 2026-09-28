@@ -134,7 +134,11 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     let short = short_name(agent);
     let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
     let owner_first = first_name(owner);
-    let seed = owner_seed(s.task, owner);
+    // The owner's own colour, for the person nodes below (they handed it off,
+    // they answered); the agent's own id for its globe, so two agents one
+    // person owns never wear the same one.
+    let person_seed = owner_seed(s.task, owner);
+    let agent_seed = str_of(d, "id").unwrap_or(agent);
     let presence = Presence::of(state, str_of(d, "lastSeenAt"));
     let held = !matches!(state, "done" | "stopped");
     let mut ask = None;
@@ -145,7 +149,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     // ---- who, and since when
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::MD;
-        face::avatar(ui, &seed, face::MD, presence, agent);
+        face::avatar(ui, agent_seed, face::MD, presence, agent);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let name = RichText::new(agent)
@@ -259,7 +263,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         if let Some(at) = str_of(d, "delegatedAt") {
             mark_day(ui, Some(at), &mut day, &mut drawn, &mut prev_minor);
             ui.add_space(timeline_gap(drawn, prev_minor, true));
-            minor_line(ui, Node::Person(&seed), &format!("{owner} handed this to {short}"), Some(at));
+            minor_line(ui, Node::Person(&person_seed), owner, &format!("handed this to {short}"), Some(at));
             drawn = true;
             prev_minor = true;
         }
@@ -285,9 +289,9 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             match kind {
                 "progress" => {
                     let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
-                    let words = if flat.is_empty() { format!("{author} posted an update") } else { format!("{author} {flat}") };
+                    let rest = if flat.is_empty() { "posted an update".to_owned() } else { flat };
                     ui.add_space(timeline_gap(drawn, prev_minor, true));
-                    minor_line(ui, Node::Agent(&seed), &words, at);
+                    minor_line(ui, Node::Agent(agent_seed), author, &rest, at);
                     prev_minor = true;
                 }
                 "review" => {
@@ -297,7 +301,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
                         (Mark::Changes, "asked for changes")
                     };
                     ui.add_space(timeline_gap(drawn, prev_minor, true));
-                    minor_line(ui, Node::Mark(mark), &format!("{author} {verb}"), at);
+                    minor_line(ui, Node::Mark(mark), author, verb, at);
                     prev_minor = true;
                 }
                 _ => {
@@ -305,9 +309,9 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
                     // (superseded) submission: something with real content,
                     // worth its own block.
                     let (node, label) = match kind {
-                        "question" => (Node::Agent(&seed), "Question"),
-                        "submission" => (Node::Agent(&seed), "Report"),
-                        _ => (Node::Person(&seed), "Note"),
+                        "question" => (Node::Agent(agent_seed), "Question"),
+                        "submission" => (Node::Agent(agent_seed), "Report"),
+                        _ => (Node::Person(&person_seed), "Note"),
                     };
                     let open_question = Some(i) == latest_question && state == "needs_input" && s.mine;
                     ui.add_space(timeline_gap(drawn, prev_minor, false));
@@ -796,36 +800,61 @@ fn timeline_gap(drawn: bool, prev_minor: bool, minor: bool) -> f32 {
     }
 }
 
-/// A single low-signal line: a small mark, what happened, the time flush
-/// right. No card, nothing to expand — the kind of event a reader's eye
-/// should pass over rather than stop at.
-fn minor_line(ui: &mut egui::Ui, node: Node, words: &str, at: Option<&str>) {
+/// A single low-signal line: a small mark, who did it in ink, the rest
+/// muted, the time inline after — `entry`'s who/verb/time, at one line's
+/// height instead of a block's. No card, nothing to expand — the kind of
+/// event a reader's eye should pass over rather than stop at.
+fn minor_line(ui: &mut egui::Ui, node: Node, who: &str, rest: &str, at: Option<&str>) {
     // Painted by hand into one pre-measured rect, the way `disclosure` and
     // `pill` do: nesting a right-aligned layout inside a left-to-right one
     // has the parent's cursor jump to the row's far right the moment
     // anything is placed there, leaving nothing for a sibling after it.
     let height = face::XS.max(text::SMALL * 1.3);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, words));
+    // The same measure `entry` reads at: NODE for the mark column, MD to its
+    // text, then a prose line — capped the same way, so a run of minor lines
+    // and the blocks between them share one left and right edge.
+    let width = (NODE + space::MD + PROSE_W).min(ui.available_width());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let label = if rest.is_empty() { who.to_owned() } else { format!("{who} {rest}") };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
     if let Some(a) = at {
         response.on_hover_text(exact(a));
     }
 
-    let p = ui.painter();
-    let time_w = at.map_or(0.0, |a| {
-        let galley = p.layout_no_wrap(ago(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT());
-        let w = galley.size().x;
-        p.galley(egui::pos2(rect.right() - w, rect.center().y - galley.size().y / 2.0), galley, colour::TEXT_FAINT());
-        w + space::SM
-    });
-
-    let mark = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y - face::XS / 2.0), egui::Vec2::splat(face::XS));
+    // The mark centred in a NODE-wide slot, not flush left of it: `entry`'s
+    // text starts at NODE + MD, and a smaller mark flush left of that same
+    // column read as a ragged edge against it.
+    let mark = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + NODE / 2.0, rect.center().y),
+        egui::Vec2::splat(face::XS),
+    );
     paint_node(ui, mark, &node);
 
-    let text_x = mark.right() + space::SM;
-    let max_w = (rect.right() - time_w - text_x).max(0.0);
-    let galley = w::truncated(ui, words, egui::FontId::proportional(text::SMALL), colour::TEXT_MUTED(), max_w);
-    ui.painter().galley(egui::pos2(text_x, rect.center().y - galley.size().y / 2.0), galley, colour::TEXT_MUTED());
+    let p = ui.painter();
+    let who_galley = p.layout_no_wrap(
+        who.to_owned(),
+        egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+        colour::TEXT(),
+    );
+    let mut x = rect.left() + NODE + space::MD;
+    p.galley(egui::pos2(x, rect.center().y - who_galley.size().y / 2.0), who_galley.clone(), colour::TEXT());
+    x += who_galley.size().x;
+
+    // Measured up front so the rest of the line truncates around it rather
+    // than running under it — the same order `entry`'s row reads in, just
+    // painted by hand instead of laid out by egui.
+    let time = at.map(|a| p.layout_no_wrap(ago(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT()));
+    if !rest.is_empty() {
+        x += space::XS;
+        let time_w = time.as_ref().map_or(0.0, |g| g.size().x + space::SM);
+        let max_w = (rect.right() - time_w - x).max(0.0);
+        let rest_galley = w::truncated(ui, rest, egui::FontId::proportional(text::SMALL), colour::TEXT_MUTED(), max_w);
+        p.galley(egui::pos2(x, rect.center().y - rest_galley.size().y / 2.0), rest_galley.clone(), colour::TEXT_MUTED());
+        x += rest_galley.size().x + space::SM;
+    }
+    if let Some(g) = time {
+        p.galley(egui::pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), colour::TEXT_FAINT());
+    }
 }
 
 /// How many lines of a body show before "Show more" — long enough to be
@@ -1253,22 +1282,13 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
     net.get_once(ACTIVE_KEY, "/api/user/agents/active");
     let rows = net.shared(ACTIVE_KEY)?;
     let rows = rows.as_array().filter(|r| !r.is_empty())?;
-    // The owner's colour comes from their email, as on their disc in the
-    // table below; the row carries only a name, so borrow it from the task.
-    let tasks = net.shared("home:tasks");
-    let email_of = |task: &str| {
-        tasks.as_deref().and_then(Value::as_array).and_then(|t| {
-            t.iter().find(|r| str_of(r, "id") == Some(task)).and_then(|r| str_of(r, "assigneeEmail")).map(str::to_owned)
-        })
-    };
     let mut open = None;
     shell::section_count(ui, "Agents at work", rows.len());
     w::card_list(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         for row in rows {
-            let task = row.get("task").and_then(|t| str_of(t, "id")).unwrap_or_default();
-            if active_row(ui, row, email_of(task)) {
+            if active_row(ui, row) {
                 open = row.get("task").and_then(|t| str_of(t, "id")).map(str::to_owned);
             }
         }
@@ -1276,7 +1296,7 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
     open
 }
 
-fn active_row(ui: &mut egui::Ui, row: &Value, email: Option<String>) -> bool {
+fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
     let empty = Value::Null;
     let agent = row.get("agent").unwrap_or(&empty);
     let owner = row.get("owner").unwrap_or(&empty);
@@ -1285,7 +1305,9 @@ fn active_row(ui: &mut egui::Ui, row: &Value, email: Option<String>) -> bool {
     let short = short_name(name);
     let owner_name = str_of(owner, "name").unwrap_or_default();
     let owner_first = first_name(owner_name);
-    let seed = str_of(owner, "email").map(str::to_owned).or(email).unwrap_or_else(|| owner_name.to_owned());
+    // The agent's own id, not its owner's: two agents at work for the same
+    // person must read as two different agents, not one repeated.
+    let seed = str_of(agent, "id").unwrap_or(name);
     let state = str_of(row, "state").unwrap_or("working");
     let presence = Presence::of(state, str_of(row, "lastSeenAt"));
     let title = str_of(task, "title").unwrap_or("Untitled");
@@ -1294,7 +1316,7 @@ fn active_row(ui: &mut egui::Ui, row: &Value, email: Option<String>) -> bool {
 
     let response = w::row(ui, |ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
-        face::avatar(ui, &seed, face::SM, presence, name);
+        face::avatar(ui, seed, face::SM, presence, name);
         let whole = ui.available_width();
         let who_w = (whole * 0.22).clamp(120.0, 200.0);
         let since_w = 44.0;

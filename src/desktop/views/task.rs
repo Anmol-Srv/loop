@@ -38,8 +38,8 @@ use super::menus::{task_items, Pick, Viewer};
 use super::projects::{label_badge, label_picker, person_option, LABELS_KEY, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::agent::{self as face, Presence};
 use crate::desktop::design::{
-    avatar, cards as c, colour, radius, shell, size, space, status_label, text, theme, viz,
-    widgets as w,
+    avatar, cards as c, colour, motion, radius, shell, size, space, status_label, text, theme,
+    viz, widgets as w,
 };
 use crate::desktop::net::memo;
 use crate::desktop::{App, Tab};
@@ -266,6 +266,9 @@ struct Local {
     labels: Option<Vec<String>>,
     /// The hand-off modal, open on the agent it was opened for.
     handoff_modal: Option<HandoffModal>,
+    /// The header's agent pill was clicked: jump to the Agent session
+    /// section on this frame, once the body starts drawing it.
+    jump_to_session: bool,
 }
 
 impl Local {
@@ -292,6 +295,7 @@ impl Local {
             deciding: false,
             labels: None,
             handoff_modal: None,
+            jump_to_session: false,
         }
     }
 }
@@ -549,7 +553,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             shell::Part::Header => {
                 editing = headline(
                     ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held,
-                    &handoff, &viewer, local,
+                    &handoff, &viewer, delegate, local,
                 );
             }
             shell::Part::Body => {
@@ -560,6 +564,10 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 super::triage::source_card(ui, net, &task);
 
                 if let Some(d) = delegate {
+                    // The header's agent pill asked to jump here.
+                    if std::mem::take(&mut local.jump_to_session) {
+                        ui.scroll_to_cursor(Some(egui::Align::TOP));
+                    }
                     let notes = net.shared(NOTES_KEY);
                     let evidence = net.shared(ARTIFACTS_KEY);
                     let s = Session {
@@ -722,6 +730,7 @@ fn headline(
     held: &[String],
     handoff: &Handoff,
     viewer: &Viewer,
+    delegate: Option<&Value>,
     local: &mut Local,
 ) -> bool {
     let busy = local.patching
@@ -803,16 +812,16 @@ fn headline(
         }
     } else {
         let mut edit = false;
-        // Right to left, so the controls take their width first and the title
-        // truncates into what is left — and sits flush left, which a sized
-        // label centred in its box did not.
+        let mut pick: Option<Pick> = None;
+        // Its own row, right-aligned: with the title able to wrap to
+        // whatever it needs, these can no longer share a line with it and
+        // squeeze it into what is left over.
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
-                let mut pick = None;
                 viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
-                if status == "triage" && super::triage::decides(task, viewer) && !local.deciding {
-                    pick = pick.or(super::triage::page_actions(ui, task));
+                if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
+                    pick = super::triage::page_actions(ui, task);
                 }
                 if let Some((copy, next)) = action {
                     if w::primary(ui, copy, !busy).clicked() {
@@ -831,33 +840,57 @@ fn headline(
                 if busy {
                     ui.add(egui::Spinner::new().size(text::BODY));
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let category = str_of(task, "category");
-                    // Offered to set only where it means something: a task
-                    // that has one, or one an intake agent filed.
-                    let editable = can_write && !busy;
-                    if category.is_some()
-                        || (editable && task.get("source").is_some_and(|s| s.is_object()))
-                    {
-                        if let Some(c) = super::triage::category_chip(ui, category, editable) {
-                            recategorise = Some(c);
-                        }
-                    }
-                    let title = ui.add(
-                        egui::Label::new(
-                            RichText::new(str_of(task, "title").unwrap_or("Untitled"))
-                                .size(text::TITLE)
-                                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                .color(colour::TEXT()),
-                        )
-                        .truncate()
-                        .sense(egui::Sense::click()),
-                    );
-                    viz::context_menu(&title, |ui| pick = task_items(ui, task, viewer, false));
-                });
-                local.pick = pick;
             });
         });
+        ui.add_space(space::SM);
+
+        // ---- the title, wrapped in full rather than cut off: a prose
+        // measure keeps a long one readable instead of a single edge-to-edge
+        // line.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            let category = str_of(task, "category");
+            // Offered to set only where it means something: a task
+            // that has one, or one an intake agent filed.
+            let editable = can_write && !busy;
+            if category.is_some()
+                || (editable && task.get("source").is_some_and(|s| s.is_object()))
+            {
+                if let Some(c) = super::triage::category_chip(ui, category, editable) {
+                    recategorise = Some(c);
+                }
+            }
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                let title = ui.add(
+                    egui::Label::new(
+                        RichText::new(str_of(task, "title").unwrap_or("Untitled"))
+                            .size(text::TITLE)
+                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                            .color(colour::TEXT()),
+                    )
+                    .wrap()
+                    .sense(egui::Sense::click()),
+                );
+                viz::context_menu(&title, |ui| pick = task_items(ui, task, viewer, false));
+            });
+        });
+        local.pick = pick;
+
+        // ---- its PRs, and — delegated — who is on it and how that is going
+        let artifacts = net.shared(ARTIFACTS_KEY);
+        let artifacts: &[Value] = artifacts
+            .as_deref()
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice);
+        pr_chips(ui, artifacts);
+        if let Some(d) = delegate {
+            ui.add_space(space::SM);
+            if agent_pill(ui, task_id, d, handoff.mine, task).clicked() {
+                local.jump_to_session = true;
+            }
+        }
+
         if edit {
             let title = str_of(task, "title").unwrap_or_default().to_owned();
             let body = str_of(task, "body").unwrap_or_default().to_owned();
@@ -927,6 +960,137 @@ fn headline(
         agent_action(net, task_id, ask, local);
     }
     editing
+}
+
+/// The task's PRs, as compact chips under the title — a click opens each in
+/// the browser, and the full URL is the hover text since the label already
+/// says which repo and number. Everything else stays in Resources.
+fn pr_chips(ui: &mut egui::Ui, artifacts: &[Value]) {
+    let prs: Vec<&Value> = artifacts
+        .iter()
+        .filter(|a| str_of(a, "kind") == Some("pr"))
+        .collect();
+    if prs.is_empty() {
+        return;
+    }
+    ui.add_space(space::XS);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        for pr in prs {
+            pr_chip(ui, pr);
+        }
+    });
+}
+
+/// One PR chip: the GitHub mark, "repo #1531", and — once the artifact's
+/// metadata carries one (nothing fetches it; this only ever reads what is
+/// already there) — a small dot for its open, merged or closed state.
+fn pr_chip(ui: &mut egui::Ui, artifact: &Value) -> egui::Response {
+    let url = str_of(artifact, "url").unwrap_or_default();
+    let label = link_label(url)
+        .or_else(|| str_of(artifact, "title").map(str::to_owned))
+        .unwrap_or_else(|| host_path(url).to_owned());
+    let dot = artifact
+        .get("metadata")
+        .and_then(|m| m.get("state"))
+        .and_then(Value::as_str)
+        .and_then(|s| match s {
+            "open" => Some(colour::OK()),
+            "merged" => Some(colour::AGENT()),
+            "closed" => Some(colour::DANGER()),
+            _ => None,
+        });
+
+    let fg = colour::INFO();
+    let font = egui::FontId::proportional(text::SMALL);
+    let icon = ui
+        .painter()
+        .layout_no_wrap(egui_phosphor::regular::GIT_PULL_REQUEST.to_owned(), font.clone(), fg);
+    let name = ui.painter().layout_no_wrap(label.clone(), font, fg);
+    let pad_x = space::SM;
+    let gap = space::XXS;
+    let dot_w = if dot.is_some() { space::SM } else { 0.0 };
+    let height = 20.0;
+    let width = icon.size().x + gap + name.size().x + dot_w + pad_x * 2.0;
+
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    let response = motion::operable(ui, response, radius::SM as f32);
+    let hovered = response.hovered() || response.has_focus();
+    let fill = motion::hover_fill(
+        ui,
+        response.id.with("fill"),
+        hovered,
+        colour::INFO_BG(),
+        colour::INFO_BG().lerp_to_gamma(fg, 0.35),
+    );
+
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, fill);
+    let mut x = rect.left() + pad_x;
+    p.galley(egui::pos2(x, rect.center().y - icon.size().y / 2.0), icon.clone(), fg);
+    x += icon.size().x + gap;
+    p.galley(egui::pos2(x, rect.center().y - name.size().y / 2.0), name, fg);
+    if let Some(c) = dot {
+        p.circle_filled(egui::pos2(rect.right() - pad_x - 2.5, rect.center().y), 2.5, c);
+    }
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &label));
+    response.on_hover_text(url)
+}
+
+/// The header's agent pill: the delegate's globe, its name, and the same
+/// state a viewer already reads elsewhere — clicking it jumps to the Agent
+/// session section below.
+fn agent_pill(ui: &mut egui::Ui, task_id: &str, d: &Value, mine: bool, task: &Value) -> egui::Response {
+    let name = str_of(d, "name").unwrap_or("Agent");
+    let short = session::short_name(name);
+    let state = str_of(d, "state").unwrap_or("handed_off");
+    // The agent's own id, not its owner's, so its globe is its own colour.
+    let seed = str_of(d, "id").unwrap_or(name);
+    let presence = Presence::of(state, str_of(d, "lastSeenAt"));
+    let owner_first = str_of(task, "assigneeName")
+        .and_then(|n| n.split_whitespace().next())
+        .unwrap_or("its owner");
+    let (label, tone) = pill_state(state, mine, owner_first);
+
+    let group = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        face::avatar_still(ui, seed, face::SM, presence, name);
+        ui.label(RichText::new(short).size(text::SMALL).color(colour::TEXT()));
+        c::chip(ui, &label, tone, true);
+    });
+    let id = egui::Id::new(("task:agent-pill", task_id));
+    let response = ui.interact(group.response.rect, id, egui::Sense::click());
+    let response = motion::operable(ui, response, radius::SM as f32);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let hint = format!("Open the Agent session with {short}");
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &hint));
+    response.on_hover_text(hint)
+}
+
+/// The pill's words: the same tinted chip the rail's "Agent state" row
+/// already shows everyone, except plan review — "Plan review" alone does not
+/// say whose, so the owner reads "your" and everyone else the owner's name,
+/// the same split `agent_session::now_line` already draws elsewhere.
+fn pill_state(state: &str, mine: bool, owner_first: &str) -> (String, c::Tone) {
+    if state == "plan_review" {
+        let words = if mine {
+            "Waiting for your plan review".to_owned()
+        } else {
+            format!("Waiting for {owner_first}\u{2019}s plan review")
+        };
+        return (words, state_tone(state));
+    }
+    (state_words(state).to_owned(), state_tone(state))
 }
 
 /// The task's own words, at a prose measure. Paragraphs split on a blank line,
@@ -1370,9 +1534,9 @@ fn rail(
         shell::property(ui, "Delegate", |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let name = str_of(d, "name").unwrap_or("Agent");
-            let seed = str_of(task, "assigneeEmail")
-                .or_else(|| str_of(task, "assigneeName"))
-                .unwrap_or(name);
+            // The agent's own id, not its owner's — two of one person's
+            // agents must not wear the same globe.
+            let seed = str_of(d, "id").unwrap_or(name);
             // Still: the session's header carries the one moving ring.
             face::avatar_still(
                 ui,
