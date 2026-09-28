@@ -7,11 +7,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 INSTALLED="/Applications/Loop.app"
 
-# Server: rebuild, restart only if the binary actually changed.
-before=$(stat -f %m target/release/acp-server 2>/dev/null || echo 0)
+# Server: rebuild, restart when the binary differs from the one running (the
+# stamp records which build was last started, however it was built).
+STAMP=target/.acp-server.running
 cargo build --release --bin acp-server
-after=$(stat -f %m target/release/acp-server)
-if [ "$before" != "$after" ] || ! lsof -ti :8080 >/dev/null 2>&1; then
+built=$(stat -f %m target/release/acp-server)
+if [ "$built" != "$(cat "$STAMP" 2>/dev/null)" ] || ! lsof -ti :8080 >/dev/null 2>&1; then
+  echo "$built" > "$STAMP"
   pid=$(lsof -ti :8080 || true)
   [ -n "$pid" ] && kill $pid && for _ in 1 2 3 4 5; do lsof -ti :8080 >/dev/null || break; sleep 1; done
   (nohup ./target/release/acp-server >> /tmp/acp-server.log 2>&1 &)
