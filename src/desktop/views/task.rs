@@ -28,7 +28,7 @@
 
 use std::cell::RefCell;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local as LocalTz, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
@@ -2331,11 +2331,7 @@ fn notes(
                     }
                 });
                 ui.add_space(space::XXS);
-                ui.label(
-                    RichText::new(str_of(row, "body").unwrap_or_default())
-                        .size(text::BODY)
-                        .color(colour::TEXT_2()),
-                );
+                super::mrkdwn::show(ui, str_of(row, "body").unwrap_or_default(), colour::TEXT_2());
             }
         });
     }
@@ -2417,7 +2413,7 @@ fn failed(ui: &mut egui::Ui, what: &str, err: &str) {
 /// `s` cut to `width`, with an ellipsis where it was cut. The cut point is
 /// estimated from the full string's measure rather than fitted glyph by glyph;
 /// the whole value is on the hover text either way.
-fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
+pub(super) fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
     let font = egui::FontId::proportional(text::SMALL);
     let full = ui
         .painter()
@@ -2476,6 +2472,21 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
+    }
+}
+
+/// "Today", "Yesterday", or "Mon 22 Sep", in local time — a quiet separator
+/// for a list that reads top to bottom by time.
+pub(super) fn day_label(raw: &str) -> String {
+    let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
+        return String::new();
+    };
+    let day = t.with_timezone(&LocalTz).date_naive();
+    let today = LocalTz::now().date_naive();
+    match (today - day).num_days() {
+        0 => "Today".to_owned(),
+        1 => "Yesterday".to_owned(),
+        _ => day.format("%a %-d %b").to_string(),
     }
 }
 

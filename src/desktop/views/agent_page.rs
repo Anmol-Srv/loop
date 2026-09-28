@@ -13,7 +13,7 @@
 //! spinner on its now line, are the only motion, and both go still with
 //! `AIRTRIBE_REDUCE_MOTION`.
 
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, NaiveDate};
 use egui::{pos2, vec2, RichText};
 use serde_json::Value;
 
@@ -22,7 +22,7 @@ use super::agents::{
     has, role_chips, role_items, runtime_label, setup_checks, state_tone, state_words,
     status_words, Opened, Role,
 };
-use super::task::{ago, exact};
+use super::task::{ago, day_label, exact};
 use crate::desktop::design::agent::{self as face, Presence};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
@@ -1411,20 +1411,6 @@ fn parse(s: &str) -> Option<DateTime<chrono::Utc>> {
     DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|t| t.with_timezone(&chrono::Utc))
-}
-
-/// "Today", "Yesterday", or "Mon 22 Sep", in local time.
-fn day_label(at: &str) -> String {
-    let Some(t) = parse(at) else {
-        return String::new();
-    };
-    let day = t.with_timezone(&Local).date_naive();
-    let today = Local::now().date_naive();
-    match (today - day).num_days() {
-        0 => "Today".into(),
-        1 => "Yesterday".into(),
-        _ => day.format("%a %-d %b").to_string(),
-    }
 }
 
 /// "27 Aug", from the chart's `YYYY-MM-DD`.

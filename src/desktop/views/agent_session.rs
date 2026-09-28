@@ -3,9 +3,10 @@
 //!
 //! The session reads top to bottom the way the work went: who holds it and
 //! where it is (avatar, stepper), what it is doing right now (the now line),
-//! what it has said (a left-rail timeline, not chat bubbles), the report it
-//! handed in (a card with its evidence and the review), and — for the owner
-//! only — a private line to the agent and its step log.
+//! what it has said — quiet single lines for the small stuff, a real block
+//! for a report, question, answer or note — the report it handed in (a card
+//! with its evidence and the review), and — for the owner only — a private
+//! line to the agent and its step log.
 //!
 //! What is private is decided by the server (`canSeeAgentPrivate`, the notes
 //! query, the logs endpoint's 403). This view also leaves those parts out for
@@ -20,7 +21,7 @@ use serde_json::Value;
 
 use super::agents::{runtime_label, state_words};
 use super::projects::PROSE_W;
-use super::task::{ago, exact};
+use super::task::{ago, day_label, elide, exact};
 use crate::desktop::design::agent::{self as face, Presence, Step};
 use crate::desktop::design::{
     avatar, cards as c, colour, glyph, motion, pad, radius, shell, size, space, status_label, text, theme, widgets as w,
@@ -226,7 +227,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         ui.scope(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
             w::muted(ui, "Your note");
-            prose(ui, brief, colour::TEXT_2());
+            super::mrkdwn::show(ui, brief, colour::TEXT_2());
         });
     }
     plan_section(ui, s, st, short, &mut ask);
@@ -248,11 +249,19 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             ui.add_space(space::SM);
         }
     } else {
-        let mut nodes: Vec<egui::Rect> = Vec::new();
-        let rail = ui.painter().add(egui::Shape::Noop);
-        ui.spacing_mut().item_spacing.y = space::LG;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // Every gap is drawn by hand below, so a run of minor lines can sit
+        // tight while a report or a question still gets room to breathe.
+        let mut day = String::new();
+        let mut drawn = false;
+        let mut prev_minor = false;
+
         if let Some(at) = str_of(d, "delegatedAt") {
-            nodes.push(entry(ui, Node::Person(&seed), owner, &format!("handed this to {short}"), Some(at), false, |_| {}));
+            mark_day(ui, Some(at), &mut day, &mut drawn, &mut prev_minor);
+            ui.add_space(timeline_gap(drawn, prev_minor, true));
+            minor_line(ui, Node::Person(&seed), &format!("{owner} handed this to {short}"), Some(at));
+            drawn = true;
+            prev_minor = true;
         }
         for (i, n) in entries.iter().enumerate() {
             let kind = str_of(n, "kind").unwrap_or("progress");
@@ -262,44 +271,59 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             // The short name: the full one sits once, in the header above.
             let author = if by_agent { short } else { str_of(n, "authorName").unwrap_or(owner) };
             let private = private_kind(kind);
+            let body_id = egui::Id::new(("session:body", s.task_id, str_of(n, "id").unwrap_or_default(), i));
+
+            mark_day(ui, at, &mut day, &mut drawn, &mut prev_minor);
 
             if Some(i) == latest_submission {
-                nodes.push(report(ui, s, st, n, short, owner_first, state, &mut ask));
+                ui.add_space(timeline_gap(drawn, prev_minor, false));
+                report(ui, s, st, n, short, owner_first, state, &mut ask);
+                drawn = true;
+                prev_minor = false;
                 continue;
             }
-            let (node, verb) = match kind {
-                "question" => (Node::Mark(Mark::Question), "asked".to_owned()),
-                "answer" => (Node::Person(&seed), "answered".to_owned()),
-                "instruction" => (Node::Person(&seed), format!("told {short}")),
-                "submission" => (Node::Mark(Mark::Submitted), "submitted for review".to_owned()),
-                "review" if approved(&entries, i, state) => (Node::Mark(Mark::Approved), "approved".to_owned()),
-                "review" => (Node::Mark(Mark::Changes), "asked for changes".to_owned()),
-                _ => (Node::Mark(Mark::Progress), String::new()),
-            };
-            let open_question = Some(i) == latest_question && state == "needs_input" && s.mine;
-            nodes.push(entry(ui, node, author, &verb, at, private, |ui| {
-                prose(ui, body, colour::TEXT_2());
-                if open_question {
-                    ui.add_space(space::SM);
-                    if let Some(a) = answer_box(ui, st, short, s.busy) {
-                        ask = Some(a);
-                    }
+            match kind {
+                "progress" => {
+                    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let words = if flat.is_empty() { format!("{author} posted an update") } else { format!("{author} {flat}") };
+                    ui.add_space(timeline_gap(drawn, prev_minor, true));
+                    minor_line(ui, Node::Agent(&seed), &words, at);
+                    prev_minor = true;
                 }
-            }));
+                "review" => {
+                    let (mark, verb) = if approved(&entries, i, state) {
+                        (Mark::Approved, "approved")
+                    } else {
+                        (Mark::Changes, "asked for changes")
+                    };
+                    ui.add_space(timeline_gap(drawn, prev_minor, true));
+                    minor_line(ui, Node::Mark(mark), &format!("{author} {verb}"), at);
+                    prev_minor = true;
+                }
+                _ => {
+                    // question, answer, instruction, and an earlier
+                    // (superseded) submission: something with real content,
+                    // worth its own block.
+                    let (node, label) = match kind {
+                        "question" => (Node::Agent(&seed), "Question"),
+                        "submission" => (Node::Agent(&seed), "Report"),
+                        _ => (Node::Person(&seed), "Note"),
+                    };
+                    let open_question = Some(i) == latest_question && state == "needs_input" && s.mine;
+                    ui.add_space(timeline_gap(drawn, prev_minor, false));
+                    substantive(ui, node, author, label, at, private, body_id, body, |ui| {
+                        if open_question {
+                            ui.add_space(space::SM);
+                            if let Some(a) = answer_box(ui, st, short, s.busy) {
+                                ask = Some(a);
+                            }
+                        }
+                    });
+                    prev_minor = false;
+                }
+            }
+            drawn = true;
         }
-        ui.spacing_mut().item_spacing.y = space::SM;
-        // The hairline joining the nodes, drawn under them once they are placed.
-        let segments: Vec<egui::Shape> = nodes
-            .windows(2)
-            .map(|w| {
-                let x = w[0].center().x;
-                egui::Shape::line_segment(
-                    [pos2(x, w[0].bottom() + space::XS), pos2(x, w[1].top() - space::XS)],
-                    egui::Stroke::new(1.0, colour::LINE()),
-                )
-            })
-            .collect();
-        ui.painter().set(rail, egui::Shape::Vec(segments));
         if entries.is_empty() && str_of(d, "delegatedAt").is_none() {
             w::caption(ui, &format!("Nothing from {short} yet \u{2014} its updates, questions and report land here."));
         }
@@ -382,7 +406,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
             });
             ui.scope(|ui| {
                 ui.set_max_width(PROSE_W.min(ui.available_width()));
-                prose(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
+                super::mrkdwn::show(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
                 if decision == Some("changes_requested") {
                     if let Some(note) = str_of(current, "changesNote") {
                         ui.add_space(space::XS);
@@ -408,7 +432,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                         ui.add_space(space::XS);
                         ui.scope(|ui| {
                             ui.set_max_width(PROSE_W.min(ui.available_width()));
-                            prose(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
+                            super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
                         });
                     }
                 }
@@ -468,14 +492,19 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
 fn cmux_row(ui: &mut egui::Ui, session: &Value, title: &str) {
     let Some(session_id) = str_of(session, "sessionId") else { return };
     let cwd = str_of(session, "cwd").unwrap_or_default();
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
+    let path = tildify(cwd);
+    // Wrapped, and the path elided to whatever is left on its line: a
+    // worktree path is the one string here with nowhere to break on its own.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(space::SM, space::XS);
         if w::secondary(ui, "Open in cmux", true).clicked() {
             open_cmux(ui.ctx(), title, cwd, session_id);
         }
         w::muted(ui, "Claude session \u{00B7}");
         w::id(ui, session_id);
-        w::muted(ui, &format!("\u{00B7} {}", tildify(cwd)));
+        w::muted(ui, "\u{00B7}");
+        let fitted = elide(ui, &path, ui.available_width());
+        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED())).on_hover_text(&path);
         if w::link(ui, "Copy").clicked() {
             ui.ctx().copy_text(attach_command(cwd, session_id));
             w::toast(ui.ctx(), "Attach command copied.", false);
@@ -493,7 +522,7 @@ fn cmux_row(ui: &mut egui::Ui, session: &Value, title: &str) {
 /// which blocks the UI thread). If cmux starts but its own command fails,
 /// that shows up in cmux's window, not here.
 fn open_cmux(ctx: &egui::Context, title: &str, cwd: &str, session_id: &str) {
-    let resume = format!("claude --resume {session_id}");
+    let resume = resume_command(session_id);
     let spawn = |bin: &str| {
         Command::new(bin)
             .args(["new-workspace", "--name", title, "--cwd", cwd, "--command", resume.as_str()])
@@ -510,7 +539,19 @@ fn open_cmux(ctx: &egui::Context, title: &str, cwd: &str, session_id: &str) {
 }
 
 fn attach_command(cwd: &str, session_id: &str) -> String {
-    format!("cd '{cwd}' && claude --resume {session_id}")
+    format!("cd '{cwd}' && {}", resume_command(session_id))
+}
+
+/// The command that resumes the session: the agent's own attach script when
+/// it is installed — it carries the MCP wiring, token and rules a bare
+/// `claude --resume` skips, which is what lets the resumed session keep
+/// talking back to the dashboard — a bare resume otherwise.
+fn resume_command(session_id: &str) -> String {
+    let script = std::env::var("HOME").ok().map(|home| format!("{home}/.airtribe-agent/attach.sh"));
+    match script {
+        Some(path) if std::path::Path::new(&path).exists() => format!("'{path}' {session_id}"),
+        _ => format!("claude --resume {session_id}"),
+    }
 }
 
 /// The home folder as `~`, the way a person reads their own path.
@@ -617,6 +658,9 @@ fn approved(entries: &[&Value], i: usize, state: &str) -> bool {
 pub(super) enum Node<'a> {
     /// A person's disc: their answers, instructions, the hand-off.
     Person(&'a str),
+    /// The agent's globe, still — the header already carries the one live
+    /// copy, so every mention of the agent elsewhere shows its still frame.
+    Agent(&'a str),
     Mark(Mark),
 }
 
@@ -677,11 +721,15 @@ pub(super) fn entry(
     rect
 }
 
+/// Paints into whatever size `r` happens to be — the full `NODE` column or a
+/// minor line's smaller mark — rather than assuming one fixed size.
 fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
     let p = ui.painter();
     let c = r.center();
+    let side = r.width();
     match node {
         Node::Person(seed) => avatar::paint(p, r.shrink(1.0), seed),
+        Node::Agent(seed) => face::paint_still(p, r, seed),
         Node::Mark(mark) => {
             let (ink, fill) = match mark {
                 Mark::Progress => (colour::TEXT_MUTED(), colour::SURFACE()),
@@ -691,22 +739,162 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
                 Mark::Changes => (colour::WARN(), colour::WARN_BG()),
                 Mark::Filed => (colour::INFO(), colour::INFO_BG()),
             };
-            p.circle_filled(c, NODE / 2.0, fill);
-            p.circle_stroke(c, NODE / 2.0 - 0.5, egui::Stroke::new(1.0, ink.gamma_multiply(0.35)));
+            p.circle_filled(c, side / 2.0, fill);
+            p.circle_stroke(c, side / 2.0 - 0.5, egui::Stroke::new(1.0, ink.gamma_multiply(0.35)));
             match mark {
                 Mark::Progress => {
-                    p.circle_filled(c, 2.5, ink);
+                    p.circle_filled(c, (side * 0.12).max(2.0), ink);
                 }
                 Mark::Question => {
-                    p.text(c, egui::Align2::CENTER_CENTER, "?", egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::BOLD.into())), ink);
+                    p.text(c, egui::Align2::CENTER_CENTER, "?", egui::FontId::new(text::SMALL.min(side * 0.7), egui::FontFamily::Name(theme::BOLD.into())), ink);
                 }
-                Mark::Submitted => glyph::arrow_up(p, c, NODE * 0.7, ink),
-                Mark::Approved => glyph::tick(p, c, NODE * 0.55, ink),
-                Mark::Changes => glyph::back(p, c, NODE * 0.7, ink),
-                Mark::Filed => glyph::hash(p, c, NODE * 0.55, ink),
+                Mark::Submitted => glyph::arrow_up(p, c, side * 0.7, ink),
+                Mark::Approved => glyph::tick(p, c, side * 0.55, ink),
+                Mark::Changes => glyph::back(p, c, side * 0.7, ink),
+                Mark::Filed => glyph::hash(p, c, side * 0.55, ink),
             }
         }
     }
+}
+
+/// A subtle day separator — "Today", "Yesterday" — drawn once per day the
+/// timeline crosses, so a list that keeps the server's order still reads as
+/// one that moves through time.
+fn day_marker(ui: &mut egui::Ui, label: &str) {
+    ui.label(
+        RichText::new(label)
+            .size(text::CAPTION)
+            .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+            .color(colour::TEXT_MUTED()),
+    );
+}
+
+/// Draws the separator the moment `at` crosses into a new day; a no-op
+/// otherwise. Resets `prev_minor` so the item right after one never looks
+/// like it is bunched under the last group.
+fn mark_day(ui: &mut egui::Ui, at: Option<&str>, day: &mut String, drawn: &mut bool, prev_minor: &mut bool) {
+    let Some(label) = at.map(day_label).filter(|l| !l.is_empty() && l.as_str() != day.as_str()) else { return };
+    if *drawn {
+        ui.add_space(space::MD);
+    }
+    day_marker(ui, &label);
+    ui.add_space(space::XS);
+    *day = label;
+    *drawn = true;
+    *prev_minor = false;
+}
+
+/// The vertical gap before the next timeline item: none before the first,
+/// tight between two minor lines, roomier whenever a block is involved.
+fn timeline_gap(drawn: bool, prev_minor: bool, minor: bool) -> f32 {
+    if !drawn {
+        0.0
+    } else if prev_minor && minor {
+        space::XXS
+    } else {
+        space::MD
+    }
+}
+
+/// A single low-signal line: a small mark, what happened, the time flush
+/// right. No card, nothing to expand — the kind of event a reader's eye
+/// should pass over rather than stop at.
+fn minor_line(ui: &mut egui::Ui, node: Node, words: &str, at: Option<&str>) {
+    // Painted by hand into one pre-measured rect, the way `disclosure` and
+    // `pill` do: nesting a right-aligned layout inside a left-to-right one
+    // has the parent's cursor jump to the row's far right the moment
+    // anything is placed there, leaving nothing for a sibling after it.
+    let height = face::XS.max(text::SMALL * 1.3);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, words));
+    if let Some(a) = at {
+        response.on_hover_text(exact(a));
+    }
+
+    let p = ui.painter();
+    let time_w = at.map_or(0.0, |a| {
+        let galley = p.layout_no_wrap(ago(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT());
+        let w = galley.size().x;
+        p.galley(egui::pos2(rect.right() - w, rect.center().y - galley.size().y / 2.0), galley, colour::TEXT_FAINT());
+        w + space::SM
+    });
+
+    let mark = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y - face::XS / 2.0), egui::Vec2::splat(face::XS));
+    paint_node(ui, mark, &node);
+
+    let text_x = mark.right() + space::SM;
+    let max_w = (rect.right() - time_w - text_x).max(0.0);
+    let galley = w::truncated(ui, words, egui::FontId::proportional(text::SMALL), colour::TEXT_MUTED(), max_w);
+    ui.painter().galley(egui::pos2(text_x, rect.center().y - galley.size().y / 2.0), galley, colour::TEXT_MUTED());
+}
+
+/// How many lines of a body show before "Show more" — long enough to be
+/// useful, short enough that a report can't turn the whole timeline into a
+/// wall of text.
+const CLAMP_LINES: usize = 6;
+
+/// A markdown body, cut to `CLAMP_LINES` once it runs past them, with "Show
+/// more" to read the rest. Expansion is remembered per entry via `id`.
+fn clamped_body(ui: &mut egui::Ui, id: egui::Id, body: &str, ink: egui::Color32) {
+    let long = body.lines().count() > CLAMP_LINES || body.chars().count() > 640;
+    let open = !long || ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if open {
+        super::mrkdwn::show(ui, body, ink);
+    } else {
+        let preview = body.lines().take(CLAMP_LINES).collect::<Vec<_>>().join("\n");
+        super::mrkdwn::show(ui, &preview, ink);
+    }
+    if long {
+        ui.add_space(space::XXS);
+        if w::link(ui, if open { "Show less" } else { "Show more" }).clicked() {
+            ui.data_mut(|d| d.insert_temp(id, !open));
+        }
+    }
+}
+
+/// A block for something with real content: an author's avatar at `SM`, what
+/// kind of entry it is, when, and its body as markdown.
+#[allow(clippy::too_many_arguments)]
+fn substantive(
+    ui: &mut egui::Ui,
+    node: Node,
+    author: &str,
+    kind_label: &str,
+    at: Option<&str>,
+    private: bool,
+    body_id: egui::Id,
+    body: &str,
+    extra: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = space::MD;
+        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(face::SM), egui::Sense::hover());
+        paint_node(ui, r, &node);
+        ui.vertical(|ui| {
+            ui.set_max_width(PROSE_W.min(ui.available_width()));
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.horizontal(|ui| {
+                ui.set_min_height(face::SM);
+                ui.spacing_mut().item_spacing.x = space::XS;
+                ui.label(
+                    RichText::new(author)
+                        .size(text::SMALL)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT()),
+                );
+                ui.label(RichText::new(kind_label).size(text::SMALL).color(colour::TEXT_MUTED()));
+                if let Some(at) = at {
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                }
+                if private {
+                    ui.add_space(space::XS);
+                    face::private_label(ui);
+                }
+            });
+            clamped_body(ui, body_id, body, colour::TEXT_2());
+            extra(ui);
+        });
+    });
 }
 
 pub(super) fn prose(ui: &mut egui::Ui, body: &str, ink: egui::Color32) {
@@ -774,12 +962,10 @@ fn report(
     owner_first: &str,
     state: &str,
     ask: &mut Option<Ask>,
-) -> egui::Rect {
-    let mut node = egui::Rect::NOTHING;
+) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::MD;
         let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(NODE), egui::Sense::hover());
-        node = r;
         paint_node(ui, r, &Node::Mark(Mark::Submitted));
         // A frame takes its parent's layout; the card reads top to bottom.
         ui.vertical(|ui| egui::Frame::new()
@@ -805,7 +991,8 @@ fn report(
                 });
                 ui.scope(|ui| {
                     ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    prose(ui, str_of(note, "body").unwrap_or_default(), colour::TEXT());
+                    let body_id = egui::Id::new(("session:body", s.task_id, str_of(note, "id").unwrap_or_default()));
+                    clamped_body(ui, body_id, str_of(note, "body").unwrap_or_default(), colour::TEXT());
                 });
 
                 let evidence: Vec<&Value> =
@@ -842,7 +1029,6 @@ fn report(
                 }
             }));
     });
-    node
 }
 
 fn review_controls(ui: &mut egui::Ui, st: &mut State, short: &str, busy: bool) -> Option<Ask> {

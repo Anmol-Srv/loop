@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.3.0
+version: 1.4.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -131,13 +131,21 @@ Where it came from changes the bar:
   resolved — replace `<@U123>` with `<@U123|Priya Menon>` and keep
   `<#C123|issues-and-feedback>` — so the dashboard can show names;
   `receivedAt` ISO time of the message; `private` true for DMs and group DMs.
-- **Attachments**: after `intake_create` (or `intake_append`) succeeds, for each
-  image (png, jpeg, gif, webp) or PDF attached to that message, download it
-  with the Composio Slack file tool (find it with `COMPOSIO_SEARCH_TOOLS`,
-  e.g. a "download file" or "get file" action) and send it with
-  `intake_attach` {taskId, name, mime, dataBase64, sourceKey: the message's
-  key}. Skip files over 8 MB and anything else (videos, archives) — mention
-  them in the body instead. A failed download never blocks filing the task.
+- **Attachments**: after `intake_create` (or `intake_append`) succeeds, for
+  each image (png, jpeg, gif, webp) or PDF in that message's Slack `files` —
+  and in any thread messages you included as `source.thread` — run
+  `python3 "$HERMES_HOME/scripts/slack_attach.py" <taskId> <sourceKey> <file
+  id> [<file id> ...]`, giving it the Slack file `id`s straight from the
+  message's `files` array and the `sourceKey` of whichever message they came
+  with (the task's own key, or the reply's key when attaching to a message
+  you `intake_append`ed). It downloads each file via Composio and uploads it
+  straight to the task in one call — you never see or shuttle its bytes —
+  and prints one line per file (attached, skipped, or failed); it already
+  skips anything over 8 MB or not an image/PDF, so mention those in the body
+  instead. A failed download or upload never blocks filing the task. No
+  script in your environment (non-Hermes) → download the file yourself via
+  the Composio Slack file tool and call `intake_attach` {taskId, name, mime,
+  dataBase64, sourceKey} instead.
 
 ## Slack
 

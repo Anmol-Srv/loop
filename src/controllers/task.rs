@@ -211,7 +211,13 @@ pub async fn transition(
     let task: Task = sqlx::query_as(&format!(
         "UPDATE task SET status = $2, updated_at = now(),
                 manual_reason = $4,
-                done_at = CASE WHEN $3 THEN coalesce(done_at, now()) ELSE NULL END
+                done_at = CASE WHEN $3 THEN coalesce(done_at, now()) ELSE NULL END,
+                -- Completed or shipped ends the agent's part, whoever moved it:
+                -- the watcher stops running a task whose agent state is done.
+                agent_state = CASE
+                    WHEN $2 IN ('completed', 'shipped') AND delegate_agent_id IS NOT NULL
+                         AND agent_state IS DISTINCT FROM 'stopped' THEN 'done'
+                    ELSE agent_state END
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
     .bind(id)

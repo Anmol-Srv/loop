@@ -527,8 +527,9 @@ struct Related {
     evidence: Value,
 }
 
-/// Everything a worker needs to start without searching.
-pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Value> {
+/// Everything a worker needs to start without searching. `server` is this
+/// server's own base URL, so file links in `source.files` are fetchable.
+pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) -> AppResult<Value> {
     let row = task::get(state, task_id, None).await?;
     if row.task.delegate.as_ref().and_then(|d| d["id"].as_str()) != Some(id.to_string().as_str()) {
         return Err(not_delegated(task_id));
@@ -644,15 +645,19 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
         related.into_iter().partition(|r| r.relation == "blockedBy");
     // Where it was filed from, the thread before it and what came with it.
     // Unmasked: the agent works for the owner, who may read their own DMs.
+    // Each file carries a `url` to fetch its bytes: the worker sees only
+    // `{id, name, mime}` in `task_context` otherwise, with no way to read them.
     let source: Option<Value> = sqlx::query_scalar(
         "SELECT json_build_object('kind', s.kind, 'url', s.url, 'channelName', s.channel_name,
                 'author', s.author, 'text', s.text, 'receivedAt', s.received_at, 'thread', s.thread,
-                'files', coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime)
+                'files', coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
+                                'url', $2 || '/api/agent/tasks/' || s.task_id || '/files/' || f.id)
                                                    ORDER BY f.created_at, f.name)
                                      FROM task_file f WHERE f.task_id = s.task_id), '[]'))
            FROM task_source s WHERE s.task_id = $1 AND NOT s.appended",
     )
     .bind(task_id)
+    .bind(server)
     .fetch_optional(&state.db)
     .await?;
 
@@ -686,6 +691,22 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid) -> AppResult<Val
         "brief": brief,
         "plan": plan,
     }))
+}
+
+/// The bytes of a file that came with this task's source, for the agent it's
+/// delegated to — so it can look at an image before planning instead of just
+/// seeing its name. Guarded the same way `context` is: current delegate only.
+pub async fn task_file(state: &AppState, id: Uuid, task_id: Uuid, file_id: Uuid) -> AppResult<(String, Vec<u8>)> {
+    let row = task::get(state, task_id, None).await?;
+    if row.task.delegate.as_ref().and_then(|d| d["id"].as_str()) != Some(id.to_string().as_str()) {
+        return Err(not_delegated(task_id));
+    }
+    sqlx::query_as("SELECT mime, bytes FROM task_file WHERE id = $1 AND task_id = $2")
+        .bind(file_id)
+        .bind(task_id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("that file is no longer here".into()))
 }
 
 fn not_delegated(task_id: Uuid) -> AppError {
@@ -1643,6 +1664,15 @@ pub async fn hand_off(
             .execute(&mut *tx)
             .await?;
     }
+    // Handing it off means work has started: a task still in triage or open
+    // moves to in progress; one further along keeps its status.
+    sqlx::query(
+        "UPDATE task SET status = 'in_progress', updated_at = now()
+          WHERE id = $1 AND status IN ('triage', 'open')",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     task::get(state, task_id, Some(person)).await
 }

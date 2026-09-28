@@ -5,11 +5,17 @@
 //!
 //! A paragraph is one label — one accessible name, the plain text — and a
 //! click on it is hit-tested against the link spans it holds.
+//!
+//! A line that carries a slack.com link is the one exception: it prints as a
+//! "View conversation" button rather than a wall of `archives/…` text, and the
+//! common "— Name in #channel: <url>" attribution collapses to one quiet line
+//! plus the button. A long link's visible text is elided either way, with the
+//! full address on hover.
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{FontFamily, FontId, RichText, Sense, Stroke};
 
-use crate::desktop::design::{colour, radius, space, text, theme};
+use crate::desktop::design::{colour, radius, space, text, theme, widgets as w};
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Style {
@@ -220,6 +226,19 @@ pub fn plain(src: &str) -> String {
 
 // ------------------------------------------------------------------ drawing
 
+/// How much of a link's own text shows before it is cut with an ellipsis —
+/// long enough to still look like a URL, short enough that one doesn't run
+/// the paragraph off the edge. The full address is always one hover away.
+const LINK_CAP: usize = 60;
+
+fn elide_link_text(text: &str) -> String {
+    if text.chars().count() <= LINK_CAP {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(LINK_CAP - 1).collect();
+    format!("{head}\u{2026}")
+}
+
 fn job(spans: &[Span], ink: egui::Color32, wrap: f32) -> (LayoutJob, Vec<(std::ops::Range<usize>, String)>) {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap;
@@ -250,7 +269,8 @@ fn job(spans: &[Span], ink: egui::Color32, wrap: f32) -> (LayoutJob, Vec<(std::o
             ..Default::default()
         };
         let start = job.text.len();
-        job.append(&s.text, 0.0, format);
+        let shown = if s.link.is_some() { elide_link_text(&s.text) } else { s.text.clone() };
+        job.append(&shown, 0.0, format);
         if let Some(url) = &s.link {
             links.push((start..job.text.len(), url.clone()));
         }
@@ -272,11 +292,114 @@ fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
     };
     if let Some(url) = response.hover_pos().and_then(under) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        response.clone().on_hover_text_at_pointer(url.clone());
         if response.clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
     ui.painter().galley(pos, galley, ink);
+}
+
+// -------------------------------------------------------------- slack links
+
+/// Any host under slack.com: an archive link, a file, a canvas.
+fn is_slack_url(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest).to_ascii_lowercase();
+    host == "slack.com" || host.ends_with(".slack.com")
+}
+
+/// "— Shibu Singh in #issues-and-feedback:" into `(name, channel)`. Only the
+/// exact attribution shape matches; anything else falls through to the
+/// generic rendering.
+fn parse_attribution(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_suffix(':')?;
+    let rest = rest.trim_start_matches(['\u{2014}', '-']).trim();
+    let (name, tail) = rest.split_once(" in #")?;
+    let (name, channel) = (name.trim(), tail.trim());
+    (!name.is_empty() && !channel.is_empty() && !channel.contains(char::is_whitespace)).then_some((name, channel))
+}
+
+/// A `#channel` mentioned earlier on the same line, for the generic chip.
+fn find_channel(text: &str) -> Option<&str> {
+    let after = &text[text.rfind('#')? + 1..];
+    let end = after.find(|c: char| c.is_whitespace() || c == ':').unwrap_or(after.len());
+    (!after[..end].is_empty()).then_some(&after[..end])
+}
+
+/// The button that replaces a raw Slack URL: a small mark, "View
+/// conversation", the channel when one is known, the full link on hover.
+fn slack_chip(ui: &mut egui::Ui, url: &str, channel: Option<&str>) {
+    let label = match channel {
+        Some(c) => format!("View conversation \u{00B7} #{c}"),
+        None => "View conversation".to_owned(),
+    };
+    let r = w::icon_button(ui, egui_phosphor::thin::SLACK_LOGO, &label, w::Emphasis::Secondary, true).on_hover_text(url);
+    if r.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+}
+
+/// A literal `"\n"` sentinel span: the join `parse` inserts between two source
+/// lines it folded into one paragraph (no blank line between them).
+fn is_break(s: &Span) -> bool {
+    s.text == "\n" && s.link.is_none()
+}
+
+/// One block's spans, split at its line breaks — each original source line on
+/// its own, since only a whole line can be the Slack attribution shape.
+fn lines(spans: &[Span]) -> Vec<&[Span]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, s) in spans.iter().enumerate() {
+        if is_break(s) {
+            out.push(&spans[start..i]);
+            start = i + 1;
+        }
+    }
+    out.push(&spans[start..]);
+    out
+}
+
+/// A block's spans, one source line at a time: a line holding a slack.com
+/// link renders as a chip (and the attribution shape collapses first);
+/// everything else prints exactly as `paragraph` always has.
+fn body_lines(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
+    for (i, line) in lines(spans).into_iter().enumerate() {
+        if i > 0 {
+            ui.add_space(space::XXS);
+        }
+        match line.iter().position(|s| s.link.as_deref().is_some_and(is_slack_url)) {
+            Some(at) => slack_line(ui, line, at, ink),
+            None => paragraph(ui, line, ink),
+        }
+    }
+}
+
+fn slack_line(ui: &mut egui::Ui, line: &[Span], at: usize, ink: egui::Color32) {
+    let url = line[at].link.clone().unwrap_or_default();
+    let pre: String = line[..at].iter().map(|s| s.text.as_str()).collect();
+    let post = &line[at + 1..];
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XXS);
+        match parse_attribution(&pre) {
+            Some((name, channel)) => {
+                ui.label(RichText::new(format!("{name} \u{00B7} #{channel}")).size(text::SMALL).color(colour::TEXT_MUTED()));
+                slack_chip(ui, &url, None);
+            }
+            None => {
+                let trimmed = pre.trim();
+                if !trimmed.is_empty() {
+                    ui.label(RichText::new(trimmed.to_owned()).size(text::BODY).color(ink));
+                }
+                slack_chip(ui, &url, find_channel(&pre));
+            }
+        }
+        if !post.is_empty() {
+            let (job, _) = job(post, ink, ui.available_width());
+            ui.add(egui::Label::new(job));
+        }
+    });
 }
 
 /// A message, drawn in `ink`.
@@ -285,11 +408,11 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
         ui.spacing_mut().item_spacing.y = space::XS;
         for block in parse(src) {
             match block {
-                Block::Para(s) => paragraph(ui, &s, ink),
+                Block::Para(s) => body_lines(ui, &s, ink),
                 Block::Quote(s) => {
                     ui.horizontal_top(|ui| {
                         ui.add_space(space::MD);
-                        ui.vertical(|ui| paragraph(ui, &s, colour::TEXT_MUTED()));
+                        ui.vertical(|ui| body_lines(ui, &s, colour::TEXT_MUTED()));
                     });
                 }
                 Block::Bullet(s) => {
@@ -298,7 +421,7 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
                         // A painted dot: the bullet sits on the first line's middle.
                         let (r, _) = ui.allocate_exact_size(egui::vec2(space::SM, text::BODY * 1.45), Sense::hover());
                         ui.painter().circle_filled(egui::pos2(r.center().x, r.center().y), 2.0, colour::TEXT_MUTED());
-                        ui.vertical(|ui| paragraph(ui, &s, ink));
+                        ui.vertical(|ui| body_lines(ui, &s, ink));
                     });
                 }
                 Block::Code(code) => {

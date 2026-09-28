@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.7.0
+version: 1.8.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -94,6 +94,10 @@ the same call unchanged.
    the tasks this one waits on and the tasks waiting on it, with their PRs,
    commits and Figma links — and `brief`, your owner's own note on this
    hand-off, if they left one. Most of what you need to start is already there.
+   If `source.files` lists any (a screenshot or PDF filed with the task),
+   download each one before you plan: `curl --oauth2-bearer "$AIRTRIBE_TOKEN"
+   -o /tmp/<name> "<its url>"`, then `Read` it — an image only tells you
+   what's wrong once you've actually looked at it.
 3. Look around read-only as needed — the code, related tasks, the repo's own
    docs — enough to know what you would actually do. Change nothing yet.
 4. `task_plan`: a short, plain-language `summary` your owner can skim, and a
