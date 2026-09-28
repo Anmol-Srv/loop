@@ -86,7 +86,7 @@ async fn handle(State(state): State<AppState>, caller: Caller, headers: HeaderMa
             } else {
                 let args = request.params.get("arguments").cloned().unwrap_or_else(|| json!({}));
                 let outcome = if agent {
-                    call_agent_tool(&state, &caller, &name, &args).await
+                    call_agent_tool(&state, &caller, &headers, &name, &args).await
                 } else {
                     call_tool(&state, &caller, &name, &args).await
                 };
@@ -315,7 +315,13 @@ async fn call_tool(state: &AppState, caller: &Caller, name: &str, args: &Value) 
 }
 
 /// The agent tools: `/api/agent` in tool form, for the agent behind the token.
-async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &Value) -> AppResult<Value> {
+async fn call_agent_tool(
+    state: &AppState,
+    caller: &Caller,
+    headers: &HeaderMap,
+    name: &str,
+    args: &Value,
+) -> AppResult<Value> {
     use controllers::agent;
     let me = caller.agent()?;
     let task = || uuid_arg(args, "taskId");
@@ -323,7 +329,7 @@ async fn call_agent_tool(state: &AppState, caller: &Caller, name: &str, args: &V
     match name {
         "agent_inbox" => Ok(Value::String(agent::inbox(state, me).await?)),
         "agent_tasks" => to_value(agent::tasks(state, me).await?),
-        "task_context" => agent::context(state, me, task()?).await,
+        "task_context" => agent::context(state, me, task()?, &crate::routes::agent::server_url(headers)).await,
         "task_ack" => to_value(agent::ack(state, me, task()?).await?),
         "task_update" => to_value(
             agent::update(

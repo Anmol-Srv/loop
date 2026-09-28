@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/tasks", get(tasks))
         .route("/api/agent/tasks/pending", get(pending))
         .route("/api/agent/tasks/{id}", get(context))
+        .route("/api/agent/tasks/{id}/files/{file_id}", get(task_file))
         .route("/api/agent/tasks/{id}/ack", post(ack))
         .route("/api/agent/tasks/{id}/session", post(session))
         .route("/api/agent/tasks/{id}/update", post(update))
@@ -117,8 +118,21 @@ async fn context(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     caller: Caller,
+    headers: HeaderMap,
 ) -> AppResult<ApiResponse<Value>> {
-    Ok(ApiResponse::ok(agent::context(&state, caller.agent()?, id).await?))
+    Ok(ApiResponse::ok(agent::context(&state, caller.agent()?, id, &server_url(&headers)).await?))
+}
+
+/// A file that came with the task's source — an image or PDF the worker saw
+/// named in `task_context` but had no way to fetch. Raw bytes, not JSON, like
+/// `/api/user/files/{id}` the dashboard uses.
+async fn task_file(
+    State(state): State<AppState>,
+    Path((id, file_id)): Path<(Uuid, Uuid)>,
+    caller: Caller,
+) -> AppResult<Response> {
+    let (mime, bytes) = agent::task_file(&state, caller.agent()?, id, file_id).await?;
+    Ok(([(CONTENT_TYPE, mime)], bytes).into_response())
 }
 
 async fn ack(State(state): State<AppState>, Path(id): Path<Uuid>, caller: Caller) -> AppResult<ApiResponse<TaskRow>> {
