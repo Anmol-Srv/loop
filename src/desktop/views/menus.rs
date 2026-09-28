@@ -27,6 +27,8 @@ pub(super) enum Pick {
     Accept(Option<(String, String)>),
     /// Out of triage, dropped, with a reason asked for first.
     Dismiss,
+    /// Into another project (id, name), or out of any (`None`).
+    Project(Option<(String, String)>),
 }
 
 /// Who is looking, as far as a menu needs to know.
@@ -57,6 +59,7 @@ impl Viewer {
         let admin = net
             .data("__me")
             .is_some_and(|m| str_at(m, "role") == "admin");
+        super::triage::want_projects(net);
         let projects = super::triage::projects(net);
         let folders = super::settings::folders(net);
         let agents = net
@@ -159,6 +162,30 @@ pub(super) fn task_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, row: boo
             }
         },
     );
+    // Triage has its own "Accept into"; everywhere else a task can move
+    // between projects, or out of one.
+    if str_at(t, "status") != "triage" {
+        let here = str_at(t, "projectId");
+        let others: Vec<&(String, String)> =
+            viewer.projects.iter().filter(|(id, _)| id != here).collect();
+        let why = if !viewer.can_write {
+            Some(READ_ONLY)
+        } else if others.is_empty() && here.is_empty() {
+            Some("No project to move it into.")
+        } else {
+            None
+        };
+        viz::submenu(ui, "Move to project", why, |ui| {
+            if !here.is_empty() && viz::menu_item(ui, "No project", false, None) {
+                pick = Some(Pick::Project(None));
+            }
+            for (id, name) in others {
+                if viz::menu_item(ui, name, false, None) {
+                    pick = Some(Pick::Project(Some((id.clone(), name.clone()))));
+                }
+            }
+        });
+    }
     // Only for a task with no project: its own repo already says where to
     // work.
     if str_at(t, "projectId").is_empty()
@@ -386,6 +413,19 @@ impl Tasks {
                 }
                 net.patch(KEY, &format!("{path}/details"), body);
                 format!("Priority set to P{p}.")
+            }
+            Pick::Project(into) => {
+                let at = str_at(t, "updatedAt");
+                let to = into.as_ref().map_or(Value::Null, |(id, _)| json!(id));
+                let mut body = json!({ "projectId": to });
+                if !at.is_empty() {
+                    body["expectedUpdatedAt"] = json!(at);
+                }
+                net.patch(KEY, &format!("{path}/details"), body);
+                match into {
+                    Some((_, name)) => format!("Moved to {name}."),
+                    None => "Moved out of its project.".to_owned(),
+                }
             }
             Pick::Folder(name) => {
                 let at = str_at(t, "updatedAt");
