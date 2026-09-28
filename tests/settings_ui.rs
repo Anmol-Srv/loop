@@ -140,11 +140,29 @@ fn page<'a>(app: &'a RefCell<Option<App>>, fixtures: &'a Fixtures, tab: Tab, tas
 
 // ------------------------------------------------------------------ the Settings page
 
+/// Settings opens on Profile; Folders is its second tab.
+fn folders_tab<'a>(app: &'a RefCell<Option<App>>, fixtures: &'a Fixtures) -> Page<'a> {
+    let mut p = page(app, fixtures, Tab::Settings, None);
+    p.harness.get_by_label("Folders").click();
+    p.steps(3);
+    p
+}
+
+#[test]
+fn settings_opens_on_the_profile() {
+    let f = base();
+    let app = RefCell::new(None);
+    let p = page(&app, &f, Tab::Settings, None);
+    assert!(p.has("Appearance"));
+    assert!(p.has("Dark theme") && p.has("Light theme") && p.has("System theme"));
+    assert!(p.has("Sky accent"));
+}
+
 #[test]
 fn folders_list_with_a_default_badge_and_the_helper_copy() {
     let f = base();
     let app = RefCell::new(None);
-    let p = page(&app, &f, Tab::Settings, None);
+    let p = folders_tab(&app, &f);
     assert!(p.has("mycohort-api"));
     assert!(p.has("/Users/anmol/code/mycohort-api"));
     assert!(p.has("dr-doom"));
@@ -156,7 +174,7 @@ fn folders_list_with_a_default_badge_and_the_helper_copy() {
 fn adding_a_folder_validates_before_it_sends() {
     let f = base();
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::Settings, None);
+    let mut p = folders_tab(&app, &f);
     p.button("+ Add folder");
 
     // Nothing typed: Add stays off.
@@ -198,7 +216,7 @@ fn adding_a_folder_validates_before_it_sends() {
 fn setting_a_default_sends_immediately() {
     let f = base();
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::Settings, None);
+    let mut p = folders_tab(&app, &f);
 
     // dr-doom is the second row (mycohort-api is the default, listed first).
     let mores: Vec<_> = p.harness.get_all_by_label("More actions").collect();
@@ -216,7 +234,7 @@ fn setting_a_default_sends_immediately() {
 fn removing_a_folder_asks_first() {
     let f = base();
     let app = RefCell::new(None);
-    let mut p = page(&app, &f, Tab::Settings, None);
+    let mut p = folders_tab(&app, &f);
 
     let mores: Vec<_> = p.harness.get_all_by_label("More actions").collect();
     mores[1].click();

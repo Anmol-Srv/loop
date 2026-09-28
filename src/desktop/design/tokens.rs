@@ -4,7 +4,7 @@
 //! that wants padding says `space::MD`, never `10.0`, so the scale changes in
 //! one place instead of forty.
 //!
-//! Dark, in a twilight register: a blue-slate canvas rather than neutral
+//! Two palettes (see `colour`), dark by default, in a twilight register: a blue-slate canvas rather than neutral
 //! black, surfaces separated by a step of lightness rather than by shadow,
 //! hairline borders, one soft accent. Colour carries state and nothing else —
 //! that is what keeps a board with two hundred rows readable.
@@ -16,104 +16,270 @@
 use egui::Color32;
 
 pub mod colour {
+    //! Colour is read when it is painted, not baked in at compile time, so the
+    //! whole app follows the appearance setting on the next frame. Every view
+    //! still says `colour::TEXT()` — one vocabulary, two palettes behind it.
+    #![allow(non_snake_case)]
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
     use super::Color32;
 
-    // ---- surfaces, each a step up in lightness. No shadows anywhere; depth
-    // ---- is expressed by elevation of tone and a hairline.
-    /// The window. Blue-slate, never pure black — the blue is what makes the
-    /// whole surface read as dusk rather than switched off.
-    pub const CANVAS: Color32 = Color32::from_rgb(0x0B, 0x0C, 0x0E);
-    /// The sidebar and other chrome that frames content.
-    pub const CHROME: Color32 = Color32::from_rgb(0x11, 0x12, 0x14);
-    /// Cards and panels.
-    pub const SURFACE: Color32 = Color32::from_rgb(0x15, 0x17, 0x19);
-    /// A raised or hovered surface.
-    pub const SURFACE_HOVER: Color32 = Color32::from_rgb(0x1B, 0x1E, 0x21);
-    /// Selected rows and pressed controls.
-    pub const SURFACE_ACTIVE: Color32 = Color32::from_rgb(0x21, 0x24, 0x28);
-    /// Inputs, which sit *below* the surface they are on.
-    /// Nothing at all. Named so a component can say "no fill" in the same
-    /// vocabulary as every other colour rather than reaching for egui.
-    pub const TRANSPARENT: Color32 = Color32::TRANSPARENT;
-    pub const INSET: Color32 = Color32::from_rgb(0x0E, 0x0F, 0x11);
+    const fn rgb(hex: u32) -> Color32 {
+        Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    }
+    /// A premultiplied white at `a` — a lift that lets what is behind show.
+    const fn white(a: u8) -> Color32 {
+        Color32::from_rgba_premultiplied(a, a, a, a)
+    }
+    /// A premultiplied black at `a` — the light palette's version of a lift.
+    const fn black(a: u8) -> Color32 {
+        Color32::from_rgba_premultiplied(0, 0, 0, a)
+    }
 
-    // ---- lines
-    pub const LINE: Color32 = Color32::from_rgb(0x23, 0x26, 0x29);
-    pub const LINE_SOFT: Color32 = Color32::from_rgb(0x1A, 0x1D, 0x20);
-    pub const LINE_STRONG: Color32 = Color32::from_rgb(0x31, 0x35, 0x3A);
+    /// Everything but the accent, which is picked separately.
+    pub struct Palette {
+        // ---- surfaces, each a step in lightness. No shadows; depth is tone
+        // ---- plus a hairline.
+        /// The window.
+        pub CANVAS: Color32,
+        /// The sidebar and other chrome that frames content.
+        pub CHROME: Color32,
+        /// Cards and panels.
+        pub SURFACE: Color32,
+        pub SURFACE_HOVER: Color32,
+        /// Selected rows and pressed controls.
+        pub SURFACE_ACTIVE: Color32,
+        /// Inputs, which sit *below* the surface they are on.
+        pub INSET: Color32,
+        pub LINE: Color32,
+        pub LINE_SOFT: Color32,
+        pub LINE_STRONG: Color32,
+        // ---- ink, five levels. Every level clears 4.5:1 on SURFACE.
+        pub TEXT: Color32,
+        /// A value next to its label.
+        pub TEXT_2: Color32,
+        /// Labels, metadata.
+        pub TEXT_MUTED: Color32,
+        /// Timestamps, ids.
+        pub TEXT_FAINT: Color32,
+        /// Disabled and placeholders — still hint text people read.
+        pub TEXT_DISABLED: Color32,
+        // ---- state. A dot, a pill or a thin rule; never a filled block.
+        pub OK: Color32,
+        pub WARN: Color32,
+        pub DANGER: Color32,
+        pub AGENT: Color32,
+        pub INFO: Color32,
+        pub IDLE: Color32,
+        pub OK_BG: Color32,
+        pub WARN_BG: Color32,
+        pub DANGER_BG: Color32,
+        pub AGENT_BG: Color32,
+        pub INFO_BG: Color32,
+        /// The warm counterpoint. A highlight, never a surface.
+        pub GLOW: Color32,
+        pub WASH_TOP: Color32,
+        pub WASH_BOTTOM: Color32,
+        // ---- glass: a translucent lift off the canvas, one even hairline.
+        pub GLASS: Color32,
+        pub GLASS_HOVER: Color32,
+        pub GLASS_ACTIVE: Color32,
+        pub EDGE_MID: Color32,
+        pub EDGE_MID_HOVER: Color32,
+        /// The secondary button's brighter rim on hover.
+        pub EDGE_HI_HOVER: Color32,
+        /// The run log: a well, a step darker than a card.
+        pub LOG_BG: Color32,
+        pub LOG_TEXT: Color32,
+        pub LOG_SEQ: Color32,
+        // ---- disciplines: close together and quiet, since one is on every
+        // ---- row. The loud colours are reserved for status.
+        pub DESIGN: Color32,
+        pub FRONTEND: Color32,
+        pub BACKEND: Color32,
+    }
 
-    // ---- text. Five levels, the way bencho.dev layers its ink scale: one
-    // ---- step is rarely the right amount of de-emphasis.
-    pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF3, 0xF5);
-    /// Secondary: a value next to its label.
-    pub const TEXT_2: Color32 = Color32::from_rgb(0xC3, 0xC7, 0xCC);
-    /// Muted: labels, metadata. Lifted to clear 4.5:1 on a card.
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8A, 0x90, 0x99);
-    /// Faint: timestamps, ids. Lifted from the audit's 3.45:1 failure.
-    pub const TEXT_FAINT: Color32 = Color32::from_rgb(0x7B, 0x82, 0x8C);
-    /// Disabled and placeholders. Lifted from 2.47:1 — it is hint text people
-    /// are meant to read, not decoration.
-    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(0x76, 0x7C, 0x85);
+    /// Dusk: a blue-slate canvas, periwinkle light, gold where it catches.
+    /// Nothing fully saturated, so it never reads as a neon sign.
+    pub const DUSK: Palette = Palette {
+        CANVAS: rgb(0x0B0C0E),
+        CHROME: rgb(0x111214),
+        SURFACE: rgb(0x151719),
+        SURFACE_HOVER: rgb(0x1B1E21),
+        SURFACE_ACTIVE: rgb(0x212428),
+        INSET: rgb(0x0E0F11),
+        LINE: rgb(0x232629),
+        LINE_SOFT: rgb(0x1A1D20),
+        LINE_STRONG: rgb(0x31353A),
+        TEXT: rgb(0xF2F3F5),
+        TEXT_2: rgb(0xC3C7CC),
+        TEXT_MUTED: rgb(0x8A9099),
+        TEXT_FAINT: rgb(0x7B828C),
+        TEXT_DISABLED: rgb(0x767C85),
+        OK: rgb(0x5FD39B),
+        WARN: rgb(0xF0B354),
+        DANGER: rgb(0xF27A7A),
+        AGENT: rgb(0xB49BF0),
+        INFO: rgb(0x7FB4F5),
+        IDLE: rgb(0x6A7079),
+        OK_BG: rgb(0x122A21),
+        WARN_BG: rgb(0x2B2113),
+        DANGER_BG: rgb(0x2C1718),
+        AGENT_BG: rgb(0x221D33),
+        INFO_BG: rgb(0x14202E),
+        GLOW: rgb(0xEAD6AE),
+        WASH_TOP: rgb(0x242E4A),
+        WASH_BOTTOM: rgb(0x111621),
+        GLASS: white(0x0D),
+        GLASS_HOVER: white(0x1A),
+        GLASS_ACTIVE: white(0x24),
+        EDGE_MID: white(0x1C),
+        EDGE_MID_HOVER: white(0x2E),
+        EDGE_HI_HOVER: white(0x5E),
+        LOG_BG: rgb(0x08090B),
+        LOG_TEXT: rgb(0xC3C7CC),
+        LOG_SEQ: rgb(0x797F88),
+        DESIGN: rgb(0xC9A8D8),
+        FRONTEND: rgb(0x8AC4D8),
+        BACKEND: rgb(0x9AC0A8),
+    };
 
-    /// The one accent: a pale sky blue. Light enough that a filled control
-    /// takes dark text, which is why `ON_ACCENT` is near-black rather than
-    /// white — white on this would be unreadable.
-    pub const ACCENT: Color32 = Color32::from_rgb(0x8A, 0xCF, 0xF8);
-    pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xA6, 0xDC, 0xFA);
+    /// Daylight: the same system in daylight. A cool off-white canvas tinted
+    /// a hair toward the slate, white cards, ink that is near-black rather
+    /// than black. State hues deepen so a chip still clears 4.5:1 on its tint.
+    pub const DAYLIGHT: Palette = Palette {
+        CANVAS: rgb(0xF4F5F7),
+        CHROME: rgb(0xECEEF1),
+        SURFACE: rgb(0xFFFFFF),
+        SURFACE_HOVER: rgb(0xF1F3F6),
+        SURFACE_ACTIVE: rgb(0xE5E8ED),
+        INSET: rgb(0xF6F7F9),
+        LINE: rgb(0xDCE0E5),
+        LINE_SOFT: rgb(0xE7EAEE),
+        LINE_STRONG: rgb(0xC3C9D1),
+        TEXT: rgb(0x15171B),
+        TEXT_2: rgb(0x383D45),
+        TEXT_MUTED: rgb(0x565D67),
+        TEXT_FAINT: rgb(0x656C76),
+        TEXT_DISABLED: rgb(0x6F757E),
+        OK: rgb(0x16794D),
+        WARN: rgb(0x9A5A00),
+        DANGER: rgb(0xBF3036),
+        AGENT: rgb(0x6A48C4),
+        INFO: rgb(0x2463AD),
+        IDLE: rgb(0x8A9099),
+        OK_BG: rgb(0xE1F3EA),
+        WARN_BG: rgb(0xFBEEDB),
+        DANGER_BG: rgb(0xFCE7E7),
+        AGENT_BG: rgb(0xEEE9FB),
+        INFO_BG: rgb(0xE3EDFA),
+        GLOW: rgb(0x9A6B12),
+        WASH_TOP: rgb(0xE3E8F3),
+        WASH_BOTTOM: rgb(0xECEEF1),
+        GLASS: white(0xD0),
+        GLASS_HOVER: black(0x08),
+        GLASS_ACTIVE: black(0x10),
+        EDGE_MID: black(0x1A),
+        EDGE_MID_HOVER: black(0x26),
+        EDGE_HI_HOVER: black(0x38),
+        LOG_BG: rgb(0xF1F3F6),
+        LOG_TEXT: rgb(0x383D45),
+        LOG_SEQ: rgb(0x656C76),
+        DESIGN: rgb(0x8A4AA6),
+        FRONTEND: rgb(0x1C6F8C),
+        BACKEND: rgb(0x2F7449),
+    };
+
+    /// One accent, in both modes. Dark mode's is pale enough to take dark
+    /// ink; light mode's is deep enough to take white. `[accent, hover,
+    /// soft tint, ink on it]`.
+    pub struct Accent {
+        pub name: &'static str,
+        pub dark: [Color32; 4],
+        pub light: [Color32; 4],
+    }
+
+    pub const ACCENTS: [Accent; 4] = [
+        Accent {
+            name: "Sky",
+            dark: [rgb(0x8ACFF8), rgb(0xA6DCFA), rgb(0x142431), rgb(0x06141E)],
+            light: [rgb(0x1F6FB2), rgb(0x195E98), rgb(0xE2EEF9), rgb(0xFFFFFF)],
+        },
+        Accent {
+            name: "Teal",
+            dark: [rgb(0x6ED6C8), rgb(0x8EE2D6), rgb(0x12282A), rgb(0x04201C)],
+            light: [rgb(0x0E7A70), rgb(0x0A675F), rgb(0xDDF2EF), rgb(0xFFFFFF)],
+        },
+        Accent {
+            name: "Coral",
+            dark: [rgb(0xF5A08A), rgb(0xF8B6A5), rgb(0x2E1B18), rgb(0x2A0D06)],
+            light: [rgb(0xBC432B), rgb(0xA23823), rgb(0xFBE6E1), rgb(0xFFFFFF)],
+        },
+        Accent {
+            name: "Periwinkle",
+            dark: [rgb(0xA9B4FA), rgb(0xBFC7FB), rgb(0x1C2038), rgb(0x0E1230)],
+            light: [rgb(0x4652C8), rgb(0x3A45AD), rgb(0xE7E9FB), rgb(0xFFFFFF)],
+        },
+    ];
+
+    static LIGHT: AtomicBool = AtomicBool::new(false);
+    static ACCENT_IX: AtomicUsize = AtomicUsize::new(0);
+
+    /// Switch palettes. Takes effect on the next paint; `theme::apply` is the
+    /// one caller, since egui's own visuals have to follow too.
+    pub fn set(light: bool, accent: usize) {
+        LIGHT.store(light, Relaxed);
+        ACCENT_IX.store(accent.min(ACCENTS.len() - 1), Relaxed);
+    }
+
+    pub fn is_light() -> bool {
+        LIGHT.load(Relaxed)
+    }
+
+    pub fn palette() -> &'static Palette {
+        if is_light() { &DAYLIGHT } else { &DUSK }
+    }
+
+    fn accent() -> &'static [Color32; 4] {
+        let a = &ACCENTS[ACCENT_IX.load(Relaxed)];
+        if is_light() { &a.light } else { &a.dark }
+    }
+
+    macro_rules! read {
+        ($($name:ident),* $(,)?) => {
+            $( #[inline] pub fn $name() -> Color32 { palette().$name } )*
+        };
+    }
+    read!(
+        CANVAS, CHROME, SURFACE, SURFACE_HOVER, SURFACE_ACTIVE, INSET, LINE, LINE_SOFT,
+        LINE_STRONG, TEXT, TEXT_2, TEXT_MUTED, TEXT_FAINT, TEXT_DISABLED, OK, WARN, DANGER, AGENT,
+        INFO, IDLE, OK_BG, WARN_BG, DANGER_BG, AGENT_BG, INFO_BG, GLOW, WASH_TOP, WASH_BOTTOM,
+        GLASS, GLASS_HOVER, GLASS_ACTIVE, EDGE_MID, EDGE_MID_HOVER, EDGE_HI_HOVER, LOG_BG,
+        LOG_TEXT, LOG_SEQ,
+    );
+
+    /// The one accent: primary actions, the current selection, attention
+    /// badges. Never decoration.
+    pub fn ACCENT() -> Color32 {
+        accent()[0]
+    }
+    pub fn ACCENT_HOVER() -> Color32 {
+        accent()[1]
+    }
     /// An accent-tinted surface, for selected rows and quiet emphasis.
-    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x14, 0x24, 0x31);
-    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x06, 0x14, 0x1E);
-
-    // ---- tinted pill backgrounds. A state pill is a tinted chip, not grey
-    // ---- text: one hue per meaning, readable at 10.5px.
-    pub const OK_BG: Color32 = Color32::from_rgb(0x12, 0x2A, 0x21);
-    pub const WARN_BG: Color32 = Color32::from_rgb(0x2B, 0x21, 0x13);
-    pub const DANGER_BG: Color32 = Color32::from_rgb(0x2C, 0x17, 0x18);
-    pub const AGENT_BG: Color32 = Color32::from_rgb(0x22, 0x1D, 0x33);
-    pub const INFO: Color32 = Color32::from_rgb(0x7F, 0xB4, 0xF5);
-    pub const INFO_BG: Color32 = Color32::from_rgb(0x14, 0x20, 0x2E);
-
-    /// The warm counterpoint: gold where the light catches. Used sparingly —
-    /// a highlight, never a surface. Cool everywhere and it reads as cold.
-    pub const GLOW: Color32 = Color32::from_rgb(0xEA, 0xD6, 0xAE);
-
-    /// The sidebar wash: a lift of periwinkle at the top fading into the
-    /// chrome. Alpha-free pair, since a mesh interpolates the two directly.
-    pub const WASH_TOP: Color32 = Color32::from_rgba_premultiplied(0x24, 0x2E, 0x4A, 0xFF);
-    pub const WASH_BOTTOM: Color32 = Color32::from_rgba_premultiplied(0x11, 0x16, 0x21, 0xFF);
-
-    // ---- glass. Cards are a translucent lift off the canvas rather than an
-    // ---- opaque block, so the wash behind them shows through.
-    /// Card fill. Deliberately weak: at 5% white the surface reads as lifted
-    /// without becoming a grey slab.
-    pub const GLASS: Color32 = Color32::from_rgba_premultiplied(0x0D, 0x0D, 0x0D, 0x0D);
-    /// Hover lifts the fill. bencho.dev caps its equivalent (`--lift-max`) at
-    /// .06; the same restraint applies — hover should be felt, not announced.
-    pub const GLASS_HOVER: Color32 = Color32::from_rgba_premultiplied(0x1A, 0x1A, 0x1A, 0x1A);
-    pub const GLASS_ACTIVE: Color32 = Color32::from_rgba_premultiplied(0x24, 0x24, 0x24, 0x24);
-
-    // ---- the glass edge: one even hairline, brighter on hover.
-    /// The resting edge.
-    pub const EDGE_MID: Color32 = Color32::from_rgba_premultiplied(0x1C, 0x1C, 0x1C, 0x1C);
-    /// Hover: the lift is in the edge, not a shadow. `_HI_` is the secondary
-    /// button's brighter rim.
-    pub const EDGE_HI_HOVER: Color32 = Color32::from_rgba_premultiplied(0x5E, 0x5E, 0x5E, 0x5E);
-    pub const EDGE_MID_HOVER: Color32 = Color32::from_rgba_premultiplied(0x2E, 0x2E, 0x2E, 0x2E);
-
-    // ---- state. Used as a dot, a pill or a thin rule; never a filled block.
-    /// Desaturated to sit inside the dusk palette; a pure green would leap
-    /// off this ground.
-    pub const OK: Color32 = Color32::from_rgb(0x5F, 0xD3, 0x9B);
-    pub const WARN: Color32 = Color32::from_rgb(0xF0, 0xB3, 0x54);
-    pub const DANGER: Color32 = Color32::from_rgb(0xF2, 0x7A, 0x7A);
-    pub const AGENT: Color32 = Color32::from_rgb(0xB4, 0x9B, 0xF0);
-    pub const IDLE: Color32 = Color32::from_rgb(0x6A, 0x70, 0x79);
-
-    /// The run log. Slightly darker than a card so it reads as a well.
-    pub const LOG_BG: Color32 = Color32::from_rgb(0x08, 0x09, 0x0B);
-    pub const LOG_TEXT: Color32 = Color32::from_rgb(0xC3, 0xC7, 0xCC);
-    /// Lifted from 2.60:1 — a gutter you cannot read is not a gutter.
-    pub const LOG_SEQ: Color32 = Color32::from_rgb(0x79, 0x7F, 0x88);
+    pub fn ACCENT_SOFT() -> Color32 {
+        accent()[2]
+    }
+    /// Ink on a filled accent control.
+    pub fn ON_ACCENT() -> Color32 {
+        accent()[3]
+    }
+    /// Nothing at all, named so a component says "no fill" in the same
+    /// vocabulary as every other colour.
+    pub fn TRANSPARENT() -> Color32 {
+        Color32::TRANSPARENT
+    }
 }
 
 /// A 4pt rhythm. Anything off the scale is a bug or a commented exception.
@@ -237,10 +403,10 @@ pub mod size {
 /// hunting for.
 pub fn discipline_colour(discipline: &str) -> Color32 {
     match discipline {
-        "design" => Color32::from_rgb(0xC9, 0xA8, 0xD8),
-        "frontend" => Color32::from_rgb(0x8A, 0xC4, 0xD8),
-        "backend" => Color32::from_rgb(0x9A, 0xC0, 0xA8),
-        _ => colour::TEXT_FAINT,
+        "design" => colour::palette().DESIGN,
+        "frontend" => colour::palette().FRONTEND,
+        "backend" => colour::palette().BACKEND,
+        _ => colour::TEXT_FAINT(),
     }
 }
 
@@ -255,17 +421,17 @@ pub const DISCIPLINE_W: f32 = 62.0;
 /// turn", which is the same shape of fact as an agent holding something.
 pub fn status_colour(status: &str) -> Color32 {
     match status {
-        "shipped" => colour::OK,
-        "completed" | "done" => colour::INFO,
-        "handoff" => colour::AGENT,
+        "shipped" => colour::OK(),
+        "completed" | "done" => colour::INFO(),
+        "handoff" => colour::AGENT(),
         // Amber, to match the chip. It was the accent blue, which put two
         // near-identical blues side by side in the donut (in progress and
         // completed) and made the row dot disagree with its own status chip.
-        "in_progress" | "active" => colour::WARN,
-        "blocked" => colour::DANGER,
-        "dropped" => colour::TEXT_FAINT,
-        "triage" => colour::INFO,
-        _ => colour::IDLE,
+        "in_progress" | "active" => colour::WARN(),
+        "blocked" => colour::DANGER(),
+        "dropped" => colour::TEXT_FAINT(),
+        "triage" => colour::INFO(),
+        _ => colour::IDLE(),
     }
 }
 

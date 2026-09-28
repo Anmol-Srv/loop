@@ -47,7 +47,7 @@ fn projects_table() {
                 return;
             }
             egui::Frame::new()
-                .fill(acp_server::desktop::design::colour::CANVAS)
+                .fill(acp_server::desktop::design::colour::CANVAS())
                 .inner_margin(16)
                 .show(ui, |ui| {
                     let mut open = None;
@@ -97,13 +97,13 @@ fn agent_globes() {
                 ui.ctx().all_styles_mut(|s| s.animation_time = 1.0);
                 return;
             }
-            egui::Frame::new().fill(colour::CANVAS).inner_margin(16).show(ui, |ui| {
+            egui::Frame::new().fill(colour::CANVAS()).inner_margin(16).show(ui, |ui| {
                 egui::Grid::new("agent-globes").spacing(egui::vec2(18.0, 14.0)).show(ui, |ui| {
                     for seed in seeds {
                         for (label, presence) in presences {
                             ui.label(
                                 egui::RichText::new(format!("{seed} \u{b7} {label}"))
-                                    .color(colour::TEXT_MUTED)
+                                    .color(colour::TEXT_MUTED())
                                     .size(10.0),
                             );
                             for side in sizes {
@@ -112,7 +112,7 @@ fn agent_globes() {
                             ui.end_row();
                         }
                     }
-                    ui.label(egui::RichText::new("72px waiting").color(colour::TEXT_MUTED).size(10.0));
+                    ui.label(egui::RichText::new("72px waiting").color(colour::TEXT_MUTED()).size(10.0));
                     face::avatar(ui, seeds[0], face::XXL, Presence::Waiting, "Agent");
                     ui.end_row();
                 });
@@ -151,7 +151,7 @@ fn filter_bar() {
                 return;
             }
             egui::Frame::new()
-                .fill(acp_server::desktop::design::colour::CANVAS)
+                .fill(acp_server::desktop::design::colour::CANVAS())
                 .inner_margin(16)
                 .show(ui, |ui| {
                     viz::toolbar(ui, |ui| {

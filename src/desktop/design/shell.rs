@@ -83,7 +83,7 @@ pub fn sidebar(
         .resizable(false)
         .frame(
             egui::Frame::new()
-                .fill(colour::CHROME)
+                .fill(colour::CHROME())
                 .inner_margin(egui::Margin::symmetric(pad::SIDEBAR.0 as i8, pad::SIDEBAR.1 as i8)),
         )
         .show(ui, |ui| {
@@ -111,7 +111,7 @@ pub fn sidebar(
                         RichText::new(group.label)
                             .size(text::CAPTION)
                             .family(egui::FontFamily::Name(super::theme::BOLD.into()))
-                            .color(colour::TEXT_FAINT),
+                            .color(colour::TEXT_FAINT()),
                     );
                     ui.add_space(space::XXS);
                 }
@@ -131,7 +131,7 @@ pub fn sidebar(
                 ui.painter().hline(
                     line.x_range(),
                     ui.cursor().top(),
-                    egui::Stroke::new(1.0, colour::LINE_SOFT),
+                    egui::Stroke::new(1.0, colour::LINE_SOFT()),
                 );
             });
         });
@@ -186,7 +186,7 @@ fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
         ui.add(
             egui::Image::new(&texture)
                 .fit_to_exact_size(egui::Vec2::splat(MARK_SIZE))
-                .tint(colour::TEXT),
+                .tint(colour::TEXT()),
         );
         ui.add_space(space::SM);
         ui.vertical(|ui| {
@@ -195,12 +195,12 @@ fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
                 RichText::new(name)
                     .size(text::BODY)
                     .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.label(
                 RichText::new(tagline)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_FAINT),
+                    .color(colour::TEXT_FAINT()),
             );
         });
     });
@@ -215,11 +215,11 @@ fn search_field(ui: &mut Ui) -> Response {
     );
     let response = super::motion::operable(ui, response, radius::SM as f32);
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, colour::INSET);
+    p.rect_filled(rect, radius::SM as f32, colour::INSET());
     p.rect_stroke(
         rect,
         radius::SM as f32,
-        egui::Stroke::new(1.0, if response.hovered() { colour::LINE_STRONG } else { colour::LINE }),
+        egui::Stroke::new(1.0, if response.hovered() { colour::LINE_STRONG() } else { colour::LINE() }),
         egui::StrokeKind::Inside,
     );
     p.text(
@@ -227,14 +227,14 @@ fn search_field(ui: &mut Ui) -> Response {
         egui::Align2::LEFT_CENTER,
         egui_phosphor::thin::MAGNIFYING_GLASS,
         egui::FontId::proportional(text::BODY),
-        colour::TEXT_FAINT,
+        colour::TEXT_FAINT(),
     );
     p.text(
         egui::pos2(rect.left() + space::SM + size::ICON_COL, rect.center().y),
         egui::Align2::LEFT_CENTER,
         "Search",
         egui::FontId::proportional(text::SMALL),
-        colour::TEXT_FAINT,
+        colour::TEXT_FAINT(),
     );
     // The shortcut chip, so the affordance teaches itself.
     for (i, key) in ["K", "\u{2318}"].iter().enumerate() {
@@ -243,13 +243,13 @@ fn search_field(ui: &mut Ui) -> Response {
             egui::pos2(rect.right() - space::SM - w / 2.0 - i as f32 * (w + 2.0), rect.center().y),
             egui::vec2(w, 16.0),
         );
-        p.rect_filled(chip, radius::SM as f32 - 2.0, colour::SURFACE_HOVER);
+        p.rect_filled(chip, radius::SM as f32 - 2.0, colour::SURFACE_HOVER());
         p.text(
             chip.center(),
             egui::Align2::CENTER_CENTER,
             key,
             egui::FontId::proportional(text::CAPTION),
-            colour::TEXT_MUTED,
+            colour::TEXT_MUTED(),
         );
     }
     if response.hovered() {
@@ -284,15 +284,15 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
     );
     let p = ui.painter();
     if sel > 0.001 {
-        p.rect_filled(rect, r, colour::SURFACE_ACTIVE.gamma_multiply(sel));
+        p.rect_filled(rect, r, colour::SURFACE_ACTIVE().gamma_multiply(sel));
     } else if hov > 0.001 {
-        p.rect_filled(rect, r, colour::SURFACE.gamma_multiply(hov));
+        p.rect_filled(rect, r, colour::SURFACE().gamma_multiply(hov));
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let fg = if item.selected { colour::TEXT } else { colour::TEXT_MUTED };
+    let fg = if item.selected { colour::TEXT() } else { colour::TEXT_MUTED() };
     let p = ui.painter();
 
     if narrow {
@@ -310,7 +310,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
         // No room for the number: an accent dot says something waits here,
         // and the hover says how much.
         if item.badge > 0 {
-            p.circle_filled(rect.center() + egui::vec2(space::SM, -space::SM), 3.5, colour::ACCENT);
+            p.circle_filled(rect.center() + egui::vec2(space::SM, -space::SM), 3.5, colour::ACCENT());
             return response.on_hover_text(format!("{} \u{00B7} {}", item.label, item.badge));
         }
         return response.on_hover_text(item.label);
@@ -337,7 +337,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
             p.layout_no_wrap(
                 item.badge.to_string(),
                 egui::FontId::proportional(text::CAPTION),
-                colour::ON_ACCENT,
+                colour::ON_ACCENT(),
             ),
             true,
         ))
@@ -347,7 +347,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
                 p.layout_no_wrap(
                     count.clone(),
                     egui::FontId::proportional(text::CAPTION),
-                    colour::TEXT_FAINT,
+                    colour::TEXT_FAINT(),
                 ),
                 false,
             )
@@ -377,15 +377,15 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
             );
             // The accent, as the comment above promises: white on the
             // danger red it used to be was 2.6:1.
-            p.rect_filled(badge, radius::PILL as f32, colour::ACCENT);
-            p.galley(badge.center() - galley.size() / 2.0, galley, colour::ON_ACCENT);
+            p.rect_filled(badge, radius::PILL as f32, colour::ACCENT());
+            p.galley(badge.center() - galley.size() / 2.0, galley, colour::ON_ACCENT());
         }
         Some((galley, false)) => {
             let at = egui::pos2(
                 rect.right() - space::SM - galley.size().x,
                 rect.center().y - galley.size().y / 2.0,
             );
-            p.galley(at, galley, colour::TEXT_FAINT);
+            p.galley(at, galley, colour::TEXT_FAINT());
         }
         None => {}
     }
@@ -400,7 +400,7 @@ pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
-                .fill(colour::CANVAS)
+                .fill(colour::CANVAS())
                 .inner_margin(egui::Margin::symmetric(space::XXL as i8, pad::PAGE.1 as i8)),
         )
         .show(ui, |ui| {
@@ -445,7 +445,7 @@ pub fn page_title(
                         RichText::new(title)
                             .size(text::TITLE)
                             .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     )
                     .truncate(),
                 );
@@ -457,7 +457,7 @@ pub fn page_title(
         ui.label(
             RichText::new(subtitle)
                 .size(text::SMALL)
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
     }
     ui.add_space(space::LG);
@@ -487,7 +487,7 @@ pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
             RichText::new(label)
                 .size(text::SMALL)
                 .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
@@ -524,12 +524,12 @@ pub fn section_count_with(
             RichText::new(label)
                 .size(text::SMALL)
                 .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
         ui.label(
             RichText::new(count.to_string())
                 .size(text::SMALL)
-                .color(colour::TEXT_FAINT),
+                .color(colour::TEXT_FAINT()),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
@@ -548,7 +548,7 @@ pub fn divider(ui: &mut Ui) {
         egui::vec2(ui.available_width(), 1.0),
         egui::Sense::hover(),
     );
-    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE));
+    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, colour::LINE()));
 }
 
 /// Which half of a railed page's content is being asked for.
@@ -618,8 +618,8 @@ const RAIL_AT: f32 = 760.0;
 
 fn rail_surface(ui: &mut Ui, rail: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::LG)
         .inner_margin(egui::Margin::same(space::LG as i8))
         .show(ui, |ui| {
@@ -649,7 +649,7 @@ pub fn property(ui: &mut Ui, label: &str, value: impl FnOnce(&mut Ui)) {
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(text::SMALL),
-            colour::TEXT_MUTED,
+            colour::TEXT_MUTED(),
         );
         value(ui);
     });
@@ -665,7 +665,7 @@ pub fn section(ui: &mut Ui, label: &str) {
         RichText::new(label)
             .size(text::SMALL)
             .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
-            .color(colour::TEXT_MUTED),
+            .color(colour::TEXT_MUTED()),
     );
     ui.add_space(space::MD);
 }

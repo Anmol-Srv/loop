@@ -158,7 +158,7 @@ fn cover_uv(tex: egui::Vec2, rect: egui::Rect) -> egui::Rect {
 fn backdrop(ui: &egui::Ui, rect: egui::Rect) {
     let tex = hero_texture(ui.ctx());
     ui.painter().image(tex.id(), rect, cover_uv(tex.size_vec2(), rect), egui::Color32::WHITE);
-    ui.painter().rect_filled(rect, 0.0, colour::CANVAS.gamma_multiply(SCRIM_ALPHA));
+    ui.painter().rect_filled(rect, 0.0, colour::CANVAS().gamma_multiply(SCRIM_ALPHA));
 }
 
 /// Enter in a field submits the form, the way every other sign-in does.
@@ -208,7 +208,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut submit = false;
 
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(colour::CANVAS))
+        .frame(egui::Frame::new().fill(colour::CANVAS()))
         .show(ui, |ui| {
             backdrop(ui, ui.max_rect());
             let slack = (ui.available_height() - CARD_HEIGHT_GUESS) * 0.35;

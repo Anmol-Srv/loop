@@ -522,7 +522,7 @@ fn empty_state(ui: &mut egui::Ui, seed: &str) -> bool {
                 RichText::new("No agents yet")
                     .size(text::HEADING)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.add_space(space::XS);
             ui.label(
@@ -531,7 +531,7 @@ fn empty_state(ui: &mut egui::Ui, seed: &str) -> bool {
                      it takes the tasks you hand off and reports back on them here.",
                 )
                 .size(text::SMALL)
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
             );
             ui.add_space(space::LG);
             clicked = w::primary(ui, "Connect an agent", true).clicked();
@@ -677,7 +677,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                                     RichText::new(&name)
                                         .size(text::BODY)
                                         .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                        .color(colour::TEXT),
+                                        .color(colour::TEXT()),
                                 )
                                 .truncate(),
                             );
@@ -697,7 +697,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     c::chip(ui, words, tone, true);
                     role_chips(ui, a);
                     if let Some(at) = str_of(a, "lastSeenAt") {
-                        ui.label(RichText::new(format!("seen {}", super::task::ago(at))).size(text::SMALL).color(colour::TEXT_MUTED))
+                        ui.label(RichText::new(format!("seen {}", super::task::ago(at))).size(text::SMALL).color(colour::TEXT_MUTED()))
                             .on_hover_text(super::task::exact(at));
                     }
                 });
@@ -714,7 +714,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                     let title = str_of(t, "title").unwrap_or("Untitled");
                     let open = ui
                         .add(
-                            egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT))
+                            egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT()))
                                 .truncate()
                                 .sense(egui::Sense::click()),
                         )
@@ -724,11 +724,11 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                         act = str_of(t, "id").map(|i| CardAct::Open(i.to_owned()));
                     }
                     if let Some(now) = str_of(t, "now").map(str::trim).filter(|n| !n.is_empty()) {
-                        ui.add(egui::Label::new(RichText::new(now).size(text::SMALL).color(colour::TEXT_MUTED)).truncate());
+                        ui.add(egui::Label::new(RichText::new(now).size(text::SMALL).color(colour::TEXT_MUTED())).truncate());
                     }
                 } else if has(a, Role::Work) {
                     w::caption(ui, "No task right now");
-                    ui.label(RichText::new("Hand it one from the task\u{2019}s page.").size(text::SMALL).color(colour::TEXT_MUTED));
+                    ui.label(RichText::new("Hand it one from the task\u{2019}s page.").size(text::SMALL).color(colour::TEXT_MUTED()));
                 } else {
                     w::caption(ui, "Files tasks; it doesn\u{2019}t take hand-offs");
                 }
@@ -747,7 +747,7 @@ fn card(ui: &mut egui::Ui, a: &Value, my_seed: &str, floor: f32) -> (f32, Option
                 if !days.is_empty() || setup.is_some() {
                     ui.add_space(space::XS);
                     let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-                    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+                    ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
                 }
                 if !days.is_empty() {
                     ui.horizontal(|ui| {
@@ -786,7 +786,7 @@ fn intake_stats(ui: &mut egui::Ui, a: &Value) {
     ui.painter().hline(
         rule.x_range(),
         rule.center().y,
-        egui::Stroke::new(1.0, colour::LINE),
+        egui::Stroke::new(1.0, colour::LINE()),
     );
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
@@ -805,12 +805,12 @@ fn intake_stats(ui: &mut egui::Ui, a: &Value) {
                 RichText::new(n(k).to_string())
                     .size(text::BODY)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.label(
                 RichText::new(*word)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
         }
     });
@@ -860,7 +860,7 @@ fn revoked_row(ui: &mut egui::Ui, a: &Value, seed: &str) {
             ui.label(
                 RichText::new(name)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());
             if let Some(at) = str_of(a, "lastSeenAt") {
@@ -931,11 +931,11 @@ pub(super) fn dialog(
     add: impl FnOnce(&mut egui::Ui),
 ) -> egui::ModalResponse<()> {
     egui::Modal::new(egui::Id::new(id))
-        .backdrop_color(colour::CANVAS.gamma_multiply(0.7))
+        .backdrop_color(colour::CANVAS().gamma_multiply(0.7))
         .frame(
             egui::Frame::new()
-                .fill(colour::SURFACE)
-                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .fill(colour::SURFACE())
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
                 .corner_radius(radius::LG)
                 .inner_margin(egui::Margin::same(space::XL as i8)),
         )
@@ -950,7 +950,7 @@ pub(super) fn heading(ui: &mut egui::Ui, s: &str) {
         RichText::new(s)
             .size(text::CARD)
             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-            .color(colour::TEXT),
+            .color(colour::TEXT()),
     );
 }
 
@@ -969,7 +969,7 @@ fn connect_steps(at: usize, done: bool) -> impl FnOnce(&mut egui::Ui) {
             label: l.into(),
             when: None,
         });
-        face::stepper(ui, &steps, at, done, colour::INFO);
+        face::stepper(ui, &steps, at, done, colour::INFO());
     }
 }
 
@@ -1043,7 +1043,7 @@ fn connect_dialog(
                 ui.painter().rect_stroke(
                     entry.rect,
                     radius::SM as f32,
-                    egui::Stroke::new(1.0, colour::DANGER),
+                    egui::Stroke::new(1.0, colour::DANGER()),
                     egui::StrokeKind::Inside,
                 );
                 ui.add_space(space::XXS);
@@ -1078,7 +1078,7 @@ fn connect_dialog(
                 ui.label(
                     RichText::new("Turn on at least one role.")
                         .size(text::SMALL)
-                        .color(colour::WARN),
+                        .color(colour::WARN()),
                 );
             }
 
@@ -1141,19 +1141,19 @@ fn connect_dialog(
                     egui::Vec2::splat(text::SMALL + 1.0),
                     egui::Sense::hover(),
                 );
-                glyph::lock(ui.painter(), r.center(), r.width(), colour::WARN);
+                glyph::lock(ui.painter(), r.center(), r.width(), colour::WARN());
                 ui.label(
                     RichText::new(
                         "Shown only once \u{2014} it contains the agent\u{2019}s secret token.",
                     )
                     .size(text::SMALL)
-                    .color(colour::WARN),
+                    .color(colour::WARN()),
                 );
             });
             ui.add_space(space::SM);
             egui::Frame::new()
-                .fill(colour::LOG_BG)
-                .stroke(egui::Stroke::new(1.0, colour::LINE))
+                .fill(colour::LOG_BG())
+                .stroke(egui::Stroke::new(1.0, colour::LINE()))
                 .corner_radius(radius::MD)
                 .inner_margin(egui::Margin::symmetric(
                     pad::CARD.0 as i8,
@@ -1171,7 +1171,7 @@ fn connect_dialog(
                                     .desired_width(f32::INFINITY)
                                     .desired_rows(4)
                                     .font(egui::FontId::monospace(text::SMALL))
-                                    .text_color(colour::LOG_TEXT),
+                                    .text_color(colour::LOG_TEXT()),
                             );
                         });
                 });
@@ -1358,14 +1358,14 @@ fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
                 }
                 let hot = response.hovered() || response.has_focus();
                 let fill = if on {
-                    colour::SURFACE_ACTIVE
+                    colour::SURFACE_ACTIVE()
                 } else {
                     motion::hover_fill(
                         ui,
                         response.id.with("fill"),
                         hot,
-                        colour::INSET,
-                        colour::SURFACE_HOVER,
+                        colour::INSET(),
+                        colour::SURFACE_HOVER(),
                     )
                 };
                 let p = ui.painter();
@@ -1376,9 +1376,9 @@ fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
                     egui::Stroke::new(
                         1.0,
                         if on || hot {
-                            colour::LINE_STRONG
+                            colour::LINE_STRONG()
                         } else {
-                            colour::LINE
+                            colour::LINE()
                         },
                     ),
                     egui::StrokeKind::Inside,
@@ -1389,24 +1389,24 @@ fn runtime_cards(ui: &mut egui::Ui, runtime: &mut String) {
                     egui::Align2::LEFT_TOP,
                     *label,
                     egui::FontId::new(text::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
-                    if on { colour::TEXT } else { colour::TEXT_2 },
+                    if on { colour::TEXT() } else { colour::TEXT_2() },
                 );
                 let galley = w::truncated(
                     ui,
                     line,
                     egui::FontId::proportional(text::CAPTION),
-                    colour::TEXT_MUTED,
+                    colour::TEXT_MUTED(),
                     rect.width() - space::MD * 2.0,
                 );
                 ui.painter().galley(
                     egui::pos2(x, rect.bottom() - space::MD - galley.size().y),
                     galley,
-                    colour::TEXT_MUTED,
+                    colour::TEXT_MUTED(),
                 );
                 if on {
                     let c =
                         egui::pos2(rect.right() - space::MD - 5.0, rect.top() + space::MD + 7.0);
-                    glyph::tick(ui.painter(), c, 11.0, colour::TEXT);
+                    glyph::tick(ui.painter(), c, 11.0, colour::TEXT());
                 }
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

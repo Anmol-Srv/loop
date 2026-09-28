@@ -198,7 +198,7 @@ pub(super) fn source_card(ui: &mut egui::Ui, net: &mut Net, t: &Value) {
                     ui.spacing_mut().item_spacing.x = space::XS;
                     let (r, _) =
                         ui.allocate_exact_size(Vec2::splat(text::SMALL + 1.0), Sense::hover());
-                    glyph::lock(ui.painter(), r.center(), r.width(), colour::TEXT_MUTED);
+                    glyph::lock(ui.painter(), r.center(), r.width(), colour::TEXT_MUTED());
                     w::muted(
                         ui,
                         &format!("From a direct message \u{2014} only {owner} can read it."),
@@ -216,7 +216,7 @@ pub(super) fn source_card(ui: &mut egui::Ui, net: &mut Net, t: &Value) {
 fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        mark(ui, src, text::BODY, colour::TEXT_MUTED);
+        mark(ui, src, text::BODY, colour::TEXT_MUTED());
         let url = str_of(src, "url").filter(|u| u.starts_with("http"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(url) = url.filter(|_| readable) {
@@ -242,7 +242,7 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
                             RichText::new(a)
                                 .size(text::BODY)
                                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                .color(colour::TEXT),
+                                .color(colour::TEXT()),
                         )
                         .selectable(false),
                     );
@@ -260,7 +260,7 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
                     egui::Label::new(
                         RichText::new(rest.join(" \u{00B7} ").trim_start())
                             .size(text::SMALL)
-                            .color(colour::TEXT_MUTED),
+                            .color(colour::TEXT_MUTED()),
                     )
                     .truncate(),
                 );
@@ -291,7 +291,7 @@ fn thread(ui: &mut egui::Ui, t: &Value, src: &Value) {
     if !open {
         return;
     }
-    quoted(ui, colour::LINE, |ui| {
+    quoted(ui, colour::LINE(), |ui| {
         ui.spacing_mut().item_spacing.y = space::MD;
         for m in earlier {
             ui.vertical(|ui| {
@@ -307,7 +307,7 @@ fn thread(ui: &mut egui::Ui, t: &Value, src: &Value) {
                             RichText::new(author)
                                 .size(text::SMALL)
                                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                .color(colour::TEXT_2),
+                                .color(colour::TEXT_2()),
                         )
                         .selectable(false),
                     );
@@ -317,14 +317,14 @@ fn thread(ui: &mut egui::Ui, t: &Value, src: &Value) {
                             ui.label(
                                 RichText::new(age)
                                     .size(text::SMALL)
-                                    .color(colour::TEXT_MUTED),
+                                    .color(colour::TEXT_MUTED()),
                             )
                             .on_hover_text(super::task::exact(at));
                         }
                     }
                 });
                 if let Some(said) = str_of(m, "text").map(str::trim).filter(|s| !s.is_empty()) {
-                    super::mrkdwn::show(ui, said, colour::TEXT_MUTED);
+                    super::mrkdwn::show(ui, said, colour::TEXT_MUTED());
                 }
             });
         }
@@ -335,9 +335,9 @@ fn thread(ui: &mut egui::Ui, t: &Value, src: &Value) {
 /// beside it, its images underneath. Not a bubble — this is a record of what
 /// was said, not a conversation.
 fn quote(ui: &mut egui::Ui, net: &mut Net, said: Option<&str>, files: &[Value]) {
-    quoted(ui, colour::LINE_STRONG, |ui| {
+    quoted(ui, colour::LINE_STRONG(), |ui| {
         if let Some(said) = said {
-            super::mrkdwn::show(ui, said, colour::TEXT_2);
+            super::mrkdwn::show(ui, said, colour::TEXT_2());
         }
         if !files.is_empty() {
             attachments(ui, net, files);
@@ -492,8 +492,8 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
             .corner_radius(radius::MD)
             .paint_at(ui, rect),
         _ => {
-            p.rect_filled(rect, radius::MD as f32, colour::INSET);
-            glyph::evidence(p, rect.center(), text::HEADING, "doc", colour::TEXT_FAINT);
+            p.rect_filled(rect, radius::MD as f32, colour::INSET());
+            glyph::evidence(p, rect.center(), text::HEADING, "doc", colour::TEXT_FAINT());
         }
     }
     let hot = response.hovered() || response.has_focus();
@@ -503,9 +503,9 @@ fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
         egui::Stroke::new(
             1.0,
             if hot {
-                colour::LINE_STRONG
+                colour::LINE_STRONG()
             } else {
-                colour::LINE_SOFT
+                colour::LINE_SOFT()
             },
         ),
         egui::StrokeKind::Inside,
@@ -538,7 +538,7 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         words.clone(),
         egui::FontId::proportional(text::SMALL),
-        colour::TEXT_2,
+        colour::TEXT_2(),
     );
     let height = size::CONTROL;
     let width = (galley.size().x + text::BODY + space::SM * 2.0 + space::XS).min(THUMB_W * 1.5);
@@ -553,9 +553,9 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
         rect,
         radius::SM as f32,
         if hot {
-            colour::GLASS_HOVER
+            colour::GLASS_HOVER()
         } else {
-            colour::GLASS
+            colour::GLASS()
         },
     );
     p.rect_stroke(
@@ -564,15 +564,15 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
         egui::Stroke::new(
             1.0,
             if hot {
-                colour::EDGE_HI_HOVER
+                colour::EDGE_HI_HOVER()
             } else {
-                colour::EDGE_MID
+                colour::EDGE_MID()
             },
         ),
         egui::StrokeKind::Inside,
     );
     let icon = egui::pos2(rect.left() + space::SM + text::BODY / 2.0, rect.center().y);
-    glyph::evidence(p, icon, text::BODY, "doc", colour::TEXT_MUTED);
+    glyph::evidence(p, icon, text::BODY, "doc", colour::TEXT_MUTED());
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(icon.x + text::BODY / 2.0 + space::XS, rect.top()),
         rect.max - Vec2::new(space::SM, 0.0),
@@ -581,13 +581,13 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
         ui,
         &words,
         egui::FontId::proportional(text::SMALL),
-        colour::TEXT_2,
+        colour::TEXT_2(),
         text_rect.width(),
     );
     p.galley(
         egui::pos2(text_rect.left(), rect.center().y - shown.size().y / 2.0),
         shown,
-        colour::TEXT_2,
+        colour::TEXT_2(),
     );
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -659,7 +659,7 @@ fn lightbox(ctx: &egui::Context, net: &Net) {
                                 RichText::new(&name)
                                     .size(text::HEADING)
                                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                    .color(colour::TEXT),
+                                    .color(colour::TEXT()),
                             )
                             .truncate(),
                         );
@@ -711,7 +711,7 @@ fn filed_by(ui: &mut egui::Ui, src: &Value) {
             egui::Label::new(
                 RichText::new(line)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             )
             .wrap(),
         );
@@ -754,7 +754,7 @@ pub(super) fn category_chip(
         ui.painter().rect_stroke(
             chip.rect,
             radius::SM as f32,
-            egui::Stroke::new(1.0, colour::LINE_STRONG),
+            egui::Stroke::new(1.0, colour::LINE_STRONG()),
             egui::StrokeKind::Inside,
         );
     }
@@ -820,17 +820,17 @@ fn icon_action(
         ui,
         id.with("fill"),
         hot,
-        colour::TRANSPARENT,
-        colour::GLASS_HOVER,
+        colour::TRANSPARENT(),
+        colour::GLASS_HOVER(),
     );
     let p = ui.painter();
-    if fill != colour::TRANSPARENT {
+    if fill != colour::TRANSPARENT() {
         p.rect_filled(rect, radius::SM as f32, fill.gamma_multiply(alpha));
     }
     let ink = if hot {
-        colour::TEXT
+        colour::TEXT()
     } else {
-        colour::TEXT_MUTED
+        colour::TEXT_MUTED()
     }
     .gamma_multiply(alpha);
     if accept {
@@ -853,7 +853,7 @@ pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
     let font = egui::FontId::proportional(text::BODY);
     let galley = ui
         .painter()
-        .layout_no_wrap(words.clone(), font, colour::TEXT_2);
+        .layout_no_wrap(words.clone(), font, colour::TEXT_2());
     // Flush with the page's left column; the hover fill bleeds past it.
     let width = text::HEADING + space::XS + galley.size().x + space::SM + text::SMALL;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, size::CONTROL), Sense::click());
@@ -865,25 +865,25 @@ pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
         ui,
         response.id.with("hover"),
         hot,
-        colour::TRANSPARENT,
-        colour::GLASS_HOVER,
+        colour::TRANSPARENT(),
+        colour::GLASS_HOVER(),
     );
     let p = ui.painter();
-    if fill != colour::TRANSPARENT {
+    if fill != colour::TRANSPARENT() {
         p.rect_filled(
             rect.expand2(Vec2::new(space::SM, 0.0)),
             radius::SM as f32,
             fill,
         );
     }
-    let ink = if hot { colour::TEXT } else { colour::TEXT_2 };
+    let ink = if hot { colour::TEXT() } else { colour::TEXT_2() };
     let mut x = rect.left();
     p.text(
         egui::pos2(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         egui_phosphor::thin::TRAY,
         egui::FontId::proportional(text::HEADING),
-        colour::TEXT_MUTED,
+        colour::TEXT_MUTED(),
     );
     x += text::HEADING + space::XS;
     p.galley(
@@ -898,9 +898,9 @@ pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
         text::SMALL,
         0.0,
         if hot {
-            colour::TEXT
+            colour::TEXT()
         } else {
-            colour::TEXT_FAINT
+            colour::TEXT_FAINT()
         },
     );
     if hot {
@@ -995,7 +995,7 @@ fn list(
                 ui.painter().hline(
                     ui.max_rect().x_range(),
                     y,
-                    egui::Stroke::new(1.0, colour::LINE_SOFT),
+                    egui::Stroke::new(1.0, colour::LINE_SOFT()),
                 );
             }
             let busy = deciding.is_some() && deciding == str_of(t, "id");
@@ -1034,10 +1034,10 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
         ui,
         response.id.with("hover"),
         lit,
-        colour::TRANSPARENT,
-        colour::SURFACE_HOVER,
+        colour::TRANSPARENT(),
+        colour::SURFACE_HOVER(),
     );
-    if tint != colour::TRANSPARENT {
+    if tint != colour::TRANSPARENT() {
         ui.painter().rect_filled(rect, radius::SM as f32, tint);
     }
     if response.hovered() {
@@ -1130,7 +1130,7 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
             RichText::new(title)
                 .size(text::BODY)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
+                .color(colour::TEXT()),
         )
         .truncate()
         .selectable(false),
@@ -1141,7 +1141,7 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
             text::SMALL * 1.5,
         );
         second.spacing_mut().item_spacing.x = space::XS;
-        mark(&mut second, src, text::SMALL, colour::TEXT_MUTED);
+        mark(&mut second, src, text::SMALL, colour::TEXT_MUTED());
         let mut words = source_words(src, true);
         let withheld = private(src) && str_of(src, "author").is_none();
         if let Some(said) = str_of(src, "text")
@@ -1154,7 +1154,7 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
             egui::Label::new(
                 RichText::new(words)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             )
             .truncate()
             .selectable(false),

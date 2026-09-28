@@ -29,13 +29,13 @@ impl Tone {
     fn colours(self) -> (Color32, Color32, Color32) {
         // (fill, stroke, text)
         match self {
-            Tone::Neutral => (Color32::TRANSPARENT, colour::LINE, colour::TEXT_MUTED),
-            Tone::Quiet => (colour::INSET, colour::LINE, colour::TEXT_MUTED),
-            Tone::Ok => (colour::OK_BG, Color32::TRANSPARENT, colour::OK),
-            Tone::Running => (colour::WARN_BG, Color32::TRANSPARENT, colour::WARN),
-            Tone::Blocked => (colour::DANGER_BG, Color32::TRANSPARENT, colour::DANGER),
-            Tone::Agent => (colour::AGENT_BG, Color32::TRANSPARENT, colour::AGENT),
-            Tone::Info => (colour::INFO_BG, Color32::TRANSPARENT, colour::INFO),
+            Tone::Neutral => (Color32::TRANSPARENT, colour::LINE(), colour::TEXT_MUTED()),
+            Tone::Quiet => (colour::INSET(), colour::LINE(), colour::TEXT_MUTED()),
+            Tone::Ok => (colour::OK_BG(), Color32::TRANSPARENT, colour::OK()),
+            Tone::Running => (colour::WARN_BG(), Color32::TRANSPARENT, colour::WARN()),
+            Tone::Blocked => (colour::DANGER_BG(), Color32::TRANSPARENT, colour::DANGER()),
+            Tone::Agent => (colour::AGENT_BG(), Color32::TRANSPARENT, colour::AGENT()),
+            Tone::Info => (colour::INFO_BG(), Color32::TRANSPARENT, colour::INFO()),
         }
     }
 }
@@ -142,7 +142,7 @@ pub fn removable_badge(ui: &mut Ui, label: &str, hue: Color32, ink: Color32) -> 
         ui.painter(),
         egui::pos2(x_rect.center().x - space::XXS / 2.0, rect.center().y),
         9.0,
-        if hot { colour::TEXT } else { ink },
+        if hot { colour::TEXT() } else { ink },
     );
     x.clicked()
 }
@@ -182,7 +182,7 @@ pub fn stat(
             ui.label(
                 RichText::new(label)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             if let Some((d, tone)) = delta {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -196,7 +196,7 @@ pub fn stat(
                 RichText::new(value)
                     .size(text::HERO)
                     .family(egui::FontFamily::Name(theme::BOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.with_layout(Layout::right_to_left(Align::Max), beside);
         });
@@ -205,7 +205,7 @@ pub fn stat(
             ui.label(
                 RichText::new(footnote)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
         }
     });
@@ -246,13 +246,13 @@ pub fn segments(ui: &mut Ui, open: usize, review: usize, blocking: usize, total:
     let p = ui.painter();
     for i in 0..cells {
         let fill = if i < open {
-            colour::ACCENT
+            colour::ACCENT()
         } else if i < open + review {
-            colour::WARN
+            colour::WARN()
         } else if i < open + review + blocking {
-            colour::DANGER
+            colour::DANGER()
         } else {
-            colour::LINE
+            colour::LINE()
         };
         let x = rect.left() + i as f32 * (cw + gap);
         p.rect_filled(
@@ -267,10 +267,10 @@ pub fn segments(ui: &mut Ui, open: usize, review: usize, blocking: usize, total:
 /// no shadow anywhere in this app.
 pub fn surface<R>(ui: &mut Ui, hovered: bool, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
     egui::Frame::new()
-        .fill(if hovered { colour::SURFACE_HOVER } else { colour::SURFACE })
+        .fill(if hovered { colour::SURFACE_HOVER() } else { colour::SURFACE() })
         .stroke(egui::Stroke::new(
             1.0,
-            if hovered { colour::LINE_STRONG } else { colour::LINE },
+            if hovered { colour::LINE_STRONG() } else { colour::LINE() },
         ))
         .corner_radius(radius::LG)
         .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
@@ -308,7 +308,7 @@ pub fn task_card(ui: &mut Ui, card: &TaskCard<'_>) -> Response {
             RichText::new(card.title)
                 .size(text::CARD)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
+                .color(colour::TEXT()),
         );
         ui.add_space(space::SM);
         ui.horizontal(|ui| {
@@ -317,7 +317,7 @@ pub fn task_card(ui: &mut Ui, card: &TaskCard<'_>) -> Response {
                 ui.label(
                     RichText::new(card.context)
                         .size(text::SMALL)
-                        .color(colour::TEXT_MUTED),
+                        .color(colour::TEXT_MUTED()),
                 );
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -344,8 +344,8 @@ pub fn task_card(ui: &mut Ui, card: &TaskCard<'_>) -> Response {
 /// action are the whole content.
 pub fn slim_card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
     let out = egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, space::SM as i8))
         .show(ui, |ui| {
@@ -362,8 +362,8 @@ pub fn slim_card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
 pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
     let mut clicked = None;
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::SM)
         .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
@@ -374,7 +374,7 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                     let galley = ui.painter().layout_no_wrap(
                         (*label).to_owned(),
                         egui::FontId::proportional(text::SMALL),
-                        if on { colour::TEXT } else { colour::TEXT_MUTED },
+                        if on { colour::TEXT() } else { colour::TEXT_MUTED() },
                     );
                     let (rect, response) = ui.allocate_exact_size(
                         Vec2::new(galley.size().x + space::MD * 2.0, 24.0),
@@ -386,14 +386,14 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                     let response = motion::operable(ui, response, radius::SM as f32);
                     if on {
                         ui.painter()
-                            .rect_filled(rect, radius::SM as f32, colour::SURFACE_ACTIVE);
+                            .rect_filled(rect, radius::SM as f32, colour::SURFACE_ACTIVE());
                     } else {
                         let tint = motion::hover_fill(
                             ui,
                             response.id.with("hover"),
                             response.hovered() || response.has_focus(),
                             Color32::TRANSPARENT,
-                            colour::SURFACE_HOVER,
+                            colour::SURFACE_HOVER(),
                         );
                         ui.painter().rect_filled(rect, radius::SM as f32, tint);
                         if response.hovered() {
@@ -403,7 +403,7 @@ pub fn tabs(ui: &mut Ui, labels: &[&str], selected: usize) -> Option<usize> {
                     ui.painter().galley(
                         rect.center() - galley.size() / 2.0,
                         galley,
-                        colour::TEXT,
+                        colour::TEXT(),
                     );
                     if response.clicked() {
                         clicked = Some(i);
@@ -433,13 +433,13 @@ pub fn capacity(
                 RichText::new(name)
                     .size(text::BODY)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(disciplines)
                         .size(text::CAPTION)
-                        .color(colour::TEXT_FAINT),
+                        .color(colour::TEXT_FAINT()),
                 );
             });
         });
@@ -449,7 +449,7 @@ pub fn capacity(
                 RichText::new(open.to_string())
                     .size(text::DISPLAY)
                     .family(egui::FontFamily::Name(theme::BOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.add_space(space::XS);
             let note = if open == 0 {
@@ -464,7 +464,7 @@ pub fn capacity(
             ui.label(
                 RichText::new(note)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
         });
         ui.add_space(space::SM);

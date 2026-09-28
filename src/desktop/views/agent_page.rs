@@ -226,7 +226,7 @@ fn header(
                         RichText::new(name)
                             .size(text::TITLE)
                             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     )
                     .truncate(),
                 );
@@ -243,7 +243,7 @@ fn header(
                     ui.label(
                         RichText::new(who)
                             .size(text::SMALL)
-                            .color(colour::TEXT_MUTED),
+                            .color(colour::TEXT_MUTED()),
                     );
                     ui.add_space(space::SM);
                     face::private_label(ui);
@@ -281,7 +281,7 @@ fn now_line(
                 ui.label(
                     RichText::new("Waiting for first contact")
                         .size(text::SMALL)
-                        .color(colour::WARN),
+                        .color(colour::WARN()),
                 );
             }
             (_, Some(t)) => {
@@ -295,15 +295,15 @@ fn now_line(
                     _ => state_words(state).to_owned(),
                 };
                 let ink = if matches!(state, "needs_input" | "plan_review") {
-                    colour::WARN
+                    colour::WARN()
                 } else {
-                    colour::TEXT_2
+                    colour::TEXT_2()
                 };
                 ui.label(RichText::new(words).size(text::BODY).color(ink));
                 ui.label(
                     RichText::new("on")
                         .size(text::SMALL)
-                        .color(colour::TEXT_MUTED),
+                        .color(colour::TEXT_MUTED()),
                 );
                 if task_link(ui, str_of(t, "title").unwrap_or("Untitled")) {
                     open = str_of(t, "id").map(str::to_owned);
@@ -340,7 +340,7 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
             ui.label(
                 RichText::new(ago(at))
                     .size(text::SMALL)
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             )
             .on_hover_text(exact(at));
         }
@@ -351,7 +351,7 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
             ui.label(
                 RichText::new(day_label(at))
                     .size(text::SMALL)
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             )
             .on_hover_text(exact(at));
         }
@@ -361,7 +361,7 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
         ui.label(
             RichText::new(runtime_label(str_of(a, "runtime").unwrap_or("other")))
                 .size(text::SMALL)
-                .color(colour::TEXT_2),
+                .color(colour::TEXT_2()),
         );
     });
     shell::property(ui, "Handle", |ui| {
@@ -369,7 +369,7 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
             RichText::new(str_of(a, "handle").unwrap_or_default())
                 .monospace()
                 .size(text::SMALL)
-                .color(colour::TEXT_2),
+                .color(colour::TEXT_2()),
         );
     });
     shell::property(ui, "Intake", |ui| {
@@ -379,9 +379,9 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
             "Off"
         };
         ui.label(RichText::new(words).size(text::SMALL).color(if intake {
-            colour::TEXT_2
+            colour::TEXT_2()
         } else {
-            colour::TEXT_MUTED
+            colour::TEXT_MUTED()
         }));
     });
 
@@ -390,14 +390,14 @@ fn rail(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
     ui.painter().hline(
         rule.x_range(),
         rule.center().y,
-        egui::Stroke::new(1.0, colour::LINE),
+        egui::Stroke::new(1.0, colour::LINE()),
     );
     ui.add_space(space::MD);
     ui.label(
         RichText::new("Setup")
             .size(text::SMALL)
             .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-            .color(colour::TEXT_MUTED),
+            .color(colour::TEXT_MUTED()),
     );
     ui.add_space(space::XS);
     match a
@@ -442,14 +442,14 @@ fn facts(ui: &mut egui::Ui, a: &Value, owned: bool) -> Option<CardAsk> {
             ui.label(
                 RichText::new(format!("seen {}", ago(at)))
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             )
             .on_hover_text(exact(at));
         }
         ui.label(
             RichText::new(runtime_label(str_of(a, "runtime").unwrap_or("other")))
                 .size(text::SMALL)
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
         if let Some(setup) = a
             .get("setup")
@@ -614,8 +614,8 @@ fn figures(ui: &mut egui::Ui, s: &Value, intake: bool) {
     }
 
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::LG)
         .inner_margin(egui::Margin::symmetric(0, space::MD as i8))
         .show(ui, |ui| {
@@ -644,25 +644,25 @@ fn figures(ui: &mut egui::Ui, s: &Value, intake: bool) {
                     egui::Align2::LEFT_TOP,
                     value,
                     value_font.clone(),
-                    colour::TEXT,
+                    colour::TEXT(),
                 );
                 let label_g = w::truncated(
                     ui,
                     label,
                     label_font.clone(),
-                    colour::TEXT_MUTED,
+                    colour::TEXT_MUTED(),
                     cell_w - pad::CARD.0 * 2.0,
                 );
                 ui.painter().galley(
                     pos2(x, cell.bottom() - label_g.size().y),
                     label_g,
-                    colour::TEXT_MUTED,
+                    colour::TEXT_MUTED(),
                 );
                 if i > 0 {
                     ui.painter().vline(
                         cell.left(),
                         cell.y_range().expand(space::XXS),
-                        egui::Stroke::new(1.0, colour::LINE),
+                        egui::Stroke::new(1.0, colour::LINE()),
                     );
                 }
             }
@@ -696,9 +696,9 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
     let totals =
         ["notes", "filed", "events"].map(|k| days.iter().map(|d| n(d, k)).sum::<f32>() as i64);
     let series = [
-        ("Its updates", colour::AGENT, "notes"),
-        ("Filed", colour::INFO, "filed"),
-        ("Sent to it", colour::IDLE, "events"),
+        ("Its updates", colour::AGENT(), "notes"),
+        ("Filed", colour::INFO(), "filed"),
+        ("Sent to it", colour::IDLE(), "events"),
     ];
 
     c::surface(ui, false, |ui| {
@@ -708,7 +708,7 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
                 RichText::new("Last 30 days")
                     .size(text::SMALL)
                     .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
@@ -725,12 +725,12 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
                         RichText::new(totals[i].to_string())
                             .size(text::SMALL)
                             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     );
                     ui.label(
                         RichText::new(*label)
                             .size(text::SMALL)
-                            .color(colour::TEXT_MUTED),
+                            .color(colour::TEXT_MUTED()),
                     );
                     let (sw, _) = ui
                         .allocate_exact_size(egui::Vec2::splat(text::SMALL), egui::Sense::hover());
@@ -764,7 +764,7 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
         p.hline(
             rect.x_range(),
             rect.bottom() + 0.5,
-            egui::Stroke::new(1.0, colour::LINE),
+            egui::Stroke::new(1.0, colour::LINE()),
         );
         for (i, d) in days.iter().enumerate() {
             let x = rect.left() + i as f32 * (bar + BAR_GAP);
@@ -775,7 +775,7 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
                         pos2(x + bar + 1.0, rect.bottom()),
                     ),
                     2.0,
-                    colour::SURFACE_HOVER,
+                    colour::SURFACE_HOVER(),
                 );
             }
             let total: f32 = series.iter().map(|(_, _, k)| n(d, k)).sum();
@@ -783,7 +783,7 @@ fn chart(ui: &mut egui::Ui, days: &[Value]) {
                 p.rect_filled(
                     egui::Rect::from_min_size(pos2(x, rect.bottom() - 2.0), vec2(bar, 2.0)),
                     1.0,
-                    colour::LINE_STRONG,
+                    colour::LINE_STRONG(),
                 );
                 continue;
             }
@@ -871,7 +871,7 @@ fn activity(
                 RichText::new(&day)
                     .size(text::CAPTION)
                     .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             ui.add_space(space::SM);
             rails.push(ui.painter().add(egui::Shape::Noop));
@@ -905,7 +905,7 @@ fn activity(
                 open = str_of(r, "taskId").map(str::to_owned);
             }
             if shows_text {
-                prose(ui, &one_line(text_body, 280), colour::TEXT_2);
+                prose(ui, &one_line(text_body, 280), colour::TEXT_2());
             }
         }));
         ui.add_space(space::MD);
@@ -922,7 +922,7 @@ fn activity(
                         pos2(x, w[0].bottom() + space::XS),
                         pos2(x, w[1].top() - space::XS),
                     ],
-                    egui::Stroke::new(1.0, colour::LINE),
+                    egui::Stroke::new(1.0, colour::LINE()),
                 )
             })
             .collect();
@@ -963,12 +963,12 @@ fn tasks(ui: &mut egui::Ui, active: &[Value], recent: &[Value], short: &str) -> 
                 RichText::new(label)
                     .size(text::SMALL)
                     .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             ui.label(
                 RichText::new(rows.len().to_string())
                     .size(text::SMALL)
-                    .color(colour::TEXT_FAINT),
+                    .color(colour::TEXT_FAINT()),
             );
         });
         ui.add_space(space::SM);
@@ -979,7 +979,7 @@ fn tasks(ui: &mut egui::Ui, active: &[Value], recent: &[Value], short: &str) -> 
                 if t.get("filed").and_then(Value::as_bool).unwrap_or(false) {
                     c::chip(ui, "Filed", c::Tone::Info, false);
                 }
-                table::strong_label(ui, str_of(t, "title").unwrap_or("Untitled"), colour::TEXT);
+                table::strong_label(ui, str_of(t, "title").unwrap_or("Untitled"), colour::TEXT());
             });
             cells.muted(1, str_of(t, "projectName").unwrap_or("No project"));
             cells.at(2, |ui| match str_of(t, "agentState") {
@@ -1059,7 +1059,7 @@ fn runs(ui: &mut egui::Ui, runs: &[Value], intake: bool, short: &str) {
                 ui.painter().hline(
                     rule.x_range(),
                     rule.center().y,
-                    egui::Stroke::new(1.0, colour::LINE_SOFT),
+                    egui::Stroke::new(1.0, colour::LINE_SOFT()),
                 );
             }
             run_row(ui, r);
@@ -1069,9 +1069,9 @@ fn runs(ui: &mut egui::Ui, runs: &[Value], intake: bool, short: &str) {
 
 fn run_ink(status: &str) -> egui::Color32 {
     match status {
-        "failed" => colour::DANGER,
-        "partial" => colour::WARN,
-        _ => colour::OK,
+        "failed" => colour::DANGER(),
+        "partial" => colour::WARN(),
+        _ => colour::OK(),
     }
 }
 
@@ -1098,14 +1098,14 @@ fn run_row(ui: &mut egui::Ui, r: &Value) {
             ui.label(
                 RichText::new(ago(finished))
                     .size(text::SMALL)
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             )
             .on_hover_text(exact(finished));
             if !took.is_empty() {
                 ui.label(
                     RichText::new(took)
                         .size(text::SMALL)
-                        .color(colour::TEXT_FAINT),
+                        .color(colour::TEXT_FAINT()),
                 );
             }
         });
@@ -1114,7 +1114,7 @@ fn run_row(ui: &mut egui::Ui, r: &Value) {
             ui.add_space(space::SM);
             if let Some(s) = str_of(r, "summary").filter(|s| !s.is_empty()) {
                 ui.add(
-                    egui::Label::new(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED))
+                    egui::Label::new(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED()))
                         .truncate(),
                 );
             }
@@ -1139,7 +1139,7 @@ fn run_row(ui: &mut egui::Ui, r: &Value) {
                         RichText::new(err)
                             .monospace()
                             .size(text::SMALL)
-                            .color(colour::LOG_TEXT),
+                            .color(colour::LOG_TEXT()),
                     );
                 });
             });
@@ -1167,7 +1167,7 @@ fn counts(ui: &mut egui::Ui, c: &Value) {
             ui.label(
                 RichText::new("nothing new")
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
         }
         for (i, (word, n)) in parts.iter().enumerate() {
@@ -1175,19 +1175,19 @@ fn counts(ui: &mut egui::Ui, c: &Value) {
                 ui.label(
                     RichText::new("\u{00B7}")
                         .size(text::SMALL)
-                        .color(colour::TEXT_FAINT),
+                        .color(colour::TEXT_FAINT()),
                 );
             }
             ui.label(
                 RichText::new(*word)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             ui.label(
                 RichText::new(n.to_string())
                     .size(text::SMALL)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
         }
     });
@@ -1305,14 +1305,14 @@ fn logs(ui: &mut egui::Ui, lines: &[Value], short: &str) -> Option<Ask> {
                         RichText::new(format!("{seq:>gutter$}"))
                             .monospace()
                             .size(text::SMALL)
-                            .color(colour::LOG_SEQ),
+                            .color(colour::LOG_SEQ()),
                     );
                     ui.add_space(space::SM);
                     ui.label(
                         RichText::new(str_of(l, "text").unwrap_or_default())
                             .monospace()
                             .size(text::SMALL)
-                            .color(colour::LOG_TEXT),
+                            .color(colour::LOG_TEXT()),
                     );
                 });
             }
@@ -1324,8 +1324,8 @@ fn logs(ui: &mut egui::Ui, lines: &[Value], short: &str) -> Option<Ask> {
 
 fn log_well(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(colour::LOG_BG)
-        .stroke(egui::Stroke::new(1.0, colour::LINE_SOFT))
+        .fill(colour::LOG_BG())
+        .stroke(egui::Stroke::new(1.0, colour::LINE_SOFT()))
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::symmetric(
             pad::CARD.0 as i8,
@@ -1348,13 +1348,13 @@ fn empty(ui: &mut egui::Ui, title: &str, detail: &str) {
             RichText::new(title)
                 .size(text::BODY)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT),
+                .color(colour::TEXT()),
         );
         ui.add_space(space::XXS);
         ui.label(
             RichText::new(detail)
                 .size(text::SMALL)
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
         ui.add_space(space::SM);
     });
@@ -1368,7 +1368,7 @@ fn task_link(ui: &mut egui::Ui, title: &str) -> bool {
             egui::Label::new(
                 RichText::new(title)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             )
             .truncate()
             .sense(egui::Sense::click()),
@@ -1380,7 +1380,7 @@ fn task_link(ui: &mut egui::Ui, title: &str) -> bool {
         ui.painter().hline(
             r.rect.x_range(),
             y,
-            egui::Stroke::new(1.0, colour::TEXT_MUTED),
+            egui::Stroke::new(1.0, colour::TEXT_MUTED()),
         );
     }
     r.clicked()

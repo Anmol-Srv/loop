@@ -55,7 +55,7 @@ pub fn focus_ring(ui: &Ui, response: &Response, r: f32) {
     ui.painter().rect_stroke(
         rect,
         r + 2.0,
-        egui::Stroke::new(2.0, colour::ACCENT),
+        egui::Stroke::new(2.0, colour::ACCENT()),
         egui::StrokeKind::Outside,
     );
 }

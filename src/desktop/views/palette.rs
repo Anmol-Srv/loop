@@ -100,11 +100,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             egui::Modal::default_area(egui::Id::new("palette"))
                 .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top)),
         )
-        .backdrop_color(colour::CANVAS.gamma_multiply(0.7))
+        .backdrop_color(colour::CANVAS().gamma_multiply(0.7))
         .frame(
             egui::Frame::new()
-                .fill(colour::SURFACE)
-                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .fill(colour::SURFACE())
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
                 .corner_radius(radius::MD)
                 .inner_margin(egui::Margin::same(pad::LIST.0 as i8)),
         )
@@ -118,11 +118,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                     .desired_width(f32::INFINITY)
                     .margin(egui::Margin::symmetric(space::SM as i8, space::SM as i8))
                     .font(egui::FontId::proportional(text::CARD))
-                    .text_color(colour::TEXT)
+                    .text_color(colour::TEXT())
                     .hint_text(
                         RichText::new("Search tasks and projects, or jump to a page…")
                             .size(text::CARD)
-                            .color(colour::TEXT_FAINT),
+                            .color(colour::TEXT_FAINT()),
                     ),
             );
             // The only input here, so it keeps focus: a click on a row must
@@ -133,7 +133,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             }
 
             let line = ui.available_rect_before_wrap();
-            ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, colour::LINE));
+            ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, colour::LINE()));
             ui.add_space(space::XS);
 
             if let Some(err) = &error {
@@ -153,7 +153,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                     ui.label(
                         RichText::new(group)
                             .size(text::CAPTION)
-                            .color(colour::TEXT_FAINT),
+                            .color(colour::TEXT_FAINT()),
                     );
                 }
                 let response = row(ui, hit, i == s.highlight);
@@ -253,7 +253,7 @@ fn row(ui: &mut egui::Ui, hit: &Hit, lit: bool) -> egui::Response {
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), size::ROW), egui::Sense::click());
     if lit {
-        ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_ACTIVE);
+        ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_ACTIVE());
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -270,7 +270,7 @@ fn row(ui: &mut egui::Ui, hit: &Hit, lit: bool) -> egui::Response {
     }
     inner.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.add(
-            egui::Label::new(RichText::new(&hit.title).size(text::BODY).color(colour::TEXT))
+            egui::Label::new(RichText::new(&hit.title).size(text::BODY).color(colour::TEXT()))
                 .truncate()
                 .selectable(false),
         );
@@ -278,7 +278,7 @@ fn row(ui: &mut egui::Ui, hit: &Hit, lit: bool) -> egui::Response {
             ui.add_space(space::XS);
             ui.add(
                 egui::Label::new(
-                    RichText::new(&hit.context).size(text::SMALL).color(colour::TEXT_MUTED),
+                    RichText::new(&hit.context).size(text::SMALL).color(colour::TEXT_MUTED()),
                 )
                 .truncate()
                 .selectable(false),
@@ -290,7 +290,7 @@ fn row(ui: &mut egui::Ui, hit: &Hit, lit: bool) -> egui::Response {
 
 fn muted(ui: &mut egui::Ui, s: &str) {
     ui.add_space(space::XS);
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED()));
     ui.add_space(space::XS);
 }
 

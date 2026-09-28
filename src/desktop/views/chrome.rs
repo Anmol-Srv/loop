@@ -6,7 +6,7 @@
 use egui_phosphor::thin as icon;
 use serde_json::Value;
 
-use crate::desktop::design::{avatar, colour, motion, radius, shell, size, space, text, widgets as w};
+use crate::desktop::design::{avatar, colour, motion, radius, shell, size, space, text, theme, viz, widgets as w};
 use crate::desktop::{views, App, Tab};
 
 /// The sidebar's badges. Not under `__`: the 30 s refresh keeps them current.
@@ -77,83 +77,36 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ));
     items.push((shell::NavItem::new(icon::ROBOT, "Agents", sel(Tab::Agents)), Tab::Agents));
     let destinations: Vec<Tab> = items.iter().map(|(_, t)| *t).collect();
-    let groups = vec![
-        shell::NavGroup { label: "WORKSPACE", items: items.into_iter().map(|(i, _)| i).collect() },
-        // No label: a heading over one row reads as its own section for no
-        // reason. The gap between groups is enough to set it apart, at the
-        // sidebar's foot where account-level things belong.
-        shell::NavGroup { label: "", items: vec![shell::NavItem::new(icon::GEAR, "Settings", sel(Tab::Settings))] },
-    ];
+    // Settings is not a destination here: it lives in the account menu at the
+    // sidebar's foot, where account-level things belong, and on ⌘,.
+    let groups = vec![shell::NavGroup { label: "WORKSPACE", items: items.into_iter().map(|(i, _)| i).collect() }];
 
     let mut sign_out = false;
     let mut refresh = false;
+    let mut open_settings =
+        ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma));
+    let settings_open = sel(Tab::Settings);
 
-    let (clicked, search) = shell::sidebar(
-        ui,
-        ("Loop", "Airtribe engineering"),
-        &groups,
-        |ui| {
-            // Collapsed, there is room for the two actions and nothing else;
-            // the name moves into the avatar's hover text.
-            if ui.available_width() < size::SIDEBAR_W / 2.0 {
-                // Bottom-up, like the sidebar's foot it sits in: the avatar
-                // first so it anchors the corner, the actions stacked above.
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if !email.is_empty() {
-                        avatar::small(ui, &email, size::AVATAR_MD)
-                            .on_hover_text(format!("{name}\n{}\n{server}", sentence(&role)));
-                        ui.add_space(space::XS);
-                    }
-                    refresh |= footer_icon(ui, icon::ARROWS_CLOCKWISE, "Refresh", true);
-                    sign_out |= footer_icon(ui, icon::SIGN_OUT, "Sign out", true);
-                });
-                return;
-            }
-            // The buttons are laid out first so they own their corner: a long
-            // name then truncates into what is left instead of running under
-            // them.
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    sign_out |= footer_icon(ui, icon::SIGN_OUT, "Sign out", false);
-                    refresh |= footer_icon(ui, icon::ARROWS_CLOCKWISE, "Refresh", false);
-                    if email.is_empty() {
-                        return;
-                    }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        avatar::small(ui, &email, size::AVATAR_MD);
-                        ui.add_space(space::XS);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&name)
-                                        .size(text::SMALL)
-                                        .color(colour::TEXT),
-                                )
-                                .truncate()
-                                .selectable(false),
-                            )
-                            .on_hover_text(format!("{email}\n{}", sentence(&role)));
-                            // The server, not the role, under the name: the role
-                            // rarely changes, and a write to the wrong server is
-                            // the mistake worth preventing. A third line pushed
-                            // the footer off the window.
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&host)
-                                        .size(text::CAPTION)
-                                        .color(colour::TEXT_FAINT),
-                                )
-                                .truncate()
-                                .selectable(false),
-                            )
-                            .on_hover_text(server.as_str());
-                        });
-                    });
-                });
-            });
-        },
-    );
+    let (clicked, search) = shell::sidebar(ui, ("Loop", "Airtribe engineering"), &groups, |ui| {
+        if email.is_empty() {
+            return;
+        }
+        let narrow = ui.available_width() < size::SIDEBAR_W / 2.0;
+        let who = Who { name: &name, email: &email, role: &role, host: &host, server: &server };
+        let button = account_button(ui, &who, narrow, settings_open);
+        viz::menu_above(&button, ACCOUNT_MENU_W, |ui| {
+            account_header(ui, &who);
+            viz::menu_rule(ui);
+            ui.add_space(space::XS);
+            views::settings::appearance_compact(ui);
+            ui.add_space(space::SM);
+            viz::menu_rule(ui);
+            open_settings |= viz::menu_item_with(ui, icon::GEAR_SIX, "Settings", "\u{2318},");
+            refresh |= viz::menu_item_with(ui, icon::ARROWS_CLOCKWISE, "Refresh", "");
+            viz::menu_rule(ui);
+            sign_out |= viz::menu_item_with(ui, icon::SIGN_OUT, "Sign out", "");
+        });
+    });
 
     if sign_out {
         app.sign_out();
@@ -176,13 +129,13 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 app.project = None;
             }
         }
-        Some((1, _)) => {
-            views::agents::close();
-            app.tab = Tab::Settings;
-            app.task = None;
-            app.project = None;
-        }
         _ => {}
+    }
+    if open_settings {
+        views::agents::close();
+        app.tab = Tab::Settings;
+        app.task = None;
+        app.project = None;
     }
 
     // Before the content, so its Enter and arrow keys are spent on the
@@ -215,21 +168,140 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     w::toasts(ui.ctx());
 }
 
-/// `compact` for the collapsed rail, which is narrower than a padded button.
-fn footer_icon(ui: &mut egui::Ui, glyph: &str, label: &str, compact: bool) -> bool {
-    let response = if compact {
-        let r = ui.add(
-            egui::Button::new(
-                egui::RichText::new(glyph).size(text::HEADING).color(colour::TEXT_MUTED),
-            )
-            .frame(false)
-            .min_size(egui::vec2(size::ICON_COL, size::ICON_COL)),
-        );
-        motion::operable(ui, r, radius::SM as f32)
+/// The account menu's width: room for the theme switch's three segments.
+const ACCOUNT_MENU_W: f32 = 264.0;
+/// The account button's height — two lines of text and an avatar, a larger
+/// target than a nav row because it is the corner people aim for.
+const ACCOUNT_H: f32 = 44.0;
+
+struct Who<'a> {
+    name: &'a str,
+    email: &'a str,
+    role: &'a str,
+    host: &'a str,
+    server: &'a str,
+}
+
+/// Who is signed in, and where: the sidebar's foot. One target that opens the
+/// account menu, rather than a row of bare icons beside a truncated name.
+/// Collapsed, it is the avatar alone.
+fn account_button(ui: &mut egui::Ui, who: &Who<'_>, narrow: bool, active: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, ACCOUNT_H), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Account: {}", who.name))
+    });
+    let response = motion::operable(ui, response, radius::MD as f32);
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let hot = response.hovered() || response.has_focus();
+    let fill = if open || active {
+        colour::SURFACE_ACTIVE()
     } else {
-        w::icon_button(ui, glyph, "", w::Emphasis::Ghost, true)
+        motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER())
     };
-    response.on_hover_text(label).clicked()
+    let p = ui.painter();
+    if fill != colour::TRANSPARENT() {
+        p.rect_filled(rect, radius::MD as f32, fill);
+    }
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    if narrow {
+        let disc = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size::AVATAR_MD + 4.0));
+        avatar::paint(p, disc, who.email);
+        return if open {
+            response
+        } else {
+            response.on_hover_text(format!("{}\n{} \u{00B7} {}", who.name, sentence(who.role), who.server))
+        };
+    }
+
+    let side = size::AVATAR_MD + 4.0;
+    let disc = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + space::SM, rect.center().y - side / 2.0),
+        egui::Vec2::splat(side),
+    );
+    avatar::paint(p, disc, who.email);
+
+    let caret_w = size::ICON_COL;
+    let x = disc.right() + space::SM;
+    let room = (rect.right() - space::SM - caret_w - x).max(0.0);
+    let name = w::truncated(
+        ui,
+        who.name,
+        egui::FontId::new(text::BODY, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+        colour::TEXT(),
+        room,
+    );
+    // The server under the name, beside the role: with a hosted and a local
+    // one both in play, a write to the wrong one is the mistake to prevent.
+    let sub = [sentence(who.role), who.host.to_owned()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" \u{00B7} ");
+    let sub = w::truncated(ui, &sub, egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT(), room);
+    let top = rect.center().y - (name.size().y + sub.size().y) / 2.0;
+    let sub_y = top + name.size().y;
+    let p = ui.painter();
+    p.galley(egui::pos2(x, top), name, colour::TEXT());
+    p.galley(egui::pos2(x, sub_y), sub, colour::TEXT_FAINT());
+    p.text(
+        egui::pos2(rect.right() - space::SM - caret_w / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        icon::CARET_UP_DOWN,
+        egui::FontId::proportional(text::BODY),
+        if hot || open { colour::TEXT_2() } else { colour::TEXT_FAINT() },
+    );
+    if open {
+        response
+    } else {
+        response.on_hover_text(who.server)
+    }
+}
+
+/// The top of the account menu: who, and the full server address the button
+/// had to cut short.
+fn account_header(ui: &mut egui::Ui, who: &Who<'_>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::MD;
+        ui.add_space(space::XS);
+        avatar::small(ui, who.email, size::AVATAR_LG);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(who.name)
+                        .size(text::BODY)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT()),
+                )
+                .truncate()
+                .selectable(false),
+            );
+            ui.add(
+                egui::Label::new(egui::RichText::new(who.email).size(text::SMALL).color(colour::TEXT_MUTED()))
+                    .truncate()
+                    .selectable(false),
+            );
+        });
+    });
+    ui.add_space(space::SM);
+    ui.horizontal(|ui| {
+        ui.add_space(space::XS);
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("Signed in to {}", who.host))
+                    .size(text::CAPTION)
+                    .color(colour::TEXT_FAINT()),
+            )
+            .truncate()
+            .selectable(false),
+        )
+        .on_hover_text(who.server);
+    });
+    ui.add_space(space::SM);
 }
 
 /// Roles are stored lower case ("admin"); the footer reads as a caption.

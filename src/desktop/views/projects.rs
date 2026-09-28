@@ -312,7 +312,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             RichText::new(count_line(shown.len(), list.len()))
                 .size(text::SMALL)
                 .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
         ui.add_space(space::SM);
     }
@@ -505,7 +505,7 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     // Who is on a project is whoever holds its tasks, so the number of tasks
     // is the honest figure here; the faces live on the task rows themselves.
     if total > 0 {
-        row.text(2, &total.to_string(), colour::TEXT);
+        row.text(2, &total.to_string(), colour::TEXT());
     } else {
         row.muted(2, "");
     }
@@ -515,12 +515,12 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     // same thing as the Tasks column beside it.
     row.at(3, |ui| {
         if total > 0 {
-            w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT);
+            w::progress(ui, fraction(done, total), PROGRESS_BAR_W, colour::ACCENT());
             ui.add_space(space::SM);
             ui.label(
                 RichText::new(format!("{}%", done * 100 / total))
                     .size(text::SMALL)
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
         }
         // No tasks: nothing, not a dash. The Tasks column beside it has
@@ -579,12 +579,12 @@ pub(super) fn priority_tone(priority: i64) -> c::Tone {
 /// read as a failure.
 pub(super) fn label_colours(name: &str) -> (egui::Color32, egui::Color32) {
     match name {
-        "blue" => (colour::INFO, colour::INFO),
-        "green" => (colour::OK, colour::OK),
-        "amber" => (colour::WARN, colour::WARN),
-        "red" => (colour::DANGER, colour::DANGER),
-        "purple" | "pink" => (colour::AGENT, colour::AGENT),
-        _ => (colour::TEXT_MUTED, colour::TEXT_2),
+        "blue" => (colour::INFO(), colour::INFO()),
+        "green" => (colour::OK(), colour::OK()),
+        "amber" => (colour::WARN(), colour::WARN()),
+        "red" => (colour::DANGER(), colour::DANGER()),
+        "purple" | "pink" => (colour::AGENT(), colour::AGENT()),
+        _ => (colour::TEXT_MUTED(), colour::TEXT_2()),
     }
 }
 
@@ -597,7 +597,7 @@ pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32
     let extra = labels.len() - shown;
     // What the badges will really take, measured the way a badge lays out.
     let badge_w = |s: &str| {
-        ui.painter().layout_no_wrap(s.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT).size().x
+        ui.painter().layout_no_wrap(s.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT()).size().x
             + space::SM * 2.0
             + space::XS
     };
@@ -612,7 +612,7 @@ pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32
     }
     if extra > 0 {
         let rest: Vec<&str> = labels.iter().skip(shown).map(|l| str_at(l, "name")).collect();
-        c::badge(ui, &format!("+{extra}"), colour::TEXT_MUTED, colour::TEXT_2).on_hover_text(rest.join(", "));
+        c::badge(ui, &format!("+{extra}"), colour::TEXT_MUTED(), colour::TEXT_2()).on_hover_text(rest.join(", "));
     }
 }
 
@@ -667,9 +667,9 @@ const AT_RISK_DAYS: i64 = 7;
 impl Health {
     pub(super) fn ink(self) -> egui::Color32 {
         match self {
-            Health::Fine => colour::TEXT_MUTED,
-            Health::AtRisk => colour::WARN,
-            Health::Overdue => colour::DANGER,
+            Health::Fine => colour::TEXT_MUTED(),
+            Health::AtRisk => colour::WARN(),
+            Health::Overdue => colour::DANGER(),
         }
     }
 
@@ -935,7 +935,7 @@ pub(super) fn repo_url_ok(url: &str) -> bool {
 /// A field's "this will be refused": a danger hairline on the box, and the
 /// reason in words under it for whoever cannot tell that red from the line.
 pub(super) fn invalid(ui: &mut egui::Ui, field: egui::Rect, why: &str) {
-    ui.painter().rect_stroke(field, radius::SM as f32, egui::Stroke::new(1.0, colour::DANGER), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(field, radius::SM as f32, egui::Stroke::new(1.0, colour::DANGER()), egui::StrokeKind::Inside);
     ui.add_space(space::XXS);
     w::caption(ui, why);
 }
@@ -990,7 +990,7 @@ fn row_input(ui: &mut egui::Ui, width: f32, hint: &str, value: &mut String) -> e
     ui.add_sized(
         [width, viz::HEIGHT],
         egui::TextEdit::singleline(value)
-            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED))
+            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
             .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
     )
 }

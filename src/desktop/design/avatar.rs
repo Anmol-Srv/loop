@@ -9,7 +9,7 @@
 
 use egui::{Align2, Color32, FontId, Response, Sense, Ui, Vec2};
 
-use super::tokens::{colour, text};
+use super::tokens::text;
 
 /// Two initials from a name or an email local-part.
 fn initials(seed: &str) -> String {
@@ -71,6 +71,10 @@ pub fn tint_pair(seed: &str) -> (Color32, Color32) {
     (from_hue(hue, 0.42, 0.72), from_hue((hue + 55.0) % 360.0, 0.48, 0.78))
 }
 
+/// Initials ink. The disc is a pale tint in either palette, so this stays
+/// dark whatever the accent's own ink is.
+const INK: Color32 = Color32::from_rgb(0x06, 0x14, 0x1E);
+
 /// The avatar.
 pub fn small(ui: &mut Ui, seed: &str, size: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
@@ -87,6 +91,6 @@ pub fn paint(p: &egui::Painter, rect: egui::Rect, seed: &str) {
         Align2::CENTER_CENTER,
         initials(seed),
         FontId::proportional((size * 0.36).max(text::CAPTION)),
-        colour::ON_ACCENT,
+        INK,
     );
 }

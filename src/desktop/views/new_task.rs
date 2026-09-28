@@ -131,7 +131,7 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
         ui.add_space(space::SM);
         new_label = label_picker(ui, "Add labels", &all_labels, &mut d.labels);
         if let Some(err) = &label_error {
-            ui.label(egui::RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+            ui.label(egui::RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER()));
         }
         if let Some(err) = &error {
             ui.add_space(space::MD);
@@ -170,5 +170,5 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
 
 /// "New task", for a page header: whether it was clicked. Call `open` then.
 pub fn button(ui: &mut egui::Ui) -> bool {
-    w::secondary(ui, "New task", true).on_hover_text("New task (C)").clicked()
+    w::cta(ui, egui_phosphor::thin::PLUS, "New task", "C").on_hover_text("New task (C)").clicked()
 }

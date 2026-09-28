@@ -234,18 +234,18 @@ fn job(spans: &[Span], ink: egui::Color32, wrap: f32) -> (LayoutJob, Vec<(std::o
         };
         let size = if s.style.code { text::SMALL } else { text::BODY };
         let colour = match () {
-            _ if s.link.is_some() => colour::ACCENT,
-            _ if s.style.quiet => colour::TEXT_MUTED,
-            _ if s.style.bold => colour::TEXT,
+            _ if s.link.is_some() => colour::ACCENT(),
+            _ if s.style.quiet => colour::TEXT_MUTED(),
+            _ if s.style.bold => colour::TEXT(),
             _ => ink,
         };
         let format = TextFormat {
             font_id: FontId::new(size, family),
             color: colour,
             italics: s.style.italic,
-            background: if s.style.code { colour::INSET } else { egui::Color32::TRANSPARENT },
+            background: if s.style.code { colour::INSET() } else { egui::Color32::TRANSPARENT },
             strikethrough: if s.style.strike { Stroke::new(1.0, colour) } else { Stroke::NONE },
-            underline: if s.link.is_some() { Stroke::new(1.0, colour::ACCENT.gamma_multiply(0.5)) } else { Stroke::NONE },
+            underline: if s.link.is_some() { Stroke::new(1.0, colour::ACCENT().gamma_multiply(0.5)) } else { Stroke::NONE },
             line_height: Some(text::BODY * 1.45),
             ..Default::default()
         };
@@ -289,7 +289,7 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
                 Block::Quote(s) => {
                     ui.horizontal_top(|ui| {
                         ui.add_space(space::MD);
-                        ui.vertical(|ui| paragraph(ui, &s, colour::TEXT_MUTED));
+                        ui.vertical(|ui| paragraph(ui, &s, colour::TEXT_MUTED()));
                     });
                 }
                 Block::Bullet(s) => {
@@ -297,19 +297,19 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
                         ui.spacing_mut().item_spacing.x = space::SM;
                         // A painted dot: the bullet sits on the first line's middle.
                         let (r, _) = ui.allocate_exact_size(egui::vec2(space::SM, text::BODY * 1.45), Sense::hover());
-                        ui.painter().circle_filled(egui::pos2(r.center().x, r.center().y), 2.0, colour::TEXT_MUTED);
+                        ui.painter().circle_filled(egui::pos2(r.center().x, r.center().y), 2.0, colour::TEXT_MUTED());
                         ui.vertical(|ui| paragraph(ui, &s, ink));
                     });
                 }
                 Block::Code(code) => {
                     egui::Frame::new()
-                        .fill(colour::INSET)
-                        .stroke(Stroke::new(1.0, colour::LINE_SOFT))
+                        .fill(colour::INSET())
+                        .stroke(Stroke::new(1.0, colour::LINE_SOFT()))
                         .corner_radius(radius::SM)
                         .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2));
+                            ui.label(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2()));
                         });
                 }
             }

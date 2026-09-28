@@ -10,11 +10,11 @@ use super::tokens::{colour, pad, radius, size, space, text};
 // ---------------------------------------------------------------- text
 
 pub fn title(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::TITLE).color(colour::TEXT));
+    ui.label(RichText::new(s).size(text::TITLE).color(colour::TEXT()));
 }
 
 pub fn heading(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::HEADING).color(colour::TEXT));
+    ui.label(RichText::new(s).size(text::HEADING).color(colour::TEXT()));
 }
 
 /// A task title in a row: takes the flexible slot and truncates rather than
@@ -29,18 +29,18 @@ pub fn row_title(ui: &mut Ui, s: &str, reserve_trailing: f32) {
     let available = (ui.available_width() - reserve_trailing).max(size::ROW);
     ui.add_sized(
         [available, size::ROW],
-        egui::Label::new(RichText::new(s).size(text::BODY).color(colour::TEXT))
+        egui::Label::new(RichText::new(s).size(text::BODY).color(colour::TEXT()))
             .truncate()
             .halign(egui::Align::LEFT),
     );
 }
 
 pub fn body(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::BODY).color(colour::TEXT));
+    ui.label(RichText::new(s).size(text::BODY).color(colour::TEXT()));
 }
 
 pub fn muted(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED));
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_MUTED()));
 }
 
 /// A monospaced caption: a server URL, an ordinal, anything where the glyphs
@@ -50,12 +50,12 @@ pub fn mono_caption(ui: &mut Ui, s: &str) {
         RichText::new(s)
             .monospace()
             .size(text::CAPTION)
-            .color(colour::TEXT_FAINT),
+            .color(colour::TEXT_FAINT()),
     );
 }
 
 pub fn caption(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::CAPTION).color(colour::TEXT_MUTED));
+    ui.label(RichText::new(s).size(text::CAPTION).color(colour::TEXT_MUTED()));
 }
 
 /// A shortened id, monospaced, full value on hover. Full uuids are noise on
@@ -63,7 +63,7 @@ pub fn caption(ui: &mut Ui, s: &str) {
 pub fn id(ui: &mut Ui, value: &str) -> Response {
     let short = value.get(..8).unwrap_or(value);
     ui.add(egui::Label::new(
-        RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT),
+        RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT()),
     ))
     .on_hover_text(value)
 }
@@ -97,7 +97,7 @@ pub fn dot(ui: &mut Ui, c: Color32) {
 /// avatar it has no seed to draw a gradient from, so it is one flat tint.
 pub fn agent_mark(ui: &mut Ui, side: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    paint_agent_mark(ui.painter(), rect, colour::AGENT);
+    paint_agent_mark(ui.painter(), rect, colour::AGENT());
     response
 }
 
@@ -153,7 +153,7 @@ pub fn blocked_by(ui: &mut Ui, what: &str) {
         egui::Label::new(
             RichText::new(format!("\u{2933} waiting on \u{201c}{what}\u{201d}"))
                 .size(text::SMALL)
-                .color(colour::TEXT_FAINT),
+                .color(colour::TEXT_FAINT()),
         )
         .truncate(),
     );
@@ -169,7 +169,7 @@ pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
     let h = space::XXS;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, h / 2.0, colour::LINE);
+    p.rect_filled(rect, h / 2.0, colour::LINE());
     let f = fraction.clamp(0.0, 1.0);
     if f > 0.0 {
         // Floored at the cap diameter: below it a rounded rect paints as a
@@ -184,7 +184,7 @@ pub fn progress(ui: &mut Ui, fraction: f32, width: f32, tint: Color32) {
 /// The glass edge: one even hairline all round, brighter on hover. No lit top
 /// rim; it read as a stray border on every card.
 pub fn glass_edge(ui: &Ui, rect: egui::Rect, r: f32, hovered: bool) {
-    let tone = if hovered { colour::EDGE_MID_HOVER } else { colour::EDGE_MID };
+    let tone = if hovered { colour::EDGE_MID_HOVER() } else { colour::EDGE_MID() };
     ui.painter().rect_stroke(rect, r, egui::Stroke::new(1.0, tone), egui::StrokeKind::Inside);
 }
 
@@ -201,7 +201,7 @@ pub fn glass_panel<R>(
     hovered: bool,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    let fill = if hovered { colour::GLASS_HOVER } else { colour::GLASS };
+    let fill = if hovered { colour::GLASS_HOVER() } else { colour::GLASS() };
     let out = egui::Frame::new()
         .fill(fill)
         .corner_radius(radius::MD)
@@ -217,7 +217,7 @@ pub fn glass_panel<R>(
 /// page agents hit this gap independently, which is how it earned a token.
 pub fn card_list<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
     let out = egui::Frame::new()
-        .fill(colour::GLASS)
+        .fill(colour::GLASS())
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::symmetric(pad::LIST.0 as i8, pad::LIST.1 as i8))
         .show(ui, add);
@@ -288,7 +288,7 @@ pub fn row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> Response {
         response.id.with("hover"),
         response.hovered() || response.has_focus(),
         Color32::TRANSPARENT,
-        colour::SURFACE_HOVER,
+        colour::SURFACE_HOVER(),
     );
     if tint != Color32::TRANSPARENT {
         ui.painter().rect_filled(rect, radius::SM as f32, tint);
@@ -338,7 +338,7 @@ pub enum Emphasis {
 /// The button. Prefer the named wrappers below; reach for this when you need
 /// an icon or a non-default size.
 pub fn button(ui: &mut Ui, label: &str, emphasis: Emphasis, enabled: bool) -> Response {
-    button_with(ui, None, label, emphasis, enabled)
+    button_with(ui, None, label, "", emphasis, enabled)
 }
 
 /// A button with a leading icon glyph.
@@ -349,26 +349,38 @@ pub fn icon_button(
     emphasis: Emphasis,
     enabled: bool,
 ) -> Response {
-    button_with(ui, Some(icon), label, emphasis, enabled)
+    button_with(ui, Some(icon), label, "", emphasis, enabled)
+}
+
+/// A page's main action: filled, with its icon, and the key that does the
+/// same thing set into the button itself — the one place the shortcut is
+/// guaranteed to be seen. One per screen.
+pub fn cta(ui: &mut Ui, icon: &str, label: &str, keys: &str) -> Response {
+    button_with(ui, Some(icon), label, keys, Emphasis::Primary, true)
 }
 
 fn button_with(
     ui: &mut Ui,
     icon: Option<&str>,
     label: &str,
+    keys: &str,
     emphasis: Emphasis,
     enabled: bool,
 ) -> Response {
     let small = emphasis == Emphasis::Link;
     let font = egui::FontId::proportional(if small { text::SMALL } else { text::BODY });
 
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), colour::TEXT());
     let icon_w = if icon.is_some() { size::ICON_COL } else { 0.0 };
     // A link has no box, so it has no padding to sit inside: any inset here
     // pushes its text off the column every neighbouring value starts on.
     let (px, _) = if small { (0.0, 0.0) } else { pad::BUTTON };
     let height = if small { size::CONTROL - space::SM } else { size::CONTROL };
-    let width = galley.size().x + icon_w + px * 2.0;
+    let key_font = egui::FontId::proportional(text::CAPTION);
+    let key_galley = (!keys.is_empty())
+        .then(|| ui.painter().layout_no_wrap(keys.to_owned(), key_font, colour::TEXT()));
+    let key_w = key_galley.as_ref().map_or(0.0, |g| (g.size().x + space::SM).max(KEY_MIN) + space::SM);
+    let width = galley.size().x + icon_w + key_w + px * 2.0;
 
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(width, height),
@@ -389,42 +401,42 @@ fn button_with(
 
     // Every colour decided here, before a single draw call.
     let (fill, stroke, fg) = match (emphasis, enabled) {
-        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_DISABLED),
+        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_DISABLED()),
         (Emphasis::Primary, _) => {
             let f = if pressed {
-                colour::ACCENT
+                colour::ACCENT()
             } else if hovered {
-                colour::ACCENT_HOVER
+                colour::ACCENT_HOVER()
             } else {
-                colour::ACCENT
+                colour::ACCENT()
             };
-            (f, Color32::TRANSPARENT, colour::ON_ACCENT)
+            (f, Color32::TRANSPARENT, colour::ON_ACCENT())
         }
         (Emphasis::Secondary, _) => (
             if pressed {
-                colour::GLASS_ACTIVE
+                colour::GLASS_ACTIVE()
             } else if hovered {
-                colour::GLASS_HOVER
+                colour::GLASS_HOVER()
             } else {
-                colour::GLASS
+                colour::GLASS()
             },
-            if hovered { colour::EDGE_HI_HOVER } else { colour::EDGE_MID },
-            colour::TEXT,
+            if hovered { colour::EDGE_HI_HOVER() } else { colour::EDGE_MID() },
+            colour::TEXT(),
         ),
         (Emphasis::Danger, _) => (
-            if hovered { colour::DANGER.gamma_multiply(0.14) } else { Color32::TRANSPARENT },
-            colour::DANGER.gamma_multiply(if hovered { 0.75 } else { 0.42 }),
-            colour::DANGER,
+            if hovered { colour::DANGER().gamma_multiply(0.14) } else { Color32::TRANSPARENT },
+            colour::DANGER().gamma_multiply(if hovered { 0.75 } else { 0.42 }),
+            colour::DANGER(),
         ),
         (Emphasis::Ghost, _) => (
-            if hovered { colour::GLASS_HOVER } else { Color32::TRANSPARENT },
+            if hovered { colour::GLASS_HOVER() } else { Color32::TRANSPARENT },
             Color32::TRANSPARENT,
-            if hovered { colour::TEXT } else { colour::TEXT_MUTED },
+            if hovered { colour::TEXT() } else { colour::TEXT_MUTED() },
         ),
         (Emphasis::Link, _) => (
             Color32::TRANSPARENT,
             Color32::TRANSPARENT,
-            if hovered { colour::TEXT } else { colour::TEXT_MUTED },
+            if hovered { colour::TEXT() } else { colour::TEXT_MUTED() },
         ),
     };
 
@@ -460,12 +472,27 @@ fn button_with(
         font,
         fg,
     );
+    if let Some(g) = key_galley {
+        // The key sits in a chip of the button's own ink at low alpha, so it
+        // reads on any accent in either palette.
+        let w = (g.size().x + space::SM).max(KEY_MIN);
+        let chip = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - px - w / 2.0, rect.center().y),
+            Vec2::new(w, KEY_H),
+        );
+        p.rect_filled(chip, radius::SM as f32 - 1.0, fg.gamma_multiply(0.16));
+        p.galley(chip.center() - g.size() / 2.0, g, fg);
+    }
 
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response
 }
+
+/// A key hint inside a button: square for one key, wider for a chord.
+const KEY_MIN: f32 = 16.0;
+const KEY_H: f32 = 16.0;
 
 pub fn primary(ui: &mut Ui, label: &str, enabled: bool) -> Response {
     button(ui, label, Emphasis::Primary, enabled)
@@ -497,13 +524,13 @@ pub fn link(ui: &mut Ui, label: &str) -> Response {
 pub fn switch(ui: &mut Ui, label: &str, detail: &str, on: &mut bool) -> Response {
     const TRACK: Vec2 = Vec2::new(30.0, 18.0);
     let font = egui::FontId::proportional(text::BODY);
-    let title = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT);
+    let title = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT());
     let text_w = ui.available_width() - TRACK.x - space::MD;
     let note = (!detail.is_empty()).then(|| {
         let mut job = egui::text::LayoutJob::simple(
             detail.to_owned(),
             egui::FontId::proportional(text::SMALL),
-            colour::TEXT_MUTED,
+            colour::TEXT_MUTED(),
             text_w,
         );
         job.wrap.max_width = text_w;
@@ -524,15 +551,15 @@ pub fn switch(ui: &mut Ui, label: &str, detail: &str, on: &mut bool) -> Response
         TRACK,
     );
     let p = ui.painter();
-    let off_fill = if hot { colour::LINE_STRONG } else { colour::LINE };
-    p.rect_filled(track, radius::PILL as f32, off_fill.lerp_to_gamma(colour::ACCENT, t));
+    let off_fill = if hot { colour::LINE_STRONG() } else { colour::LINE() };
+    p.rect_filled(track, radius::PILL as f32, off_fill.lerp_to_gamma(colour::ACCENT(), t));
     let r = TRACK.y / 2.0 - 2.0;
     let x = egui::lerp(track.left() + 2.0 + r..=track.right() - 2.0 - r, t);
-    p.circle_filled(egui::pos2(x, track.center().y), r, colour::TEXT.lerp_to_gamma(colour::ON_ACCENT, t));
+    p.circle_filled(egui::pos2(x, track.center().y), r, colour::TEXT().lerp_to_gamma(colour::ON_ACCENT(), t));
     let x = track.right() + space::MD;
-    p.galley(egui::pos2(x, rect.top()), title, colour::TEXT);
+    p.galley(egui::pos2(x, rect.top()), title, colour::TEXT());
     if let Some(g) = note {
-        p.galley(egui::pos2(x, rect.top() + h - g.size().y), g, colour::TEXT_MUTED);
+        p.galley(egui::pos2(x, rect.top() + h - g.size().y), g, colour::TEXT_MUTED());
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -556,7 +583,7 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &
             [ui.available_width(), size::CONTROL],
             egui::TextEdit::singleline(value)
                 .password(secret)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         )
     })
@@ -583,7 +610,7 @@ pub fn field_multiline(
             [ui.available_width(), size::CONTROL * rows as f32],
             egui::TextEdit::multiline(value)
                 .desired_rows(rows)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         )
     })
@@ -600,13 +627,13 @@ pub fn empty(ui: &mut Ui, message: &str, detail: &str) {
     // No leading space: every caller already sits under a section heading that
     // spaces itself, and the pair made an empty phase taller than a full one.
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(message).size(text::SMALL).color(colour::TEXT_FAINT));
+        ui.label(RichText::new(message).size(text::SMALL).color(colour::TEXT_FAINT()));
         if !detail.is_empty() {
             ui.add_space(space::XXS);
             ui.label(
                 RichText::new(detail)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_DISABLED),
+                    .color(colour::TEXT_DISABLED()),
             );
         }
     });
@@ -625,12 +652,12 @@ pub fn loading(ui: &mut Ui, what: &str) {
 
 pub fn error(ui: &mut Ui, message: &str) {
     egui::Frame::new()
-        .fill(colour::DANGER.gamma_multiply(0.06))
-        .stroke(egui::Stroke::new(1.0, colour::DANGER.gamma_multiply(0.30)))
+        .fill(colour::DANGER().gamma_multiply(0.06))
+        .stroke(egui::Stroke::new(1.0, colour::DANGER().gamma_multiply(0.30)))
         .corner_radius(radius::SM)
         .inner_margin(egui::Margin::symmetric(pad::BUTTON.0 as i8, pad::BUTTON.1 as i8))
         .show(ui, |ui| {
-            ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER));
+            ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER()));
         });
 }
 
@@ -664,15 +691,15 @@ pub fn toasts(ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_BOTTOM, Vec2::new(0.0, -space::XL))
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(colour::SURFACE_ACTIVE)
-                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .fill(colour::SURFACE_ACTIVE())
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
                 .corner_radius(radius::MD)
                 .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
                 .show(ui, |ui| {
                     ui.label(
                         RichText::new(message)
                             .size(text::SMALL)
-                            .color(if failed { colour::DANGER } else { colour::TEXT }),
+                            .color(if failed { colour::DANGER() } else { colour::TEXT() }),
                     );
                 });
         });

@@ -127,8 +127,8 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
 
     let (mut c1, mut c2) = avatar::tint_pair(seed);
     if presence == Presence::Offline {
-        c1 = c1.lerp_to_gamma(colour::IDLE, 0.7);
-        c2 = c2.lerp_to_gamma(colour::IDLE, 0.7);
+        c1 = c1.lerp_to_gamma(colour::IDLE(), 0.7);
+        c2 = c2.lerp_to_gamma(colour::IDLE(), 0.7);
     }
 
     let center = rect.center();
@@ -164,8 +164,8 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
     if presence == Presence::NeedsInput {
         let rad = (side * 0.15).clamp(3.0, 5.0);
         let c = rect.right_top() + vec2(-rad * 0.3, rad * 0.3);
-        p.circle_filled(c, rad + 1.5, colour::CANVAS);
-        p.circle_filled(c, rad, colour::WARN);
+        p.circle_filled(c, rad + 1.5, colour::CANVAS());
+        p.circle_filled(c, rad, colour::WARN());
     }
     response.on_hover_text(label)
 }
@@ -210,13 +210,13 @@ pub fn spinner(ui: &mut Ui, side: f32) -> Response {
     let rad = side * 0.34;
     let p = ui.painter();
     let Some(t) = clock(ui) else {
-        p.circle_filled(c, rad * 0.6, colour::INFO);
+        p.circle_filled(c, rad * 0.6, colour::INFO());
         return response;
     };
-    p.circle_stroke(c, rad, Stroke::new(1.4, colour::INFO.gamma_multiply(0.2)));
+    p.circle_stroke(c, rad, Stroke::new(1.4, colour::INFO().gamma_multiply(0.2)));
     let start = t * TAU - FRAC_PI_2;
     let arc: Vec<Pos2> = (0..=10).map(|i| c + Vec2::angled(start + i as f32 / 10.0 * FRAC_PI_2 * 1.2) * rad).collect();
-    p.add(egui::Shape::line(arc, Stroke::new(1.4, colour::INFO)));
+    p.add(egui::Shape::line(arc, Stroke::new(1.4, colour::INFO())));
     keep_moving(ui, rect);
     response
 }
@@ -242,11 +242,11 @@ pub fn stepper(ui: &mut Ui, steps: &[Step], current: usize, complete: bool, tone
             let done = i < current || (complete && i == current);
             let now = i == current && !complete;
             let (font, ink) = if now {
-                (egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())), colour::TEXT)
+                (egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())), colour::TEXT())
             } else if done {
-                (egui::FontId::proportional(text::SMALL), colour::TEXT_2)
+                (egui::FontId::proportional(text::SMALL), colour::TEXT_2())
             } else {
-                (egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT)
+                (egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT())
             };
             let galley = ui.painter().layout_no_wrap(step.label.clone(), font, ink);
             let (rect, response) = ui.allocate_exact_size(
@@ -261,9 +261,9 @@ pub fn stepper(ui: &mut Ui, steps: &[Step], current: usize, complete: bool, tone
             let p = ui.painter();
             if done {
                 let (fill, mark) = if complete && i == current {
-                    (colour::OK_BG, colour::OK)
+                    (colour::OK_BG(), colour::OK())
                 } else {
-                    (colour::SURFACE_ACTIVE, colour::TEXT_2)
+                    (colour::SURFACE_ACTIVE(), colour::TEXT_2())
                 };
                 p.circle_filled(c, NODE / 2.0, fill);
                 glyph::tick(p, c, NODE * 0.62, mark);
@@ -271,7 +271,7 @@ pub fn stepper(ui: &mut Ui, steps: &[Step], current: usize, complete: bool, tone
                 p.circle_stroke(c, NODE / 2.0 - 0.75, Stroke::new(1.5, tone));
                 p.circle_filled(c, NODE * 0.2, tone);
             } else {
-                p.circle_stroke(c, NODE / 2.0 - 0.5, Stroke::new(1.0, colour::LINE_STRONG));
+                p.circle_stroke(c, NODE / 2.0 - 0.5, Stroke::new(1.0, colour::LINE_STRONG()));
             }
             p.galley(pos2(rect.left() + NODE + space::XS, rect.center().y - galley.size().y / 2.0), galley, ink);
             if let Some(when) = &step.when {
@@ -280,7 +280,7 @@ pub fn stepper(ui: &mut Ui, steps: &[Step], current: usize, complete: bool, tone
 
             if i + 1 < steps.len() {
                 let (link, _) = ui.allocate_exact_size(vec2(LINK_W, NODE), Sense::hover());
-                let ink = if i < current { colour::LINE_STRONG } else { colour::LINE };
+                let ink = if i < current { colour::LINE_STRONG() } else { colour::LINE() };
                 ui.painter().hline(link.x_range(), link.center().y, Stroke::new(1.0, ink));
             }
         }
@@ -293,7 +293,7 @@ pub fn stepper(ui: &mut Ui, steps: &[Step], current: usize, complete: bool, tone
 /// the right size, so the page does not jump when it lands.
 pub fn skeleton(ui: &mut Ui, width: f32, height: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(width.min(ui.available_width()), height), Sense::hover());
-    ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_HOVER);
+    ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE_HOVER());
 }
 
 /// Fourteen days of activity as tiny bars, oldest first. An empty day is a
@@ -309,7 +309,7 @@ pub fn activity(ui: &mut Ui, days: &[f32]) -> Response {
     let p = ui.painter();
     for (i, v) in days.iter().enumerate() {
         let x = rect.left() + i as f32 * (bar + gap);
-        let (hh, ink) = if *v > 0.0 { ((v / peak * h).max(3.0), colour::AGENT.gamma_multiply(0.85)) } else { (2.0, colour::LINE_STRONG) };
+        let (hh, ink) = if *v > 0.0 { ((v / peak * h).max(3.0), colour::AGENT().gamma_multiply(0.85)) } else { (2.0, colour::LINE_STRONG()) };
         p.rect_filled(Rect::from_min_size(pos2(x, rect.bottom() - hh), vec2(bar, hh)), 1.0, ink);
     }
     response.on_hover_text(words)
@@ -319,9 +319,9 @@ pub fn activity(ui: &mut Ui, days: &[f32]) -> Response {
 /// `None` is "not reported" — an older agent kit that says nothing about it.
 pub fn check(ui: &mut Ui, label: &str, ok: Option<bool>, detail: &str) -> Response {
     let (mark, ink) = match ok {
-        Some(true) => (1, colour::OK),
-        Some(false) => (2, colour::DANGER),
-        None => (0, colour::TEXT_FAINT),
+        Some(true) => (1, colour::OK()),
+        Some(false) => (2, colour::DANGER()),
+        None => (0, colour::TEXT_FAINT()),
     };
     let r = ui
         .horizontal(|ui| {
@@ -333,9 +333,9 @@ pub fn check(ui: &mut Ui, label: &str, ok: Option<bool>, detail: &str) -> Respon
                 2 => glyph::cross(p, rect.center(), rect.width(), ink),
                 _ => glyph::dash(p, rect.center(), rect.width(), ink),
             }
-            ui.label(RichText::new(label).size(text::SMALL).color(if ok.is_some() { colour::TEXT_2 } else { colour::TEXT_MUTED }));
+            ui.label(RichText::new(label).size(text::SMALL).color(if ok.is_some() { colour::TEXT_2() } else { colour::TEXT_MUTED() }));
             if !detail.is_empty() {
-                ui.label(RichText::new(detail).size(text::SMALL).color(colour::TEXT_MUTED));
+                ui.label(RichText::new(detail).size(text::SMALL).color(colour::TEXT_MUTED()));
             }
         })
         .response;
@@ -354,8 +354,8 @@ pub fn private_label(ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XXS;
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(text::CAPTION + 1.0), Sense::hover());
-        glyph::lock(ui.painter(), rect.center(), rect.width(), colour::TEXT_MUTED);
-        ui.label(RichText::new("Only you can see this").size(text::CAPTION).color(colour::TEXT_MUTED));
+        glyph::lock(ui.painter(), rect.center(), rect.width(), colour::TEXT_MUTED());
+        ui.label(RichText::new("Only you can see this").size(text::CAPTION).color(colour::TEXT_MUTED()));
     });
 }
 
@@ -363,9 +363,9 @@ pub fn private_label(ui: &mut Ui) {
 /// count. Keyboard-operable; says whether it is open.
 pub fn disclosure(ui: &mut Ui, id: egui::Id, label: &str, count: Option<usize>, open: &mut bool) -> Response {
     let font = egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::MEDIUM.into()));
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT_MUTED);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT_MUTED());
     let count_g = count.map(|n| {
-        ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT)
+        ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT())
     });
     let w = space::LG + galley.size().x + count_g.as_ref().map_or(0.0, |g| space::XS + g.size().x) + space::SM;
     let (rect, response) = ui.allocate_exact_size(vec2(w, size::CONTROL), Sense::click());
@@ -375,14 +375,14 @@ pub fn disclosure(ui: &mut Ui, id: egui::Id, label: &str, count: Option<usize>, 
         *open = !*open;
     }
     let hot = response.hovered() || response.has_focus();
-    let ink = if hot { colour::TEXT } else { colour::TEXT_MUTED };
+    let ink = if hot { colour::TEXT() } else { colour::TEXT_MUTED() };
     let turn = motion::to(ui, id.with("caret"), *open, motion::FAST);
     let p = ui.painter();
     glyph::caret(p, pos2(rect.left() + space::XS + 4.0, rect.center().y), text::SMALL, turn, ink);
     let x = rect.left() + space::LG;
     p.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley.clone(), ink);
     if let Some(g) = count_g {
-        p.galley(pos2(x + galley.size().x + space::XS, rect.center().y - g.size().y / 2.0), g, colour::TEXT_FAINT);
+        p.galley(pos2(x + galley.size().x + space::XS, rect.center().y - g.size().y / 2.0), g, colour::TEXT_FAINT());
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

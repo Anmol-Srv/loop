@@ -98,7 +98,7 @@ impl Cells<'_, '_, '_> {
     /// Secondary text, "—" when there is none.
     pub fn muted(&mut self, i: usize, s: &str) {
         let (s, ink) =
-            if s.is_empty() { ("\u{2014}", colour::TEXT_FAINT) } else { (s, colour::TEXT_MUTED) };
+            if s.is_empty() { ("\u{2014}", colour::TEXT_FAINT()) } else { (s, colour::TEXT_MUTED()) };
         self.at(i, |ui| {
             ui.add(
                 egui::Label::new(RichText::new(s).size(text::SMALL).color(ink))
@@ -154,9 +154,9 @@ pub fn strong_cell(ui: &mut Ui, col: &Col, s: &str, ink: egui::Color32) {
 /// A muted secondary text cell, "—" when empty.
 pub fn muted_cell(ui: &mut Ui, col: &Col, s: &str) {
     let (s, ink) = if s.is_empty() {
-        ("—", colour::TEXT_FAINT)
+        ("—", colour::TEXT_FAINT())
     } else {
-        (s, colour::TEXT_MUTED)
+        (s, colour::TEXT_MUTED())
     };
     cell(ui, col, |ui| {
         ui.add(
@@ -181,7 +181,7 @@ pub fn show(
     n: usize,
     row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
 ) -> Option<usize> {
-    show_inner(ui, id, cols, n, row, None)
+    show_inner(ui, id, cols, n, true, row, None)
 }
 
 /// `show`, with `menu` filling the action menu a right-click on row `i` opens.
@@ -195,7 +195,22 @@ pub fn show_with_menu(
     row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
     mut menu: impl FnMut(&mut Ui, usize),
 ) -> Option<usize> {
-    show_inner(ui, id, cols, n, row, Some(&mut menu))
+    show_inner(ui, id, cols, n, true, row, Some(&mut menu))
+}
+
+/// `show_with_menu` for one group of a grouped list: `header` false leaves
+/// the column labels off, so a page of groups names its columns once rather
+/// than over every group.
+pub fn show_group(
+    ui: &mut Ui,
+    id: &str,
+    cols: &[Col],
+    n: usize,
+    header: bool,
+    row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
+    mut menu: impl FnMut(&mut Ui, usize),
+) -> Option<usize> {
+    show_inner(ui, id, cols, n, header, row, Some(&mut menu))
 }
 
 fn show_inner(
@@ -203,6 +218,7 @@ fn show_inner(
     id: &str,
     cols: &[Col],
     n: usize,
+    header: bool,
     mut row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
     mut menu: Option<&mut dyn FnMut(&mut Ui, usize)>,
 ) -> Option<usize> {
@@ -244,8 +260,8 @@ fn show_inner(
     let mut responses: Vec<(usize, egui::Response)> = Vec::with_capacity(n);
 
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::LG)
         .inner_margin(egui::Margin::symmetric(space::MD as i8, 0))
         .show(ui, |ui| {
@@ -287,30 +303,35 @@ fn show_inner(
                 });
             }
 
-            builder
-                .header(size::CONTROL, |mut header| {
-                    for c in cols.iter().zip(&visible).filter(|(_, v)| **v).map(|(c, _)| c) {
-                        header.col(|ui| {
-                            cell(ui, c, |ui| {
-                                ui.label(
-                                    RichText::new(c.label)
-                                        .size(text::CAPTION)
-                                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                        .color(colour::TEXT_MUTED),
-                                );
-                            });
-                        });
-                    }
-                })
-                .body(|body| {
-                    // `rows` culls to what is on screen; a loop of `row` would
-                    // build all of them, and these lists are unbounded.
-                    body.rows(ROW_H, n, |mut r| {
-                        let i = r.index();
-                        row(&mut Cells { row: &mut r, cols, visible: &visible }, i);
-                        responses.push((i, r.response()));
-                    });
+            // `rows` culls to what is on screen; a loop of `row` would build
+            // all of them, and these lists are unbounded.
+            let body = |body: egui_extras::TableBody<'_>| {
+                body.rows(ROW_H, n, |mut r| {
+                    let i = r.index();
+                    row(&mut Cells { row: &mut r, cols, visible: &visible }, i);
+                    responses.push((i, r.response()));
                 });
+            };
+            if header {
+                builder
+                    .header(size::CONTROL, |mut header| {
+                        for c in cols.iter().zip(&visible).filter(|(_, v)| **v).map(|(c, _)| c) {
+                            header.col(|ui| {
+                                cell(ui, c, |ui| {
+                                    ui.label(
+                                        RichText::new(c.label)
+                                            .size(text::CAPTION)
+                                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                            .color(colour::TEXT_MUTED()),
+                                    );
+                                });
+                            });
+                        }
+                    })
+                    .body(body);
+            } else {
+                builder.body(body);
+            }
 
             let mut menu_open = None;
             for (i, response) in responses {
@@ -333,7 +354,8 @@ fn show_inner(
             // Rows sit directly under the header at a fixed pitch, so their
             // rects are known without asking the table.
             let mut shapes: Vec<egui::Shape> = Vec::with_capacity(n + 1);
-            let first_row = top + size::CONTROL;
+            let head_h = if header { size::CONTROL } else { 0.0 };
+            let first_row = top + head_h;
             let clip = ui.clip_rect();
             for i in 0..n {
                 let row_top = first_row + i as f32 * ROW_H;
@@ -346,39 +368,42 @@ fn show_inner(
                     shapes.push(egui::Shape::hline(
                         x_range,
                         row_top,
-                        egui::Stroke::new(1.0, colour::LINE),
+                        egui::Stroke::new(1.0, colour::LINE()),
                     ));
                 }
                 if was == Some(i) {
                     // The last row shares the frame's rounded bottom; a square
                     // fill there would poke out of the corners.
-                    let corners = if i + 1 == n {
-                        egui::CornerRadius { nw: 0, ne: 0, sw: radius::LG, se: radius::LG }
-                    } else {
-                        egui::CornerRadius::ZERO
-                    };
+                    // Without a header the first row owns the top corners too.
+                    let top_r = if i == 0 && !header { radius::LG } else { 0 };
+                    let bottom_r = if i + 1 == n { radius::LG } else { 0 };
+                    let corners =
+                        egui::CornerRadius { nw: top_r, ne: top_r, sw: bottom_r, se: bottom_r };
                     shapes.push(egui::Shape::rect_filled(
                         egui::Rect::from_x_y_ranges(x_range, row_top..=row_top + ROW_H),
                         corners,
-                        colour::SURFACE_HOVER,
+                        colour::SURFACE_HOVER(),
                     ));
                 }
             }
             ui.painter().set(rows_paint, egui::Shape::Vec(shapes));
 
+            if !header {
+                return;
+            }
             let band_rect = egui::Rect::from_x_y_ranges(x_range, top..=top + size::CONTROL);
             ui.painter().set(
                 band,
                 egui::Shape::rect_filled(
                     band_rect,
                     egui::CornerRadius { nw: radius::LG, ne: radius::LG, sw: 0, se: 0 },
-                    colour::CHROME,
+                    colour::CHROME(),
                 ),
             );
             ui.painter().hline(
                 band_rect.x_range(),
                 band_rect.bottom(),
-                egui::Stroke::new(1.0, colour::LINE),
+                egui::Stroke::new(1.0, colour::LINE()),
             );
         });
 

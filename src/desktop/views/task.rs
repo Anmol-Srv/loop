@@ -848,7 +848,7 @@ fn headline(
                             RichText::new(str_of(task, "title").unwrap_or("Untitled"))
                                 .size(text::TITLE)
                                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                                .color(colour::TEXT),
+                                .color(colour::TEXT()),
                         )
                         .truncate()
                         .sense(egui::Sense::click()),
@@ -949,7 +949,7 @@ fn description(ui: &mut egui::Ui, task: &Value) {
             if i > 0 {
                 ui.add_space(space::MD);
             }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2));
+            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
         }
     });
 }
@@ -970,7 +970,7 @@ fn manual_reason(ui: &mut egui::Ui, task: &Value) {
         ui.label(
             RichText::new(format!("Completed manually \u{2014} {reason}"))
                 .size(text::SMALL)
-                .color(colour::TEXT_MUTED),
+                .color(colour::TEXT_MUTED()),
         );
     });
 }
@@ -1347,7 +1347,7 @@ fn rail(
             ui.label(
                 RichText::new(question)
                     .size(text::SMALL)
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             );
             ui.horizontal(|ui| {
                 if w::secondary(ui, "Reassign", !r.busy).clicked() {
@@ -1382,7 +1382,7 @@ fn rail(
                 name,
             );
             ui.add(
-                egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT))
+                egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT()))
                     .truncate(),
             );
         });
@@ -1532,7 +1532,7 @@ fn rail(
                 ui.label(
                     RichText::new(format!("Could not make that label: {err}"))
                         .size(text::CAPTION)
-                        .color(colour::DANGER),
+                        .color(colour::DANGER()),
                 );
             }
         });
@@ -1581,13 +1581,13 @@ fn priority_tone(p: i64) -> c::Tone {
 }
 
 fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT))
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT()))
 }
 
 /// A value that is not there. Fainter than one that is, so an empty rail row
 /// reads as absence rather than as content.
 fn faint(ui: &mut egui::Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_FAINT));
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_FAINT()));
 }
 
 // ---------------------------------------------------------------- the moves
@@ -1882,7 +1882,7 @@ fn settle_details(
 
 /// This task, the board, the dashboard and the personal list all show the
 /// status we have just changed.
-fn invalidate_after_move(net: &mut crate::desktop::net::Net) {
+pub(super) fn invalidate_after_move(net: &mut crate::desktop::net::Net) {
     net.invalidate_prefix("task:");
     net.invalidate_prefix("board:");
     net.invalidate_prefix("mytasks");
@@ -1987,7 +1987,7 @@ fn prompt_panel(
             ui.painter().rect_stroke(
                 entry.rect,
                 radius::SM as f32,
-                egui::Stroke::new(1.0, colour::DANGER),
+                egui::Stroke::new(1.0, colour::DANGER()),
                 egui::StrokeKind::Inside,
             );
             ui.add_space(space::XXS);
@@ -2184,24 +2184,24 @@ fn resource_row(
                     // raw URL ran under the right-hand side of the row.
                     let short = link_label(url).unwrap_or_else(|| host_path(url).to_owned());
                     let fitted = elide(ui, &short, ui.available_width());
-                    ui.label(RichText::new(fitted).size(text::SMALL).monospace().color(colour::TEXT));
+                    ui.label(RichText::new(fitted).size(text::SMALL).monospace().color(colour::TEXT()));
                     if let Some(title) = title {
                         let fitted = elide(ui, title, ui.available_width());
-                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED));
+                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED()));
                     }
                     return;
                 }
                 let short = link_label(url);
                 let place = short.as_deref().unwrap_or_else(|| host_path(url));
                 let name = elide(ui, title.unwrap_or(place), ui.available_width());
-                ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT));
+                ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT()));
                 // An untitled link already shows its address as its name.
                 if title.is_some() {
                     let fitted = elide(ui, place, ui.available_width());
                     ui.label(
                         RichText::new(fitted)
                             .size(text::SMALL)
-                            .color(colour::TEXT_MUTED),
+                            .color(colour::TEXT_MUTED()),
                     );
                 }
             });
@@ -2326,7 +2326,7 @@ fn notes(
                         ui.label(
                             RichText::new(ago(at))
                                 .size(text::SMALL)
-                                .color(colour::TEXT_MUTED),
+                                .color(colour::TEXT_MUTED()),
                         );
                     }
                 });
@@ -2334,7 +2334,7 @@ fn notes(
                 ui.label(
                     RichText::new(str_of(row, "body").unwrap_or_default())
                         .size(text::BODY)
-                        .color(colour::TEXT_2),
+                        .color(colour::TEXT_2()),
                 );
             }
         });
@@ -2399,11 +2399,11 @@ fn notes(
 /// its author, and its ink. Colour only where it asked something of a person.
 fn note_kind(kind: &str) -> Option<(&'static str, egui::Color32)> {
     Some(match kind {
-        "progress" => ("progress", colour::TEXT_MUTED),
-        "question" => ("asked", colour::WARN),
-        "answer" => ("answered", colour::TEXT_MUTED),
-        "submission" => ("submitted for review", colour::AGENT),
-        "review" => ("reviewed", colour::INFO),
+        "progress" => ("progress", colour::TEXT_MUTED()),
+        "question" => ("asked", colour::WARN()),
+        "answer" => ("answered", colour::TEXT_MUTED()),
+        "submission" => ("submitted for review", colour::AGENT()),
+        "review" => ("reviewed", colour::INFO()),
         _ => return None,
     })
 }
@@ -2421,7 +2421,7 @@ fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
     let font = egui::FontId::proportional(text::SMALL);
     let full = ui
         .painter()
-        .layout_no_wrap(s.to_owned(), font, colour::TEXT)
+        .layout_no_wrap(s.to_owned(), font, colour::TEXT())
         .size()
         .x;
     if full <= width || full <= 0.0 {

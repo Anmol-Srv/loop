@@ -73,6 +73,15 @@ fn write_private(name: &str, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A small preference beside the credential — the app's appearance setting.
+pub fn load_pref(name: &str) -> Option<String> {
+    fs::read_to_string(dir()?.join(name)).ok()
+}
+
+pub fn store_pref(name: &str, contents: &str) -> Result<(), String> {
+    write_private(name, contents)
+}
+
 pub fn clear() -> Result<(), String> {
     let Some(path) = file() else { return Ok(()) };
     match fs::remove_file(&path) {

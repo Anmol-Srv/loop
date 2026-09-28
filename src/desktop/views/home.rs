@@ -593,7 +593,7 @@ fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) 
         row.at(0, |ui| {
             c::chip(ui, a.signal, a.tone, false);
         });
-        row.strong(1, &a.subject, colour::TEXT);
+        row.strong(1, &a.subject, colour::TEXT());
         row.muted(2, &a.reason);
     });
     if let Some(i) = clicked {
@@ -764,7 +764,7 @@ fn completed_card(ui: &mut egui::Ui, min_body: f32, f: &CompletedFigures) -> f32
     viz::card(ui, "Completed", "last 7 days", min_body, |ui| {
         viz::headline(ui, &f.total.to_string(), &f.delta);
         ui.add_space(space::MD);
-        viz::columns(ui, &f.buckets, &names, colour::ACCENT);
+        viz::columns(ui, &f.buckets, &names, colour::ACCENT());
     })
 }
 
@@ -791,7 +791,7 @@ fn team_card(ui: &mut egui::Ui, min_body: f32, team: &[&Value]) -> f32 {
                     ui,
                     first_name(str_at(p, "name").unwrap_or_default()),
                     fill,
-                    colour::ACCENT,
+                    colour::ACCENT(),
                     &open.to_string(),
                     tokens::DISCIPLINE_W,
                 );
@@ -822,7 +822,7 @@ fn load_note(ui: &mut egui::Ui, blocking: i64, review: i64) {
             ui.label(
                 RichText::new(format!("blocks {}", plural(blocking as usize, "task")))
                     .size(text::CAPTION)
-                    .color(colour::DANGER),
+                    .color(colour::DANGER()),
             );
         }
         if blocking > 0 && review > 0 {
@@ -961,11 +961,11 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
         Some(name) => {
             avatar::small(ui, str_at(t, "assigneeEmail").unwrap_or(name), size::AVATAR_SM);
             ui.add_space(space::XS);
-            ui.label(RichText::new(first_name(name)).size(text::SMALL).color(colour::TEXT_2));
+            ui.label(RichText::new(first_name(name)).size(text::SMALL).color(colour::TEXT_2()));
             agent_marker(ui, t);
         }
         None => {
-            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT()));
         }
     });
 
@@ -1046,10 +1046,10 @@ fn finished(t: &Value) -> bool {
 /// A department's bar colour, matching the chip it wears everywhere else.
 fn discipline_tint(discipline: &str) -> Color32 {
     match c::discipline_tone(discipline) {
-        c::Tone::Agent => colour::AGENT,
-        c::Tone::Info => colour::INFO,
-        c::Tone::Ok => colour::OK,
-        _ => colour::LINE_STRONG,
+        c::Tone::Agent => colour::AGENT(),
+        c::Tone::Info => colour::INFO(),
+        c::Tone::Ok => colour::OK(),
+        _ => colour::LINE_STRONG(),
     }
 }
 

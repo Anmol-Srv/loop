@@ -33,6 +33,9 @@ const TASK_HANDOFF: &str = "22222222-0000-0000-0000-000000000005";
 const SHOTS: &[Shot] = &[
     Shot { name: "home", tab: Tab::Home, project: None, task: None, signed_in: true },
     Shot { name: "mytasks", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
+    Shot { name: "mytasks-board", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
+    Shot { name: "settings", tab: Tab::Settings, project: None, task: None, signed_in: true },
+    Shot { name: "account-menu", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
     Shot { name: "projects", tab: Tab::Projects, project: None, task: None, signed_in: true },
     Shot { name: "project", tab: Tab::Projects, project: Some(LEAD_RATING), task: None, signed_in: true },
     Shot { name: "project-overdue", tab: Tab::Projects, project: Some(CHECKOUT), task: None, signed_in: true },
@@ -73,6 +76,17 @@ fn stage(shot: &Shot, app: &mut App) {
 /// Clicks a `Shot` needs once the page has loaded: popups only exist after
 /// one, and a render that starts every page closed never shows them.
 fn interact(shot: &Shot, harness: &mut Harness<'_>) {
+    let click = match shot.name {
+        "mytasks-board" => harness.query_by_label("Board view"),
+        "account-menu" => harness.query_by_label_contains("Account:"),
+        _ => None,
+    };
+    if let Some(node) = click {
+        node.click();
+        for _ in 0..6 {
+            harness.step();
+        }
+    }
     if shot.name == "create-datepicker" {
         // The target is the only picker still reading "Not set".
         harness.get_by_label("Not set").click();
@@ -159,7 +173,9 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
 
     interact(shot, &mut harness);
 
-    let path = format!("docs/design-mocks/render/pages/{}-{label}.png", shot.name);
+    // RENDER_TAG keeps a second palette's shots beside the first, not over them.
+    let tag = std::env::var("RENDER_TAG").map(|t| format!("-{t}")).unwrap_or_default();
+    let path = format!("docs/design-mocks/render/pages/{}-{label}{tag}.png", shot.name);
     harness.render().expect("render").save(&path).expect("write png");
     eprintln!("wrote {path}");
 }

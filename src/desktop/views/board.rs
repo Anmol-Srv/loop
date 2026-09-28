@@ -787,7 +787,7 @@ fn headline(
                         RichText::new(name)
                             .size(text::TITLE)
                             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     )
                     .truncate()
                     .sense(egui::Sense::click()),
@@ -889,7 +889,7 @@ fn rail(
                 requests.push(Request::NewLabel(body));
             }
             if let Some(err) = label_error {
-                ui.label(RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER));
+                ui.label(RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER()));
             }
         });
         if picked != chosen {
@@ -904,7 +904,7 @@ fn rail(
             return;
         }
         ui.spacing_mut().item_spacing.x = space::SM;
-        w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT);
+        w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT());
         value(ui, &format!("{done} of {total} done"));
     });
 
@@ -941,7 +941,7 @@ fn rail(
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(*who).size(text::SMALL).color(colour::TEXT),
+                                    RichText::new(*who).size(text::SMALL).color(colour::TEXT()),
                                 )
                                 .truncate(),
                             );
@@ -1006,28 +1006,28 @@ fn date_row(
 fn date_words(head: &Value, slot: DateSlot, done: i64, total: i64) -> (String, egui::Color32, String) {
     let raw = str_at(head, slot.field());
     let Some(date) = parse_date(raw) else {
-        return ("Not set".to_owned(), colour::TEXT_FAINT, "No date yet".to_owned());
+        return ("Not set".to_owned(), colour::TEXT_FAINT(), "No date yet".to_owned());
     };
     let days = (date - Utc::now().date_naive()).num_days();
     if slot == DateSlot::Start {
-        return (relative_day(days), colour::TEXT, raw.to_owned());
+        return (relative_day(days), colour::TEXT(), raw.to_owned());
     }
     match health(head, done, total) {
         Some((_, Health::Overdue)) => (
             relative_day(days).replace(" ago", " overdue"),
-            colour::DANGER,
+            colour::DANGER(),
             Health::Overdue.hover(head, done, total),
         ),
         Some((_, h)) => {
-            let ink = if h == Health::Fine { colour::TEXT } else { h.ink() };
+            let ink = if h == Health::Fine { colour::TEXT() } else { h.ink() };
             (relative_day(days), ink, h.hover(head, done, total))
         }
-        None => (relative_day(days), colour::TEXT, raw.to_owned()),
+        None => (relative_day(days), colour::TEXT(), raw.to_owned()),
     }
 }
 
 fn faint(ui: &mut egui::Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_FAINT));
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT_FAINT()));
 }
 
 // ----------------------------------------------------------------- resources
@@ -1149,7 +1149,7 @@ fn resource_row(
                     egui::Label::new(
                         RichText::new(elide(ui, name, room))
                             .size(text::SMALL)
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     )
                     .sense(egui::Sense::click())
                     .selectable(false),
@@ -1166,7 +1166,7 @@ fn resource_row(
                         egui::Label::new(
                             RichText::new(short.as_deref().unwrap_or(where_))
                                 .size(text::SMALL)
-                                .color(colour::TEXT_MUTED),
+                                .color(colour::TEXT_MUTED()),
                         )
                         .truncate(),
                     );
@@ -1185,7 +1185,7 @@ fn host_path(url: &str) -> &str {
 /// Cut `s` to fit `width` at the row's type size, with an ellipsis.
 fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
     let font = egui::FontId::proportional(text::SMALL);
-    let full = ui.painter().layout_no_wrap(s.to_owned(), font, colour::TEXT).size().x;
+    let full = ui.painter().layout_no_wrap(s.to_owned(), font, colour::TEXT()).size().x;
     if full <= width || full <= 0.0 {
         return s.to_owned();
     }
@@ -1225,7 +1225,7 @@ fn attach_form(
             ui.painter().rect_stroke(
                 entry.rect,
                 radius::SM as f32,
-                egui::Stroke::new(1.0, colour::DANGER),
+                egui::Stroke::new(1.0, colour::DANGER()),
                 egui::StrokeKind::Inside,
             );
             ui.add_space(space::XXS);
@@ -1382,16 +1382,16 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
                 let (g, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                glyph::repo(ui.painter(), g.center(), 14.0, colour::TEXT_MUTED);
+                glyph::repo(ui.painter(), g.center(), 14.0, colour::TEXT_MUTED());
                 ui.label(
                     RichText::new(name)
                         .size(text::BODY)
                         .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
+                        .color(colour::TEXT()),
                 );
                 let shown = elide(ui, host_path(url), ui.available_width());
                 let link = ui.add(
-                    egui::Label::new(RichText::new(shown).size(text::SMALL).color(colour::TEXT_MUTED))
+                    egui::Label::new(RichText::new(shown).size(text::SMALL).color(colour::TEXT_MUTED()))
                         .sense(egui::Sense::click())
                         .selectable(false),
                 );
@@ -1423,7 +1423,7 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
             let field = ui.add_sized(
                 [width, size::CONTROL],
                 egui::TextEdit::singleline(draft)
-                    .hint_text(RichText::new("Not set — paste this repo's folder").size(text::BODY).color(colour::TEXT_DISABLED))
+                    .hint_text(RichText::new("Not set — paste this repo's folder").size(text::BODY).color(colour::TEXT_DISABLED()))
                     .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
             field.widget_info(|| {
@@ -1437,11 +1437,11 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
                 egui::Align2::LEFT_CENTER,
                 "On my Mac",
                 egui::FontId::proportional(text::SMALL),
-                colour::TEXT_MUTED,
+                colour::TEXT_MUTED(),
             );
             let (l, _) = ui.allocate_exact_size(egui::vec2(12.0, size::CONTROL), egui::Sense::hover());
-            glyph::lock(ui.painter(), egui::pos2(l.center().x, mid), 10.0, colour::TEXT_MUTED);
-            ui.label(RichText::new("Only you see this").size(text::CAPTION).color(colour::TEXT_MUTED));
+            glyph::lock(ui.painter(), egui::pos2(l.center().x, mid), 10.0, colour::TEXT_MUTED());
+            ui.label(RichText::new("Only you see this").size(text::CAPTION).color(colour::TEXT_MUTED()));
             field
         })
         .inner;
@@ -1517,7 +1517,7 @@ fn sort_tasks(tasks: &mut [Value]) {
 /// A meta-line value. Full ink — the owner wants the numbers readable at a
 /// glance, and a muted figure is one the eye skips.
 fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
-    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT))
+    ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT()))
 }
 
 /// "3 days ago", with the absolute date for the hover.
@@ -1562,7 +1562,7 @@ fn description(ui: &mut egui::Ui, body: &str) {
             if i > 0 {
                 ui.add_space(space::MD);
             }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2));
+            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
         }
     });
 }
@@ -1670,12 +1670,12 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     row.at(2, |ui| {
         let who = str_at(t, "assigneeName");
         if who.is_empty() {
-            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT));
+            ui.label(RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT()));
             return;
         }
         ui.spacing_mut().item_spacing.x = space::XS;
         avatar::small(ui, who, size::AVATAR_SM);
-        ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2));
+        ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2()));
         super::home::agent_marker(ui, t);
     });
 
@@ -1875,9 +1875,9 @@ pub(super) fn archived(v: &Value) -> bool {
 /// An archived row reads as set aside: its name steps back.
 pub(super) fn title_ink(v: &Value) -> egui::Color32 {
     if archived(v) {
-        colour::TEXT_MUTED
+        colour::TEXT_MUTED()
     } else {
-        colour::TEXT
+        colour::TEXT()
     }
 }
 

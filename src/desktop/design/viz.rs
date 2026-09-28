@@ -42,7 +42,7 @@ pub fn donut(ui: &mut Ui, slices: &[Slice<'_>], centre_value: &str, centre_label
         let p = ui.painter();
 
         // The track, so an empty or partial ring still reads as a ring.
-        ring_arc(p, centre, r, thickness, 0.0, std::f32::consts::TAU, colour::SURFACE_HOVER);
+        ring_arc(p, centre, r, thickness, 0.0, std::f32::consts::TAU, colour::SURFACE_HOVER());
 
         if total > 0 {
             let mut start = -std::f32::consts::FRAC_PI_2;
@@ -61,14 +61,14 @@ pub fn donut(ui: &mut Ui, slices: &[Slice<'_>], centre_value: &str, centre_label
             egui::Align2::CENTER_CENTER,
             centre_value,
             egui::FontId::new(text::HEADING, egui::FontFamily::Name(theme::BOLD.into())),
-            colour::TEXT,
+            colour::TEXT(),
         );
         p.text(
             centre + Vec2::new(0.0, 9.0),
             egui::Align2::CENTER_CENTER,
             centre_label,
             egui::FontId::proportional(text::CAPTION - 1.5),
-            colour::TEXT_MUTED,
+            colour::TEXT_MUTED(),
         );
 
         ui.add_space(space::MD);
@@ -119,14 +119,14 @@ fn legend_row(ui: &mut Ui, s: &Slice<'_>) {
         ui.label(
             RichText::new(s.label)
                 .size(text::CAPTION)
-                .color(colour::TEXT_2),
+                .color(colour::TEXT_2()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(s.count.to_string())
                     .size(text::CAPTION)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
         });
     });
@@ -139,18 +139,18 @@ pub fn bar_row(ui: &mut Ui, name: &str, fill: f32, tint: Color32, right: &str, n
         ui.set_height(14.0);
         let (n, _) = ui.allocate_exact_size(Vec2::new(name_w, 14.0), Sense::hover());
         let galley =
-            truncated(ui, name, egui::FontId::proportional(text::CAPTION), colour::TEXT_2, name_w);
+            truncated(ui, name, egui::FontId::proportional(text::CAPTION), colour::TEXT_2(), name_w);
         ui.painter().galley(
             egui::pos2(n.left(), n.center().y - galley.size().y / 2.0),
             galley,
-            colour::TEXT_2,
+            colour::TEXT_2(),
         );
 
         let right_w = 40.0;
         let track_w = (ui.available_width() - right_w - space::SM).max(20.0);
         let (track, _) = ui.allocate_exact_size(Vec2::new(track_w, 12.0), Sense::hover());
         let p = ui.painter();
-        p.rect_filled(track, 2.0, colour::INSET);
+        p.rect_filled(track, 2.0, colour::INSET());
         if fill > 0.0 {
             p.rect_filled(
                 egui::Rect::from_min_size(
@@ -167,7 +167,7 @@ pub fn bar_row(ui: &mut Ui, name: &str, fill: f32, tint: Color32, right: &str, n
                 RichText::new(right)
                     .size(text::CAPTION)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
         });
     });
@@ -207,7 +207,7 @@ pub fn columns(ui: &mut Ui, values: &[f32], labels: &[&str], tint: Color32) {
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::proportional(text::CAPTION - 1.5),
-            colour::TEXT_MUTED,
+            colour::TEXT_MUTED(),
         );
     }
 }
@@ -235,7 +235,7 @@ pub fn card(
                 RichText::new(label)
                     .size(text::SMALL)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             );
             if !right.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -246,7 +246,7 @@ pub fn card(
                         egui::Label::new(
                             RichText::new(right)
                                 .size(text::CAPTION)
-                                .color(colour::TEXT_MUTED),
+                                .color(colour::TEXT_MUTED()),
                         )
                         .truncate(),
                     );
@@ -317,14 +317,14 @@ pub fn headline(ui: &mut Ui, value: &str, note: &str) {
             RichText::new(value)
                 .size(text::HERO)
                 .family(egui::FontFamily::Name(theme::BOLD.into()))
-                .color(colour::TEXT),
+                .color(colour::TEXT()),
         );
         if !note.is_empty() {
             ui.add_space(space::XS);
             ui.label(
                 RichText::new(note)
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
         }
     });
@@ -367,7 +367,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         text::SMALL,
         egui::FontFamily::Name(if active { theme::SEMIBOLD } else { theme::MEDIUM }.into()),
     );
-    let ink = if active { colour::TEXT } else { colour::TEXT_2 };
+    let ink = if active { colour::TEXT() } else { colour::TEXT_2() };
     let caret_w = if caret { CARET_COL } else { 0.0 };
     // Never wider than the space it is given: in a narrow properties rail a
     // long project name must truncate, not push the rail past the window.
@@ -388,14 +388,14 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
     let response = motion::operable(ui, response, radius::SM as f32);
 
     let fill = if active {
-        colour::SURFACE_HOVER
+        colour::SURFACE_HOVER()
     } else {
         motion::hover_fill(
             ui,
             response.id.with("fill"),
             response.hovered(),
-            colour::SURFACE,
-            colour::SURFACE_HOVER,
+            colour::SURFACE(),
+            colour::SURFACE_HOVER(),
         )
     };
     let p = ui.painter();
@@ -406,9 +406,9 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         egui::Stroke::new(
             1.0,
             if active || response.hovered() {
-                colour::LINE_STRONG
+                colour::LINE_STRONG()
             } else {
-                colour::LINE
+                colour::LINE()
             },
         ),
         egui::StrokeKind::Inside,
@@ -422,7 +422,7 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
         caret_at(
             p,
             egui::pos2(rect.right() - space::SM - CARET_W / 2.0, rect.center().y),
-            if active { colour::TEXT } else { colour::TEXT_MUTED },
+            if active { colour::TEXT() } else { colour::TEXT_MUTED() },
         );
     }
     if response.hovered() {
@@ -462,8 +462,8 @@ fn tick_at(p: &egui::Painter, centre: Pos2, ink: Color32) {
 /// a different fill from every card in the app; this is the app's.
 fn menu_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::same(space::XS as i8))
 }
@@ -486,20 +486,20 @@ fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool, lit: bool) ->
     // A tick box already says a multi-select row is on; a fill as well reads
     // as a second, blue selection. Single-choice rows keep the soft fill.
     let fill = if selected && !check {
-        colour::ACCENT_SOFT
+        colour::ACCENT_SOFT()
     } else {
         motion::hover_fill(
             ui,
             response.id.with("fill"),
             response.hovered() || lit,
-            colour::TRANSPARENT,
-            colour::SURFACE_HOVER,
+            colour::TRANSPARENT(),
+            colour::SURFACE_HOVER(),
         )
     };
     let ink = if selected || lit || response.hovered() {
-        colour::TEXT
+        colour::TEXT()
     } else {
-        colour::TEXT_2
+        colour::TEXT_2()
     };
     // The gutter the indicator occupies: a box on the left, a tick on the
     // right. Text is inset past whichever one this row has.
@@ -527,13 +527,13 @@ fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool, lit: bool) ->
             Vec2::splat(BOX),
         );
         if selected {
-            p.rect_filled(box_rect, BOX_R, colour::ACCENT);
-            tick_at(p, box_rect.center(), colour::ON_ACCENT);
+            p.rect_filled(box_rect, BOX_R, colour::ACCENT());
+            tick_at(p, box_rect.center(), colour::ON_ACCENT());
         } else {
             p.rect_stroke(
                 box_rect,
                 BOX_R,
-                egui::Stroke::new(1.0, colour::LINE_STRONG),
+                egui::Stroke::new(1.0, colour::LINE_STRONG()),
                 egui::StrokeKind::Inside,
             );
         }
@@ -541,7 +541,7 @@ fn menu_row(ui: &mut Ui, label: &str, selected: bool, check: bool, lit: bool) ->
         tick_at(
             p,
             egui::pos2(rect.right() - space::SM - TICK_W / 2.0, rect.center().y),
-            colour::ACCENT,
+            colour::ACCENT(),
         );
     }
 
@@ -737,11 +737,11 @@ pub fn tag_picker(
             let search_id = state_id.with("box");
             let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), HEIGHT), Sense::hover());
             let focused = ui.memory(|m| m.has_focus(search_id));
-            ui.painter().rect_filled(rect, radius::SM as f32, colour::INSET);
+            ui.painter().rect_filled(rect, radius::SM as f32, colour::INSET());
             ui.painter().rect_stroke(
                 rect,
                 radius::SM as f32,
-                egui::Stroke::new(1.0, if focused { colour::LINE_STRONG } else { colour::LINE }),
+                egui::Stroke::new(1.0, if focused { colour::LINE_STRONG() } else { colour::LINE() }),
                 egui::StrokeKind::Inside,
             );
             let mut inner = ui.new_child(
@@ -755,9 +755,9 @@ pub fn tag_picker(
                     .id(search_id)
                     .frame(egui::Frame::NONE)
                     .desired_width(f32::INFINITY)
-                    .hint_text(RichText::new("Search or create\u{2026}").size(text::SMALL).color(colour::TEXT_FAINT))
+                    .hint_text(RichText::new("Search or create\u{2026}").size(text::SMALL).color(colour::TEXT_FAINT()))
                     .font(egui::FontId::proportional(text::SMALL))
-                    .text_color(colour::TEXT)
+                    .text_color(colour::TEXT())
                     .margin(egui::Margin::ZERO),
             );
             edit.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Search labels"));
@@ -789,7 +789,7 @@ pub fn tag_picker(
             }
             if hits.is_empty() && !offer {
                 ui.add_space(space::XS);
-                ui.label(RichText::new("No labels yet \u{2014} type a name to make one.").size(text::SMALL).color(colour::TEXT_MUTED));
+                ui.label(RichText::new("No labels yet \u{2014} type a name to make one.").size(text::SMALL).color(colour::TEXT_MUTED()));
                 ui.add_space(space::XS);
             }
             if offer {
@@ -805,7 +805,7 @@ pub fn tag_picker(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::XS;
                     ui.add_space(space::SM);
-                    ui.label(RichText::new("Colour").size(text::CAPTION).color(colour::TEXT_MUTED));
+                    ui.label(RichText::new("Colour").size(text::CAPTION).color(colour::TEXT_MUTED()));
                     ui.add_space(space::XS);
                     for (i, (name, hue)) in swatches.iter().enumerate() {
                         let (r, resp) = ui.allocate_exact_size(Vec2::splat(SWATCH + space::XS), Sense::click());
@@ -816,7 +816,7 @@ pub fn tag_picker(
                         let p = ui.painter();
                         p.circle_filled(r.center(), SWATCH / 2.0 - 1.0, *hue);
                         if i == swatch {
-                            p.circle_stroke(r.center(), SWATCH / 2.0 + 1.5, egui::Stroke::new(1.5, colour::TEXT));
+                            p.circle_stroke(r.center(), SWATCH / 2.0 + 1.5, egui::Stroke::new(1.5, colour::TEXT()));
                         }
                         if resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -853,7 +853,7 @@ pub fn tag_picker(
 pub fn menu_rule(ui: &mut Ui) {
     ui.add_space(space::XXS);
     let (rule, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().rect_filled(rule, 0.0, colour::LINE);
+    ui.painter().rect_filled(rule, 0.0, colour::LINE());
     ui.add_space(space::XXS);
 }
 
@@ -873,22 +873,22 @@ pub fn more(ui: &mut Ui, items: impl FnOnce(&mut Ui)) -> Response {
     // `w::secondary`'s three states, so it sits beside Edit as one of a set.
     let hot = response.hovered() || response.has_focus() || open;
     let fill = if open || response.is_pointer_button_down_on() {
-        colour::GLASS_ACTIVE
+        colour::GLASS_ACTIVE()
     } else if hot {
-        colour::GLASS_HOVER
+        colour::GLASS_HOVER()
     } else {
-        colour::GLASS
+        colour::GLASS()
     };
     let p = ui.painter();
     p.rect_filled(rect, radius::SM as f32, fill);
     p.rect_stroke(
         rect,
         radius::SM as f32,
-        egui::Stroke::new(1.0, if hot { colour::EDGE_HI_HOVER } else { colour::EDGE_MID }),
+        egui::Stroke::new(1.0, if hot { colour::EDGE_HI_HOVER() } else { colour::EDGE_MID() }),
         egui::StrokeKind::Inside,
     );
     for dx in [-5.0, 0.0, 5.0] {
-        p.circle_filled(rect.center() + Vec2::new(dx, 0.0), 1.6, colour::TEXT);
+        p.circle_filled(rect.center() + Vec2::new(dx, 0.0), 1.6, colour::TEXT());
     }
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -935,6 +935,24 @@ pub fn click_menu(response: &Response, items: impl FnOnce(&mut Ui)) -> bool {
         .is_some()
 }
 
+/// `click_menu`, opening upward from `response` at `width` — for a control at
+/// the foot of the window, where a menu dropped below would fall off it.
+pub fn menu_above(response: &Response, width: f32, items: impl FnOnce(&mut Ui)) -> bool {
+    egui::Popup::menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .align(egui::RectAlign::TOP_START)
+        .gap(space::XS)
+        .frame(menu_frame().inner_margin(egui::Margin::same(space::SM as i8)))
+        .width(width)
+        .show(|ui| {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ui.close();
+            }
+            menu_body(ui, items)
+        })
+        .is_some()
+}
+
 fn menu_body(ui: &mut Ui, items: impl FnOnce(&mut Ui)) {
     ui.spacing_mut().item_spacing.y = 0.0;
     // Arrow keys walk focus spatially; without this they walk off the bottom
@@ -951,6 +969,16 @@ fn menu_body(ui: &mut Ui, items: impl FnOnce(&mut Ui)) {
 pub fn menu_item(ui: &mut Ui, label: &str, danger: bool, why: Option<&str>) -> bool {
     let response = action_row(ui, label, danger, why, false);
     if response.clicked() {
+        ui.close();
+        return true;
+    }
+    false
+}
+
+/// `menu_item` with a leading icon and, on the right, the key that does the
+/// same thing — the menu is where a shortcut gets learned.
+pub fn menu_item_with(ui: &mut Ui, icon: &str, label: &str, keys: &str) -> bool {
+    if action_row_with(ui, Some(icon), label, keys, false, None, false).clicked() {
         ui.close();
         return true;
     }
@@ -984,6 +1012,18 @@ pub fn menu_choice(ui: &mut Ui, label: &str, current: bool) -> bool {
 }
 
 fn action_row(ui: &mut Ui, label: &str, danger: bool, why: Option<&str>, chevron: bool) -> Response {
+    action_row_with(ui, None, label, "", danger, why, chevron)
+}
+
+fn action_row_with(
+    ui: &mut Ui,
+    icon: Option<&str>,
+    label: &str,
+    keys: &str,
+    danger: bool,
+    why: Option<&str>,
+    chevron: bool,
+) -> Response {
     let enabled = why.is_none();
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), size::CONTROL),
@@ -1009,23 +1049,43 @@ fn action_row(ui: &mut Ui, label: &str, danger: bool, why: Option<&str>, chevron
     }
 
     let hot = enabled && (response.hovered() || response.has_focus());
-    let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT, colour::SURFACE_HOVER);
+    let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER());
     let ink = match (enabled, danger) {
-        (false, _) => colour::TEXT_DISABLED,
-        (true, true) => colour::DANGER,
-        (true, false) if hot => colour::TEXT,
-        _ => colour::TEXT_2,
+        (false, _) => colour::TEXT_DISABLED(),
+        (true, true) => colour::DANGER(),
+        (true, false) if hot => colour::TEXT(),
+        _ => colour::TEXT_2(),
     };
-    let right = if chevron { space::SM + CHEVRON * 2.0 + space::SM } else { space::SM };
-    let left = rect.left() + space::SM;
+    let keys = (!keys.is_empty()).then(|| {
+        ui.painter().layout_no_wrap(keys.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT())
+    });
+    let mut right = if chevron { space::SM + CHEVRON * 2.0 + space::SM } else { space::SM };
+    right += keys.as_ref().map_or(0.0, |g| g.size().x + space::SM);
+    let mut left = rect.left() + space::SM;
+    let p = ui.painter();
+    p.rect_filled(rect, radius::SM as f32, fill);
+    if let Some(glyph) = icon {
+        let tone = if hot { ink } else { colour::TEXT_MUTED() };
+        p.text(
+            egui::pos2(left, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            glyph,
+            egui::FontId::proportional(text::HEADING),
+            tone,
+        );
+        left += size::ICON_COL;
+    }
     let galley =
         truncated(ui, label, egui::FontId::proportional(text::BODY), ink, (rect.right() - right - left).max(1.0));
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, fill);
     p.galley(egui::pos2(left, rect.center().y - galley.size().y / 2.0), galley, ink);
+    if let Some(g) = keys {
+        let at = egui::pos2(rect.right() - space::SM - g.size().x, rect.center().y - g.size().y / 2.0);
+        p.galley(at, g, colour::TEXT_FAINT());
+    }
     if chevron {
         let x = rect.right() - space::SM - CHEVRON;
-        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED } else { colour::TEXT_DISABLED });
+        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED() } else { colour::TEXT_DISABLED() });
         p.line_segment([egui::pos2(x - CHEVRON / 2.0, rect.center().y - CHEVRON), egui::pos2(x + CHEVRON / 2.0, rect.center().y)], stroke);
         p.line_segment([egui::pos2(x + CHEVRON / 2.0, rect.center().y), egui::pos2(x - CHEVRON / 2.0, rect.center().y + CHEVRON)], stroke);
     }
@@ -1060,29 +1120,38 @@ pub fn toolbar(ui: &mut Ui, controls: impl FnOnce(&mut Ui)) {
 /// `HEIGHT` tall like every other toolbar control, so it sits beside the
 /// filters as one strip rather than a control of its own height.
 ///
-/// Each item is `(glyph, name)`; the accessible name is "`name` view" —
-/// screen readers and the test harness both need more than the bare word a
-/// caption gets away with.
-pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize) -> Option<usize> {
+/// Each item is `(glyph, name)`; the accessible name is "`name` `noun`"
+/// ("Board view", "Light theme") — screen readers and the test harness both
+/// need more than the bare word a caption gets away with.
+pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize, noun: &str) -> Option<usize> {
     let mut picked = None;
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::SM)
         .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
+            // `horizontal` takes its parent's direction; in a page header's
+            // right-aligned slot it read "Board | List". Walking the items
+            // backwards there puts them back in reading order.
+            let rtl = ui.layout().prefer_right_to_left();
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
-                for (i, (icon, name)) in items.iter().enumerate() {
+                let mut order: Vec<usize> = (0..items.len()).collect();
+                if rtl {
+                    order.reverse();
+                }
+                for i in order {
+                    let (icon, name) = &items[i];
                     let on = i == selected;
-                    let ink = if on { colour::TEXT } else { colour::TEXT_MUTED };
+                    let ink = if on { colour::TEXT() } else { colour::TEXT_MUTED() };
                     let font = egui::FontId::proportional(text::SMALL);
                     let galley = ui.painter().layout_no_wrap((*name).to_owned(), font, ink);
                     let h = HEIGHT - 6.0;
                     let w = size::ICON_COL + galley.size().x + space::MD;
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
-                    let accessible = format!("{name} view");
+                    let accessible = format!("{name} {noun}");
                     response.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::SelectableLabel,
@@ -1094,14 +1163,14 @@ pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize) -> Opti
                     let response = motion::operable(ui, response, radius::SM as f32);
 
                     let fill = if on {
-                        colour::SURFACE_ACTIVE
+                        colour::SURFACE_ACTIVE()
                     } else {
                         motion::hover_fill(
                             ui,
                             response.id.with("fill"),
                             response.hovered() || response.has_focus(),
                             Color32::TRANSPARENT,
-                            colour::SURFACE_HOVER,
+                            colour::SURFACE_HOVER(),
                         )
                     };
                     if fill != Color32::TRANSPARENT {
@@ -1136,6 +1205,39 @@ pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize) -> Opti
     picked
 }
 
+/// A row of colour swatches, one of them picked — the accent setting. Each
+/// is a named button for the accessibility tree; the picked one wears a ring
+/// in the ink colour, so the choice reads without relying on the hue itself.
+pub fn swatches(ui: &mut Ui, items: &[(Color32, &str)], selected: usize) -> Option<usize> {
+    const D: f32 = 20.0;
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        for (i, (tint, name)) in items.iter().enumerate() {
+            let on = i == selected;
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(D + 6.0), Sense::click());
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, format!("{name} accent"))
+            });
+            let response = motion::operable(ui, response, D);
+            let hot = response.hovered() || response.has_focus();
+            let p = ui.painter();
+            if on || hot {
+                let ring = if on { colour::TEXT() } else { colour::LINE_STRONG() };
+                p.circle_stroke(rect.center(), D / 2.0 + 2.5, egui::Stroke::new(1.5, ring));
+            }
+            p.circle_filled(rect.center(), D / 2.0, *tint);
+            if hot {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if response.on_hover_text(*name).clicked() {
+                picked = Some(i);
+            }
+        }
+    });
+    picked
+}
+
 /// The filter bar's search box.
 ///
 /// Sized and shaped like the controls beside it so the bar reads as one
@@ -1152,11 +1254,11 @@ pub fn search(ui: &mut Ui, hint: &str, value: &mut String) -> Response {
     let focused = ui.memory(|m| m.has_focus(id));
 
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, colour::SURFACE);
+    p.rect_filled(rect, radius::SM as f32, colour::SURFACE());
     p.rect_stroke(
         rect,
         radius::SM as f32,
-        egui::Stroke::new(1.0, if focused { colour::ACCENT } else { colour::LINE }),
+        egui::Stroke::new(1.0, if focused { colour::ACCENT() } else { colour::LINE() }),
         egui::StrokeKind::Inside,
     );
 
@@ -1170,9 +1272,9 @@ pub fn search(ui: &mut Ui, hint: &str, value: &mut String) -> Response {
             .id(id)
             .frame(egui::Frame::NONE)
             .desired_width(f32::INFINITY)
-            .hint_text(RichText::new(hint).size(text::SMALL).color(colour::TEXT_FAINT))
+            .hint_text(RichText::new(hint).size(text::SMALL).color(colour::TEXT_FAINT()))
             .font(egui::FontId::proportional(text::SMALL))
-            .text_color(colour::TEXT)
+            .text_color(colour::TEXT())
             .margin(egui::Margin::ZERO),
     )
 }
@@ -1198,14 +1300,14 @@ pub fn matches(needle: &str, haystacks: &[&str]) -> bool {
 /// button next to four unset filters is a control that does nothing.
 pub fn clear(ui: &mut Ui) -> Response {
     let font = egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::MEDIUM.into()));
-    let galley = ui.painter().layout_no_wrap("Clear".to_owned(), font, colour::TEXT);
+    let galley = ui.painter().layout_no_wrap("Clear".to_owned(), font, colour::TEXT());
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(galley.size().x + space::MD * 2.0, HEIGHT),
         Sense::click(),
     );
     let response = motion::operable(ui, response, radius::SM as f32);
 
-    let ink = if response.hovered() { colour::TEXT } else { colour::TEXT_MUTED };
+    let ink = if response.hovered() { colour::TEXT() } else { colour::TEXT_MUTED() };
     ui.painter().galley(
         egui::pos2(rect.left() + space::MD, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -1262,7 +1364,7 @@ pub fn date_picker(ui: &mut Ui, placeholder: &str, value: &mut Option<NaiveDate>
                     egui::Align2::CENTER_CENTER,
                     month.format("%B %Y").to_string(),
                     egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())),
-                    colour::TEXT,
+                    colour::TEXT(),
                 );
                 if chevron(ui, true).clicked() {
                     month = shift_month(month, 1);
@@ -1278,7 +1380,7 @@ pub fn date_picker(ui: &mut Ui, placeholder: &str, value: &mut Option<NaiveDate>
                         egui::Align2::CENTER_CENTER,
                         initial,
                         egui::FontId::proportional(text::CAPTION),
-                        colour::TEXT_MUTED,
+                        colour::TEXT_MUTED(),
                     );
                 }
             });
@@ -1306,7 +1408,7 @@ pub fn date_picker(ui: &mut Ui, placeholder: &str, value: &mut Option<NaiveDate>
             ui.add_space(space::XXS);
             let (rule, _) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(rule, 0.0, colour::LINE);
+            ui.painter().rect_filled(rule, 0.0, colour::LINE());
             ui.add_space(space::XXS);
             if menu_row(ui, "Today", false, false, false).clicked() {
                 picked = Some(Some(today));
@@ -1353,21 +1455,21 @@ fn day_cell(ui: &mut Ui, day: NaiveDate, state: DayState) -> Response {
     // selection borders, and a fill says "this one" without borrowing the
     // focus ring's shape.
     let ink = if state.selected {
-        p.rect_filled(inner, radius::SM as f32, colour::ACCENT);
-        colour::ON_ACCENT
+        p.rect_filled(inner, radius::SM as f32, colour::ACCENT());
+        colour::ON_ACCENT()
     } else {
         if response.hovered() {
-            p.rect_filled(inner, radius::SM as f32, colour::SURFACE_HOVER);
+            p.rect_filled(inner, radius::SM as f32, colour::SURFACE_HOVER());
         }
         if state.today {
             p.rect_stroke(
                 inner,
                 radius::SM as f32,
-                egui::Stroke::new(1.0, colour::LINE_STRONG),
+                egui::Stroke::new(1.0, colour::LINE_STRONG()),
                 egui::StrokeKind::Inside,
             );
         }
-        if state.in_month { colour::TEXT_2 } else { colour::TEXT_FAINT }
+        if state.in_month { colour::TEXT_2() } else { colour::TEXT_FAINT() }
     };
     p.text(
         rect.center(),
@@ -1388,12 +1490,12 @@ fn chevron(ui: &mut Ui, forward: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(DAY), Sense::click());
     let response = motion::operable(ui, response, radius::SM as f32);
     if response.hovered() {
-        ui.painter().rect_filled(rect.shrink(1.0), radius::SM as f32, colour::SURFACE_HOVER);
+        ui.painter().rect_filled(rect.shrink(1.0), radius::SM as f32, colour::SURFACE_HOVER());
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let c = rect.center();
     let (tip, back) = if forward { (CHEVRON, -CHEVRON) } else { (-CHEVRON, CHEVRON) };
-    let stroke = egui::Stroke::new(TICK_STROKE, colour::TEXT_2);
+    let stroke = egui::Stroke::new(TICK_STROKE, colour::TEXT_2());
     ui.painter().line_segment([egui::pos2(c.x + back / 2.0, c.y - CHEVRON), egui::pos2(c.x + tip / 2.0, c.y)], stroke);
     ui.painter().line_segment([egui::pos2(c.x + tip / 2.0, c.y), egui::pos2(c.x + back / 2.0, c.y + CHEVRON)], stroke);
     response.on_hover_text(if forward { "Next month" } else { "Previous month" })
@@ -1432,11 +1534,11 @@ mod date_tests {
 fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool> {
     let mut answer = None;
     let modal = egui::Modal::new(id.with("modal"))
-        .backdrop_color(colour::CANVAS.gamma_multiply(0.7))
+        .backdrop_color(colour::CANVAS().gamma_multiply(0.7))
         .frame(
             egui::Frame::new()
-                .fill(colour::SURFACE)
-                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG))
+                .fill(colour::SURFACE())
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
                 .corner_radius(radius::LG)
                 .inner_margin(egui::Margin::same(space::XL as i8)),
         )
@@ -1446,13 +1548,13 @@ fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool>
                 egui::RichText::new(format!("Remove the \u{201c}{name}\u{201d} label?"))
                     .size(text::CARD)
                     .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
             ui.add_space(space::SM);
             ui.label(
                 egui::RichText::new("It comes off this item only; the label stays available for others.")
                     .size(text::BODY)
-                    .color(colour::TEXT_2),
+                    .color(colour::TEXT_2()),
             );
             ui.add_space(space::LG);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

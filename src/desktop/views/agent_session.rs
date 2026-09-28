@@ -150,7 +150,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             let name = RichText::new(agent)
                 .size(text::BODY)
                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT);
+                .color(colour::TEXT());
             // The agent's page is its owner's (and admins'), so only they get
             // a way into it.
             match str_of(d, "id").filter(|_| s.private) {
@@ -172,11 +172,11 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             if let Some(rt) = str_of(d, "runtime") {
                 who += &format!(" \u{00B7} {}", runtime_label(rt));
             }
-            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_MUTED));
+            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_MUTED()));
         });
         if let Some(at) = str_of(d, "delegatedAt") {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("Started {}", ago(at))).size(text::SMALL).color(colour::TEXT_MUTED))
+                ui.label(RichText::new(format!("Started {}", ago(at))).size(text::SMALL).color(colour::TEXT_MUTED()))
                     .on_hover_text(exact(at));
             });
         }
@@ -186,9 +186,9 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     // ---- where it is
     let (steps, current, complete) = stages(state, s, owner_first);
     let tone = match state {
-        "needs_input" | "plan_review" => colour::WARN,
-        "in_review" => colour::AGENT,
-        _ => colour::INFO,
+        "needs_input" | "plan_review" => colour::WARN(),
+        "in_review" => colour::AGENT(),
+        _ => colour::INFO(),
     };
     face::stepper(ui, &steps, current, complete, tone);
     ui.add_space(space::MD);
@@ -202,12 +202,12 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             ui.label(
                 RichText::new(format!("{short} won\u{2019}t know where the code is \u{2014} "))
                     .size(text::SMALL)
-                    .color(colour::TEXT_MUTED),
+                    .color(colour::TEXT_MUTED()),
             );
             if w::link(ui, &format!("set the folder for {repo} on the project")).clicked() {
                 st.open_project = true;
             }
-            ui.label(RichText::new(".").size(text::SMALL).color(colour::TEXT_MUTED));
+            ui.label(RichText::new(".").size(text::SMALL).color(colour::TEXT_MUTED()));
         });
     }
 
@@ -226,7 +226,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         ui.scope(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
             w::muted(ui, "Your note");
-            prose(ui, brief, colour::TEXT_2);
+            prose(ui, brief, colour::TEXT_2());
         });
     }
     plan_section(ui, s, st, short, &mut ask);
@@ -278,7 +278,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             };
             let open_question = Some(i) == latest_question && state == "needs_input" && s.mine;
             nodes.push(entry(ui, node, author, &verb, at, private, |ui| {
-                prose(ui, body, colour::TEXT_2);
+                prose(ui, body, colour::TEXT_2());
                 if open_question {
                     ui.add_space(space::SM);
                     if let Some(a) = answer_box(ui, st, short, s.busy) {
@@ -295,7 +295,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
                 let x = w[0].center().x;
                 egui::Shape::line_segment(
                     [pos2(x, w[0].bottom() + space::XS), pos2(x, w[1].top() - space::XS)],
-                    egui::Stroke::new(1.0, colour::LINE),
+                    egui::Stroke::new(1.0, colour::LINE()),
                 )
             })
             .collect();
@@ -353,8 +353,8 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
 
     ui.add_space(space::MD);
     egui::Frame::new()
-        .fill(colour::SURFACE)
-        .stroke(egui::Stroke::new(1.0, colour::LINE))
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::LG)
         .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
         .show(ui, |ui| {
@@ -366,7 +366,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                     RichText::new("Plan")
                         .size(text::SMALL)
                         .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
+                        .color(colour::TEXT()),
                 );
                 let (label, tone) = match decision {
                     Some("approved") => ("Approved", c::Tone::Ok),
@@ -376,13 +376,13 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                 c::chip(ui, label, tone, true);
                 if let Some(at) = str_of(current, "createdAt") {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT)).on_hover_text(exact(at));
+                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                     });
                 }
             });
             ui.scope(|ui| {
                 ui.set_max_width(PROSE_W.min(ui.available_width()));
-                prose(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT);
+                prose(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
                 if decision == Some("changes_requested") {
                     if let Some(note) = str_of(current, "changesNote") {
                         ui.add_space(space::XS);
@@ -396,7 +396,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
             if st.plan_open {
                 ui.scope(|ui| {
                     ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2);
+                    super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2());
                 });
             }
             let earlier = &s.plans[1..];
@@ -408,7 +408,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                         ui.add_space(space::XS);
                         ui.scope(|ui| {
                             ui.set_max_width(PROSE_W.min(ui.available_width()));
-                            prose(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED);
+                            prose(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
                         });
                     }
                 }
@@ -419,7 +419,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
             }
             ui.add_space(space::XS);
             let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
             if st.plan_changes_open {
                 let field = w::field_multiline(
                     ui,
@@ -579,10 +579,10 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
                 face::spinner(ui, text::BODY);
                 match str_of(d, "now").map(str::trim).filter(|n| !n.is_empty()) {
                     Some(now) => {
-                        let shown = ui.add(egui::Label::new(RichText::new(now).size(text::BODY).color(colour::TEXT_2)).truncate());
+                        let shown = ui.add(egui::Label::new(RichText::new(now).size(text::BODY).color(colour::TEXT_2())).truncate());
                         shown.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, now));
                         if let Some(at) = str_of(d, "nowAt") {
-                            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT)).on_hover_text(exact(at));
+                            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                         }
                         return;
                     }
@@ -601,7 +601,7 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
             "stopped" => format!("Taken back from {short}"),
             other => state_words(other).to_owned(),
         };
-        let ink = if matches!(state, "needs_input" | "plan_review") { colour::WARN } else { colour::TEXT_MUTED };
+        let ink = if matches!(state, "needs_input" | "plan_review") { colour::WARN() } else { colour::TEXT_MUTED() };
         ui.label(RichText::new(words).size(text::SMALL).color(ink));
     });
 }
@@ -658,13 +658,13 @@ pub(super) fn entry(
                     RichText::new(who)
                         .size(text::SMALL)
                         .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT),
+                        .color(colour::TEXT()),
                 );
                 if !verb.is_empty() {
-                    ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED));
+                    ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
                 }
                 if let Some(at) = at {
-                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT)).on_hover_text(exact(at));
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                 }
                 if private {
                     ui.add_space(space::XS);
@@ -684,12 +684,12 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
         Node::Person(seed) => avatar::paint(p, r.shrink(1.0), seed),
         Node::Mark(mark) => {
             let (ink, fill) = match mark {
-                Mark::Progress => (colour::TEXT_MUTED, colour::SURFACE),
-                Mark::Question => (colour::WARN, colour::WARN_BG),
-                Mark::Submitted => (colour::AGENT, colour::AGENT_BG),
-                Mark::Approved => (colour::OK, colour::OK_BG),
-                Mark::Changes => (colour::WARN, colour::WARN_BG),
-                Mark::Filed => (colour::INFO, colour::INFO_BG),
+                Mark::Progress => (colour::TEXT_MUTED(), colour::SURFACE()),
+                Mark::Question => (colour::WARN(), colour::WARN_BG()),
+                Mark::Submitted => (colour::AGENT(), colour::AGENT_BG()),
+                Mark::Approved => (colour::OK(), colour::OK_BG()),
+                Mark::Changes => (colour::WARN(), colour::WARN_BG()),
+                Mark::Filed => (colour::INFO(), colour::INFO_BG()),
             };
             p.circle_filled(c, NODE / 2.0, fill);
             p.circle_stroke(c, NODE / 2.0 - 0.5, egui::Stroke::new(1.0, ink.gamma_multiply(0.35)));
@@ -783,8 +783,8 @@ fn report(
         paint_node(ui, r, &Node::Mark(Mark::Submitted));
         // A frame takes its parent's layout; the card reads top to bottom.
         ui.vertical(|ui| egui::Frame::new()
-            .fill(colour::SURFACE)
-            .stroke(egui::Stroke::new(1.0, colour::LINE))
+            .fill(colour::SURFACE())
+            .stroke(egui::Stroke::new(1.0, colour::LINE()))
             .corner_radius(radius::LG)
             .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
             .show(ui, |ui| {
@@ -796,16 +796,16 @@ fn report(
                         RichText::new("Report")
                             .size(text::SMALL)
                             .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT),
+                            .color(colour::TEXT()),
                     );
-                    ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED));
+                    ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED()));
                     if let Some(at) = str_of(note, "createdAt") {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT)).on_hover_text(exact(at));
+                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                     }
                 });
                 ui.scope(|ui| {
                     ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    prose(ui, str_of(note, "body").unwrap_or_default(), colour::TEXT);
+                    prose(ui, str_of(note, "body").unwrap_or_default(), colour::TEXT());
                 });
 
                 let evidence: Vec<&Value> =
@@ -814,7 +814,7 @@ fn report(
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
                     if evidence.is_empty() {
-                        ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT));
+                        ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT()));
                     }
                     for row in &evidence {
                         evidence_chip(ui, row);
@@ -836,7 +836,7 @@ fn report(
                 }
                 ui.add_space(space::XS);
                 let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-                ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE));
+                ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
                 if let Some(a) = review_controls(ui, st, short, s.busy) {
                     *ask = Some(a);
                 }
@@ -899,7 +899,7 @@ fn evidence_chip(ui: &mut egui::Ui, row: &Value) {
         _ => (host_path(url).to_owned(), false),
     };
     let font = if mono { egui::FontId::monospace(text::CAPTION) } else { egui::FontId::proportional(text::SMALL) };
-    let galley = w::truncated(ui, &label, font, colour::TEXT_2, 260.0);
+    let galley = w::truncated(ui, &label, font, colour::TEXT_2(), 260.0);
     let icon = text::BODY;
     let (rect, response) = ui.allocate_exact_size(
         vec2(space::SM + icon + space::XS + galley.size().x + space::SM, size::CONTROL - space::XS),
@@ -910,10 +910,10 @@ fn evidence_chip(ui: &mut egui::Ui, row: &Value) {
     let response = if kind == "commit" { response } else { motion::operable(ui, response, radius::SM as f32) };
     let hot = kind != "commit" && (response.hovered() || response.has_focus());
     let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, if hot { colour::SURFACE_HOVER } else { colour::INSET });
-    p.rect_stroke(rect, radius::SM as f32, egui::Stroke::new(1.0, if hot { colour::LINE_STRONG } else { colour::LINE }), egui::StrokeKind::Inside);
+    p.rect_filled(rect, radius::SM as f32, if hot { colour::SURFACE_HOVER() } else { colour::INSET() });
+    p.rect_stroke(rect, radius::SM as f32, egui::Stroke::new(1.0, if hot { colour::LINE_STRONG() } else { colour::LINE() }), egui::StrokeKind::Inside);
     glyph::evidence(p, pos2(rect.left() + space::SM + icon / 2.0, rect.center().y), icon, kind, kind_ink(kind));
-    p.galley(pos2(rect.left() + space::SM + icon + space::XS, rect.center().y - galley.size().y / 2.0), galley, if hot { colour::TEXT } else { colour::TEXT_2 });
+    p.galley(pos2(rect.left() + space::SM + icon + space::XS, rect.center().y - galley.size().y / 2.0), galley, if hot { colour::TEXT() } else { colour::TEXT_2() });
     if hot {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -935,10 +935,10 @@ fn kind_word(kind: &str) -> &'static str {
 
 fn kind_ink(kind: &str) -> egui::Color32 {
     match kind {
-        "pr" => colour::INFO,
-        "commit" => colour::OK,
-        "figma" => colour::AGENT,
-        _ => colour::TEXT_MUTED,
+        "pr" => colour::INFO(),
+        "commit" => colour::OK(),
+        "figma" => colour::AGENT(),
+        _ => colour::TEXT_MUTED(),
     }
 }
 
@@ -958,7 +958,7 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
         let count = (!st.lines.is_empty()).then_some(st.lines.len());
         face::disclosure(ui, id, "Logs", count, &mut st.logs_open);
         if st.logs_open && live {
-            w::pill(ui, "live", colour::INFO);
+            w::pill(ui, "live", colour::INFO());
         }
         if st.logs_open && !st.lines.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1013,8 +1013,8 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
         return;
     }
     egui::Frame::new()
-        .fill(colour::LOG_BG)
-        .stroke(egui::Stroke::new(1.0, colour::LINE_SOFT))
+        .fill(colour::LOG_BG())
+        .stroke(egui::Stroke::new(1.0, colour::LINE_SOFT()))
         .corner_radius(radius::MD)
         .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
         .show(ui, |ui| {
@@ -1027,7 +1027,7 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
                     }
                 } else {
                     let note = if live { "No lines yet \u{2014} they appear here as the agent logs its steps." } else { "No log was recorded." };
-                    ui.label(RichText::new(note).monospace().size(text::SMALL).color(colour::LOG_SEQ));
+                    ui.label(RichText::new(note).monospace().size(text::SMALL).color(colour::LOG_SEQ()));
                 }
                 return;
             }
@@ -1046,9 +1046,9 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
                     ui.spacing_mut().item_spacing.y = space::XXS;
                     for (seq, line) in &st.lines {
                         ui.horizontal_top(|ui| {
-                            ui.label(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ));
+                            ui.label(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()));
                             ui.add_space(space::SM);
-                            ui.label(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT));
+                            ui.label(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT()));
                         });
                     }
                 });
@@ -1119,27 +1119,27 @@ fn active_row(ui: &mut egui::Ui, row: &Value, email: Option<String>) -> bool {
                 RichText::new(short)
                     .size(text::SMALL)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                    .color(colour::TEXT),
+                    .color(colour::TEXT()),
             );
-            ui.add(egui::Label::new(RichText::new(format!("\u{00B7} {owner_first}")).size(text::SMALL).color(colour::TEXT_MUTED)).truncate());
+            ui.add(egui::Label::new(RichText::new(format!("\u{00B7} {owner_first}")).size(text::SMALL).color(colour::TEXT_MUTED())).truncate());
         });
         fixed(ui, title_w, |ui| {
-            ui.add(egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT)).truncate());
+            ui.add(egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT())).truncate());
         });
         let rest = (ui.available_width() - since_w - space::SM).max(0.0);
         fixed(ui, rest, |ui| {
             let (words, ink) = match (state, now) {
-                ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED),
-                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::WARN),
-                ("plan_review", _) => ("Plan review".to_owned(), colour::WARN),
-                ("in_review", _) => ("In review".to_owned(), colour::AGENT),
-                ("acknowledged", None) => ("Picked up".to_owned(), colour::TEXT_MUTED),
-                _ => (state_words(state).to_owned(), colour::TEXT_MUTED),
+                ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED()),
+                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::WARN()),
+                ("plan_review", _) => ("Plan review".to_owned(), colour::WARN()),
+                ("in_review", _) => ("In review".to_owned(), colour::AGENT()),
+                ("acknowledged", None) => ("Picked up".to_owned(), colour::TEXT_MUTED()),
+                _ => (state_words(state).to_owned(), colour::TEXT_MUTED()),
             };
             ui.add(egui::Label::new(RichText::new(words).size(text::SMALL).color(ink)).truncate());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(since).size(text::SMALL).color(colour::TEXT_FAINT));
+            ui.label(RichText::new(since).size(text::SMALL).color(colour::TEXT_FAINT()));
         });
     });
     let label = format!("{short}, {owner_first}\u{2019}s agent, on {title}");
