@@ -275,11 +275,11 @@ pub(super) fn appearance_compact(ui: &mut egui::Ui) {
         ui.add_space(space::XS);
         w::caption(ui, "Appearance");
     });
-    ui.add_space(space::XS);
+    ui.add_space(space::XXS);
     let items = [
-        (egui_phosphor::thin::CIRCLE_HALF, "System"),
-        (egui_phosphor::thin::MOON, "Dark"),
-        (egui_phosphor::thin::SUN, "Light"),
+        (egui_phosphor::regular::CIRCLE_HALF, "System"),
+        (egui_phosphor::regular::MOON, "Dark"),
+        (egui_phosphor::regular::SUN, "Light"),
     ];
     let at = theme::Mode::ALL.iter().position(|m| *m == a.mode).unwrap_or(0);
     if let Some(i) = viz::view_switch(ui, &items, at, "theme") {

@@ -52,7 +52,7 @@ fn install_fonts(ctx: &egui::Context) {
         .insert(FontFamily::Name(BOLD.into()), vec!["ui-bold".into()]);
 
     // Icons, so nothing ever reaches for an emoji.
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Thin);
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 
     ctx.set_fonts(fonts);
 }

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use egui_phosphor::thin as icon;
+use egui_phosphor::regular as icon;
 use serde_json::{json, Value};
 
 use super::menus::{task_items, Pick, Viewer};
@@ -610,7 +610,8 @@ fn board(ui: &mut egui::Ui, groups: &[Bucket<'_>], viewer: &Viewer, can_move: bo
     // Two points short of the edge, or the scroll area clips the last
     // column's right hairline.
     let width = ((ui.available_width() - space::MD * (n - 1.0) - 2.0) / n).max(COLUMN_W);
-    // Down to the window's foot, so every column is a full-height target.
+    // The board ends at the window's foot and each column scrolls on its own,
+    // so a long column never drags the short ones (and the page) with it.
     let height = (ui.clip_rect().bottom() - ui.cursor().top() - space::XL).max(COLUMN_MIN_H);
     egui::ScrollArea::horizontal().id_salt("mytasks:board").show(ui, |ui| {
         ui.horizontal_top(|ui| {
@@ -635,11 +636,11 @@ fn column(
     let bg = ui.painter().add(egui::Shape::Noop);
     let inner = ui
         .allocate_ui_with_layout(
-            egui::vec2(width, 0.0),
+            egui::vec2(width, height),
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(width);
-                ui.set_min_height(height);
+                ui.set_height(height);
                 egui::Frame::new().inner_margin(egui::Margin::same(space::SM as i8)).show(ui, |ui| {
                     ui.set_width(width - space::SM * 2.0);
                     ui.horizontal(|ui| {
@@ -658,15 +659,23 @@ fn column(
                         ui.label(egui::RichText::new(g.rows.len().to_string()).size(text::SMALL).color(colour::TEXT_FAINT()));
                     });
                     ui.add_space(space::XS);
-                    for t in &g.rows {
-                        card(ui, t, viewer, can_move, out);
-                    }
-                    if g.rows.is_empty() {
-                        ui.add_space(space::LG);
-                        ui.vertical_centered(|ui| {
-                            ui.label(egui::RichText::new("No tasks").size(text::SMALL).color(colour::TEXT_FAINT()));
+                    egui::ScrollArea::vertical()
+                        .id_salt(("mytasks:column", &g.key))
+                        .max_height(ui.available_height().max(0.0))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for t in &g.rows {
+                                card(ui, t, viewer, can_move, out);
+                            }
+                            if g.rows.is_empty() {
+                                ui.add_space(space::LG);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("No tasks").size(text::SMALL).color(colour::TEXT_FAINT()),
+                                    );
+                                });
+                            }
                         });
-                    }
                 });
             },
         )

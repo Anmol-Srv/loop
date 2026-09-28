@@ -881,7 +881,7 @@ pub(super) fn link_row(ui: &mut egui::Ui, n: usize) -> bool {
     p.text(
         egui::pos2(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        egui_phosphor::thin::TRAY,
+        egui_phosphor::regular::TRAY,
         egui::FontId::proportional(text::HEADING),
         colour::TEXT_MUTED(),
     );

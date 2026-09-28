@@ -99,7 +99,7 @@ pub fn sidebar(
             } else {
                 // The box has no room, so search becomes one more icon row
                 // and its hover text carries the shortcut.
-                let item = NavItem::new(egui_phosphor::thin::MAGNIFYING_GLASS, "Search (\u{2318}K)", false);
+                let item = NavItem::new(egui_phosphor::regular::MAGNIFYING_GLASS, "Search (\u{2318}K)", false);
                 search = nav_item(ui, &item, true).clicked();
                 ui.add_space(space::SM);
             }
@@ -225,7 +225,7 @@ fn search_field(ui: &mut Ui) -> Response {
     p.text(
         egui::pos2(rect.left() + space::SM, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        egui_phosphor::thin::MAGNIFYING_GLASS,
+        egui_phosphor::regular::MAGNIFYING_GLASS,
         egui::FontId::proportional(text::BODY),
         colour::TEXT_FAINT(),
     );
@@ -468,7 +468,7 @@ pub fn page_title(
 pub fn back(ui: &mut Ui, label: &str) -> egui::Response {
     let response = super::widgets::icon_button(
         ui,
-        egui_phosphor::thin::ARROW_LEFT,
+        egui_phosphor::regular::ARROW_LEFT,
         label,
         super::widgets::Emphasis::Link,
         true,

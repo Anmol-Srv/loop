@@ -81,8 +81,10 @@ pub fn donut(ui: &mut Ui, slices: &[Slice<'_>], centre_value: &str, centre_label
     });
 }
 
-/// An arc drawn as a triangle strip. egui can stroke a path, but a stroked
-/// polyline leaves mitre gaps at this thickness; two rings of vertices do not.
+/// An arc, stroked along its centre line. egui feathers a stroked path but
+/// not a mesh, so the old triangle strip stair-stepped on every edge; fine
+/// steps (about a degree) keep the curve round at any size. Adjacent slices
+/// share an end angle, so their butt ends meet without a seam.
 fn ring_arc(
     p: &egui::Painter,
     centre: Pos2,
@@ -92,23 +94,14 @@ fn ring_arc(
     sweep: f32,
     fill: Color32,
 ) {
-    let steps = ((sweep.abs() / 0.12).ceil() as usize).max(2);
-    let inner = r - thickness / 2.0;
-    let outer = r + thickness / 2.0;
-    let mut mesh = egui::Mesh::default();
-
-    for i in 0..=steps {
-        let a = start + sweep * (i as f32 / steps as f32);
-        let (sin, cos) = a.sin_cos();
-        mesh.colored_vertex(centre + Vec2::new(cos * inner, sin * inner), fill);
-        mesh.colored_vertex(centre + Vec2::new(cos * outer, sin * outer), fill);
-        if i > 0 {
-            let b = (i as u32) * 2;
-            mesh.add_triangle(b - 2, b - 1, b);
-            mesh.add_triangle(b - 1, b, b + 1);
-        }
-    }
-    p.add(egui::Shape::mesh(mesh));
+    let steps = ((sweep.abs() / 0.02).ceil() as usize).max(2);
+    let points: Vec<Pos2> = (0..=steps)
+        .map(|i| {
+            let (sin, cos) = (start + sweep * (i as f32 / steps as f32)).sin_cos();
+            centre + Vec2::new(cos * r, sin * r)
+        })
+        .collect();
+    p.add(egui::Shape::line(points, egui::Stroke::new(thickness, fill)));
 }
 
 fn legend_row(ui: &mut Ui, s: &Slice<'_>) {
@@ -942,7 +935,7 @@ pub fn menu_above(response: &Response, width: f32, items: impl FnOnce(&mut Ui)) 
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .align(egui::RectAlign::TOP_START)
         .gap(space::XS)
-        .frame(menu_frame().inner_margin(egui::Margin::same(space::SM as i8)))
+        .frame(menu_frame().inner_margin(egui::Margin::same(space::XS as i8)))
         .width(width)
         .show(|ui| {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -1124,84 +1117,79 @@ pub fn toolbar(ui: &mut Ui, controls: impl FnOnce(&mut Ui)) {
 /// ("Board view", "Light theme") — screen readers and the test harness both
 /// need more than the bare word a caption gets away with.
 pub fn view_switch(ui: &mut Ui, items: &[(&str, &str)], selected: usize, noun: &str) -> Option<usize> {
+    // One rect, allocated like any widget and painted inside: a `Frame`
+    // around a nested row sat 12pt low in a centred header and ran backwards
+    // in a right-to-left one.
+    const PAD: f32 = 3.0;
+    let font = egui::FontId::proportional(text::SMALL);
+    let galleys: Vec<_> = items
+        .iter()
+        .map(|(_, name)| ui.painter().layout_no_wrap((*name).to_owned(), font.clone(), colour::TEXT()))
+        .collect();
+    let widths: Vec<f32> = galleys.iter().map(|g| size::ICON_COL + g.size().x + space::MD).collect();
+    let gaps = space::XXS * items.len().saturating_sub(1) as f32;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(widths.iter().sum::<f32>() + gaps + PAD * 2.0, HEIGHT),
+        Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, radius::SM as f32, colour::SURFACE());
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM as f32,
+        egui::Stroke::new(1.0, colour::LINE()),
+        egui::StrokeKind::Inside,
+    );
+
     let mut picked = None;
-    egui::Frame::new()
-        .fill(colour::SURFACE())
-        .stroke(egui::Stroke::new(1.0, colour::LINE()))
-        .corner_radius(radius::SM)
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            // `horizontal` takes its parent's direction; in a page header's
-            // right-aligned slot it read "Board | List". Walking the items
-            // backwards there puts them back in reading order.
-            let rtl = ui.layout().prefer_right_to_left();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::XXS;
-                let mut order: Vec<usize> = (0..items.len()).collect();
-                if rtl {
-                    order.reverse();
-                }
-                for i in order {
-                    let (icon, name) = &items[i];
-                    let on = i == selected;
-                    let ink = if on { colour::TEXT() } else { colour::TEXT_MUTED() };
-                    let font = egui::FontId::proportional(text::SMALL);
-                    let galley = ui.painter().layout_no_wrap((*name).to_owned(), font, ink);
-                    let h = HEIGHT - 6.0;
-                    let w = size::ICON_COL + galley.size().x + space::MD;
-                    let (rect, response) =
-                        ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
-                    let accessible = format!("{name} {noun}");
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            true,
-                            on,
-                            &accessible,
-                        )
-                    });
-                    let response = motion::operable(ui, response, radius::SM as f32);
-
-                    let fill = if on {
-                        colour::SURFACE_ACTIVE()
-                    } else {
-                        motion::hover_fill(
-                            ui,
-                            response.id.with("fill"),
-                            response.hovered() || response.has_focus(),
-                            Color32::TRANSPARENT,
-                            colour::SURFACE_HOVER(),
-                        )
-                    };
-                    if fill != Color32::TRANSPARENT {
-                        ui.painter().rect_filled(rect, radius::SM as f32, fill);
-                    }
-
-                    let p = ui.painter();
-                    let mut x = rect.left() + space::SM;
-                    p.text(
-                        egui::pos2(x, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        *icon,
-                        egui::FontId::proportional(text::HEADING),
-                        ink,
-                    );
-                    x += size::ICON_COL;
-                    p.galley(
-                        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        ink,
-                    );
-
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if response.clicked() {
-                        picked = Some(i);
-                    }
-                }
-            });
+    let mut x = rect.left() + PAD;
+    for (i, ((icon, name), galley)) in items.iter().zip(galleys).enumerate() {
+        let on = i == selected;
+        let seg = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top() + PAD),
+            Vec2::new(widths[i], HEIGHT - PAD * 2.0),
+        );
+        x += widths[i] + space::XXS;
+        let response = ui.interact(seg, ui.id().with(("view_switch", noun, i)), Sense::click());
+        let accessible = format!("{name} {noun}");
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, on, &accessible)
         });
+        let response = motion::operable(ui, response, radius::SM as f32);
+        let fill = if on {
+            colour::SURFACE_ACTIVE()
+        } else {
+            motion::hover_fill(
+                ui,
+                response.id.with("fill"),
+                response.hovered() || response.has_focus(),
+                Color32::TRANSPARENT,
+                colour::SURFACE_HOVER(),
+            )
+        };
+        let ink = if on { colour::TEXT() } else { colour::TEXT_MUTED() };
+        let p = ui.painter();
+        if fill != Color32::TRANSPARENT {
+            p.rect_filled(seg, radius::SM as f32, fill);
+        }
+        p.text(
+            egui::pos2(seg.left() + space::SM, seg.center().y),
+            egui::Align2::LEFT_CENTER,
+            *icon,
+            egui::FontId::proportional(text::HEADING),
+            ink,
+        );
+        p.galley(
+            egui::pos2(seg.left() + space::SM + size::ICON_COL, seg.center().y - galley.size().y / 2.0),
+            galley,
+            ink,
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            picked = Some(i);
+        }
+    }
     picked
 }
 

@@ -3,7 +3,7 @@
 //! The shell owns layout; this owns which view is showing and what the sidebar
 //! contains. Adding a screen is a `NavItem` and a match arm.
 
-use egui_phosphor::thin as icon;
+use egui_phosphor::regular as icon;
 use serde_json::Value;
 
 use crate::desktop::design::{avatar, colour, motion, radius, shell, size, space, text, theme, viz, widgets as w};
@@ -168,8 +168,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     w::toasts(ui.ctx());
 }
 
-/// The account menu's width: room for the theme switch's three segments.
-const ACCOUNT_MENU_W: f32 = 264.0;
+/// The account menu's width: the sidebar's own, so it reads as part of it
+/// rather than a panel laid over the page. Room for the theme switch.
+const ACCOUNT_MENU_W: f32 = size::SIDEBAR_W - space::LG;
 /// The account button's height — two lines of text and an avatar, a larger
 /// target than a nav row because it is the corner people aim for.
 const ACCOUNT_H: f32 = 44.0;
@@ -265,9 +266,9 @@ fn account_button(ui: &mut egui::Ui, who: &Who<'_>, narrow: bool, active: bool) 
 /// had to cut short.
 fn account_header(ui: &mut egui::Ui, who: &Who<'_>) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
+        ui.spacing_mut().item_spacing.x = space::SM;
         ui.add_space(space::XS);
-        avatar::small(ui, who.email, size::AVATAR_LG);
+        avatar::small(ui, who.email, size::AVATAR_MD + 4.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.add(
@@ -281,13 +282,13 @@ fn account_header(ui: &mut egui::Ui, who: &Who<'_>) {
                 .selectable(false),
             );
             ui.add(
-                egui::Label::new(egui::RichText::new(who.email).size(text::SMALL).color(colour::TEXT_MUTED()))
+                egui::Label::new(egui::RichText::new(who.email).size(text::CAPTION).color(colour::TEXT_MUTED()))
                     .truncate()
                     .selectable(false),
             );
         });
     });
-    ui.add_space(space::SM);
+    ui.add_space(space::XS);
     ui.horizontal(|ui| {
         ui.add_space(space::XS);
         ui.add(
@@ -301,7 +302,7 @@ fn account_header(ui: &mut egui::Ui, who: &Who<'_>) {
         )
         .on_hover_text(who.server);
     });
-    ui.add_space(space::SM);
+    ui.add_space(space::XS);
 }
 
 /// Roles are stored lower case ("admin"); the footer reads as a caption.

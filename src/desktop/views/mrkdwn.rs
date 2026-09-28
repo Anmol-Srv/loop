@@ -334,7 +334,7 @@ fn slack_chip(ui: &mut egui::Ui, url: &str, channel: Option<&str>) {
         Some(c) => format!("View conversation \u{00B7} #{c}"),
         None => "View conversation".to_owned(),
     };
-    let r = w::icon_button(ui, egui_phosphor::thin::SLACK_LOGO, &label, w::Emphasis::Secondary, true).on_hover_text(url);
+    let r = w::icon_button(ui, egui_phosphor::regular::SLACK_LOGO, &label, w::Emphasis::Secondary, true).on_hover_text(url);
     if r.clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }

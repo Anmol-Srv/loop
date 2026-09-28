@@ -170,5 +170,5 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
 
 /// "New task", for a page header: whether it was clicked. Call `open` then.
 pub fn button(ui: &mut egui::Ui) -> bool {
-    w::cta(ui, egui_phosphor::thin::PLUS, "New task", "C").on_hover_text("New task (C)").clicked()
+    w::cta(ui, egui_phosphor::regular::PLUS, "New task", "C").on_hover_text("New task (C)").clicked()
 }
