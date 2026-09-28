@@ -1254,7 +1254,8 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
             egui::ScrollArea::vertical()
                 .id_salt(("session:logs:scroll", task_id))
                 .min_scrolled_height(height)
-                .max_height(height)
+                // The cap, not the estimate: a wrapped line is taller than one row.
+                .max_height(line_h * LOG_ROWS)
                 .stick_to_bottom(true)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -1263,7 +1264,9 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
                         ui.horizontal_top(|ui| {
                             ui.label(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()));
                             ui.add_space(space::SM);
-                            ui.label(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT()));
+                            // Wrapped to what is left of the row: a long step
+                            // (a path, a command) ran off the window.
+                            ui.add(egui::Label::new(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT())).wrap());
                         });
                     }
                 });
