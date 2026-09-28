@@ -12,6 +12,7 @@
 //! anyone else, so a teammate's page never shows an empty box where the
 //! owner's conversation would be.
 
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use egui::{pos2, vec2, RichText};
@@ -37,6 +38,9 @@ const DUE: Duration = Duration::from_millis(1_900);
 const LOG_ROWS: f32 = 12.0;
 /// The timeline's node column.
 const NODE: f32 = 20.0;
+/// A .app launched from Finder gets a minimal PATH, so `cmux` alone is often
+/// not found even when it is installed; this is where the app puts it.
+const CMUX_FALLBACK: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
 
 /// The session's local state: drafts, and the log transcript. Log lines live
 /// here and not in the net cache because the `afterSeq` fetch returns only the
@@ -205,6 +209,15 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             }
             ui.label(RichText::new(".").size(text::SMALL).color(colour::TEXT_MUTED));
         });
+    }
+
+    // ---- attach: the owner's local Claude Code session, once the watcher
+    // has started one for this task
+    if s.private {
+        if let Some(session) = s.task.get("agentSession").filter(|v| !v.is_null()) {
+            ui.add_space(space::SM);
+            cmux_row(ui, session, str_of(s.task, "title").unwrap_or("Untitled"));
+        }
     }
 
     // ---- the owner's note at hand-off, and the plan
@@ -444,6 +457,68 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                 }
             });
         });
+}
+
+// ------------------------------------------------------------------- attach
+
+/// The owner's way back into the agent's Claude Code session on their own
+/// Mac: a cmux workspace attached to it, or — failing that — the attach
+/// command on the clipboard. Owner-only: the session lives on their machine,
+/// not the dashboard's.
+fn cmux_row(ui: &mut egui::Ui, session: &Value, title: &str) {
+    let Some(session_id) = str_of(session, "sessionId") else { return };
+    let cwd = str_of(session, "cwd").unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        if w::secondary(ui, "Open in cmux", true).clicked() {
+            open_cmux(ui.ctx(), title, cwd, session_id);
+        }
+        w::muted(ui, "Claude session \u{00B7}");
+        w::id(ui, session_id);
+        w::muted(ui, &format!("\u{00B7} {}", tildify(cwd)));
+        if w::link(ui, "Copy").clicked() {
+            ui.ctx().copy_text(attach_command(cwd, session_id));
+            w::toast(ui.ctx(), "Attach command copied.", false);
+        }
+    });
+    w::caption(ui, "While it\u{2019}s open, the agent waits and won\u{2019}t run in the background.");
+}
+
+/// `cmux new-workspace`, non-blocking: `cmux` on PATH first, then its
+/// absolute install path. Either succeeding hands the terminal to cmux; if
+/// neither spawns, the attach command goes to the clipboard instead.
+///
+/// ponytail: "available" is judged only by whether the process spawned, not
+/// whether the workspace actually opened (that would mean waiting on it,
+/// which blocks the UI thread). If cmux starts but its own command fails,
+/// that shows up in cmux's window, not here.
+fn open_cmux(ctx: &egui::Context, title: &str, cwd: &str, session_id: &str) {
+    let resume = format!("claude --resume {session_id}");
+    let spawn = |bin: &str| {
+        Command::new(bin)
+            .args(["new-workspace", "--name", title, "--cwd", cwd, "--command", resume.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    };
+    if spawn("cmux").or_else(|_| spawn(CMUX_FALLBACK)).is_ok() {
+        return;
+    }
+    ctx.copy_text(attach_command(cwd, session_id));
+    w::toast(ctx, "cmux isn\u{2019}t available \u{2014} copied the attach command instead.", true);
+}
+
+fn attach_command(cwd: &str, session_id: &str) -> String {
+    format!("cd '{cwd}' && claude --resume {session_id}")
+}
+
+/// The home folder as `~`, the way a person reads their own path.
+fn tildify(path: &str) -> String {
+    std::env::var("HOME")
+        .ok()
+        .and_then(|home| path.strip_prefix(home.as_str()).map(|rest| format!("~{rest}")))
+        .unwrap_or_else(|| path.to_owned())
 }
 
 /// "Hermes" out of "Hermes (Anmol's Mac)": the name a sentence can carry.

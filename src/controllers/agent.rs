@@ -1259,6 +1259,39 @@ pub async fn set_workspace(
     Ok(result)
 }
 
+/// Record the watcher's local Claude Code session for this task: the session
+/// id it started (or resumed) with and the working folder it ran in. Called
+/// once, before the first run — `cwd` never changes after, since `--resume`
+/// only finds a session started from the same folder.
+///
+/// Never cleared on take-back: the session is the owner's own conversation on
+/// their Mac, and they can still reopen it after the agent no longer holds
+/// the task.
+pub async fn set_session(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    session_id: Uuid,
+    cwd: &str,
+) -> AppResult<Value> {
+    let cwd = cwd.trim();
+    repo::check_path(cwd)?;
+    let mut d = delegated(state, agent, task_id).await?;
+    let session = json!({
+        "sessionId": session_id,
+        "cwd": cwd,
+        "runtime": "claude-code",
+        "startedAt": chrono::Utc::now(),
+    });
+    sqlx::query("UPDATE task SET agent_session = $2 WHERE id = $1")
+        .bind(task_id)
+        .bind(session.clone())
+        .execute(&mut *d.tx)
+        .await?;
+    d.tx.commit().await?;
+    Ok(session)
+}
+
 // ---- Events and the inbox --------------------------------------------------
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -1363,6 +1396,44 @@ pub async fn ack_events(state: &AppState, agent: Uuid, through: i64) -> AppResul
     .bind(agent)
     .bind(through)
     .fetch_one(&state.db)
+    .await?)
+}
+
+/// A task with events the agent hasn't acknowledged yet: enough for a
+/// launchd-driven watcher to decide, without a model call, which tasks need a
+/// `claude` run this tick. `state` is the task's current `agent_state` — a
+/// watcher skips a task whose state is `stopped` (taken back, dropped, or
+/// finished; see `HELD`/`delegated`), since the agent no longer holds it.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTask {
+    pub id: Uuid,
+    pub title: String,
+    pub state: Option<String>,
+    pub pending_events: i64,
+    pub latest_event_id: i64,
+}
+
+/// The delegated tasks that have events after this agent's cursor, oldest
+/// first. A hand-off is itself an event (`handed_off`), so a newly-handed-off
+/// task appears here too — the watcher does not need to consult `tasks()`
+/// separately.
+pub async fn pending_tasks(state: &AppState, agent: Uuid) -> AppResult<Vec<PendingTask>> {
+    let cursor: i64 = sqlx::query_scalar("SELECT event_cursor FROM agent WHERE id = $1")
+        .bind(agent)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(sqlx::query_as(
+        "SELECT t.id, t.title, t.agent_state AS state,
+                count(e.id) AS pending_events, max(e.id) AS latest_event_id
+           FROM agent_event e JOIN task t ON t.id = e.task_id
+          WHERE e.agent_id = $1 AND e.id > $2 AND t.delegate_agent_id = $1
+          GROUP BY t.id, t.title, t.agent_state
+          ORDER BY min(e.id)",
+    )
+    .bind(agent)
+    .bind(cursor)
+    .fetch_all(&state.db)
     .await?)
 }
 

@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.6.0
+version: 1.7.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -19,6 +19,13 @@ task you are working on, that change is an instruction to you.
 
 You are agent `{{handle}}`. You can see and act on **only** the tasks handed to
 you. You can never approve your own work — you submit it and your owner decides.
+
+Each task is one continuous session: your owner's watcher resumes the same
+conversation every time it wakes you for that task, for as long as you hold
+it. They may also attach to that session directly (`claude --resume`) and
+talk to you themselves — treat anything typed there as coming from them, and
+keep reporting your plan, progress and questions on the dashboard as you
+always do, so the rest of the team still sees them.
 
 ## Your tools
 

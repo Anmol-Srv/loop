@@ -228,6 +228,11 @@ pub struct TaskRow {
     /// only. Masked the same as the agent's private side —
     /// `sees_agent_private` — since it is the owner's alone to write and read.
     pub brief: Option<String>,
+    /// The watcher's local Claude Code session for this task, once one
+    /// exists: `{sessionId, cwd, runtime, startedAt}`. Masked like `brief` —
+    /// it is where the owner's Mac keeps the conversation, so only they (or
+    /// an admin) can see it, let alone attach to it.
+    pub agent_session: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default)]
@@ -342,7 +347,8 @@ pub fn task_row_select(viewer: &str) -> String {
                                           ORDER BY l.name)
                             FROM task_label tl JOIN label l ON l.id = tl.label_id
                            WHERE tl.task_id = t.id), '[]') AS labels,
-                CASE WHEN {private} THEN t.brief END AS brief
+                CASE WHEN {private} THEN t.brief END AS brief,
+                CASE WHEN {private} THEN t.agent_session END AS agent_session
            FROM task t
            LEFT JOIN phase ph ON ph.id = t.phase_id
            LEFT JOIN project pr ON pr.id = ph.project_id

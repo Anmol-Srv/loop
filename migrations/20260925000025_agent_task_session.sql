@@ -1,0 +1,11 @@
+-- Per-task Claude Code sessions: the watcher runs one continuous `claude`
+-- conversation per task (first run `--session-id`, every later run
+-- `--resume`) instead of one fresh process per inbox wake-up. This is where
+-- the server remembers which session and which working folder that is, so
+-- the app can offer the owner a way back in.
+--
+-- {sessionId, cwd, runtime, startedAt}. Set by the watcher
+-- (POST /api/agent/tasks/{id}/session, delegated() guard) before its first
+-- run for a task. Kept across a take-back — never cleared — so the owner can
+-- still reopen the conversation after the agent no longer holds the task.
+ALTER TABLE task ADD COLUMN agent_session jsonb;

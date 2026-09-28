@@ -28,8 +28,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/agent/hello", post(hello))
         .route("/api/agent/me", get(me))
         .route("/api/agent/tasks", get(tasks))
+        .route("/api/agent/tasks/pending", get(pending))
         .route("/api/agent/tasks/{id}", get(context))
         .route("/api/agent/tasks/{id}/ack", post(ack))
+        .route("/api/agent/tasks/{id}/session", post(session))
         .route("/api/agent/tasks/{id}/update", post(update))
         .route("/api/agent/tasks/{id}/ask", post(ask))
         .route("/api/agent/tasks/{id}/attach", post(attach))
@@ -100,6 +102,15 @@ async fn me(State(state): State<AppState>, caller: Caller, headers: HeaderMap) -
 
 async fn tasks(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Vec<TaskRow>>> {
     Ok(ApiResponse::ok(agent::tasks(&state, caller.agent()?).await?))
+}
+
+/// A JSON form of the inbox, for a watcher deciding which tasks need a run
+/// rather than a model reading prose.
+async fn pending(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Vec<agent::PendingTask>>> {
+    Ok(ApiResponse::ok(agent::pending_tasks(&state, caller.agent()?).await?))
 }
 
 async fn context(
@@ -243,6 +254,24 @@ async fn workspace(
 ) -> AppResult<ApiResponse<Value>> {
     Ok(ApiResponse::ok(
         agent::set_workspace(&state, caller.agent()?, id, &b.path, b.name.as_deref(), b.repo_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBody {
+    pub session_id: Uuid,
+    pub cwd: String,
+}
+
+async fn session(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<SessionBody>,
+) -> AppResult<ApiResponse<Value>> {
+    Ok(ApiResponse::ok(
+        agent::set_session(&state, caller.agent()?, id, b.session_id, &b.cwd).await?,
     ))
 }
 
