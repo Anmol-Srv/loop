@@ -120,6 +120,18 @@ pub fn avatar_still(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name
     face(ui, seed, side, presence, name, false)
 }
 
+/// The globe's still frame into a rect a caller has already placed — a small
+/// mark beside other content (a timeline row) rather than its own widget.
+pub fn paint_still(p: &egui::Painter, rect: Rect, seed: &str) {
+    let side = rect.width();
+    let center = rect.center();
+    let globe_r = side * 0.5 * orb::INSET;
+    let (c1, c2) = avatar::tint_pair(seed);
+    let (spin, tilt) = still_phase(seed);
+    orb::paint(p, center, globe_r, side, (c1, c2), spin, tilt, None);
+    orb::hairline(p, center, globe_r, c1);
+}
+
 fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, animate: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
     let label = format!("{name}, {}", presence.words());
