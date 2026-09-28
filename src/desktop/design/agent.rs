@@ -6,21 +6,27 @@
 //! plus a second one rotated warmer). Presence is the globe's own animation
 //! rather than a ring drawn beside it:
 //!
-//! * working — the sphere turns and two particles orbit it. The only
-//!   continuous motion in most lists, and it runs only while an avatar that
-//!   shows it is on screen: it asks for a frame at 30 fps, never for "as soon
-//!   as possible", and stops asking the moment it scrolls away or the work
-//!   stops.
-//! * waiting for first contact — a meridian sweeps the sphere as it turns, for
-//!   the connect flow.
-//! * needs input — the sphere holds still; an amber dot, the same amber as
-//!   every "waiting on you", sits at the corner.
-//! * idle — a very slow turn at MD and above, still below that. Unlike
-//!   working and waiting it never asks for its own frame — the page sleeps
-//!   unless the agent is doing something — so it only advances on whatever
-//!   repaint something else on the page causes anyway.
-//! * offline — still, and the gradient fades toward grey after ten minutes
-//!   without a word.
+//! Each state is its own motion, after libraries.dev's thinking orbs, not
+//! one animation at different speeds:
+//!
+//! * working — the sphere turns and particles trail round three tilted
+//!   orbits, passing behind it (`working`).
+//! * planning (picked up, not yet started) — three bright strands plait
+//!   around the turning sphere (`weaving`).
+//! * needs input — a slow wave rolls down the latitudes, as if listening;
+//!   the amber dot every "waiting on you" wears sits at the corner
+//!   (`listening`).
+//! * waiting for first contact — a constellation wires itself across the near
+//!   face, a packet running down each new edge (`connecting`).
+//! * idle — a very slow turn at MD and above, still below that. Unlike the
+//!   moving states it never asks for its own frame — the page sleeps unless
+//!   the agent is doing something — so it only advances on whatever repaint
+//!   something else on the page causes anyway.
+//! * offline — still, dimmer, and the gradient fades toward grey after ten
+//!   minutes without a word.
+//!
+//! The moving states ask for a frame at 30 fps, never "as soon as possible",
+//! and only while the avatar is on screen.
 //!
 //! With `AIRTRIBE_REDUCE_MOTION` (egui's `animation_time` at zero), every
 //! state is its still frame and nothing here asks for a repaint.
@@ -55,11 +61,21 @@ const TICK: Duration = Duration::from_millis(33);
 /// One full turn of an idle or working globe. Slow enough to read as ambient
 /// rather than a loader.
 const SPIN_PERIOD: f64 = 14.0;
-/// One lap of the searching meridian — quick enough to read as a scan.
-const SWEEP_PERIOD: f64 = 3.2;
 /// One lap of the working orbit, deliberately faster than the sphere's own
 /// spin so the two motions read as separate layers.
-const ORBIT_PERIOD: f64 = 2.0;
+const ORBIT_PERIOD: f64 = 2.4;
+/// How fast planning's strands slide along themselves.
+const WEAVE_PERIOD: f64 = 4.0;
+/// One roll of the listening wave, pole to pole. Slow: it is waiting, calmly.
+const LISTEN_PERIOD: f64 = 2.8;
+/// One build of the connecting constellation, fade included.
+const CONNECT_PERIOD: f64 = 3.6;
+/// The connecting sphere turns slowly, so its constellation stays on the
+/// near face for the whole build.
+const CONNECT_SPIN_PERIOD: f64 = 24.0;
+/// The planning sphere turns a little faster than an idle one, so the plait
+/// reads as moving even at the small sizes.
+const WEAVE_SPIN_PERIOD: f64 = 9.0;
 /// The globe's fixed viewing angle: enough tilt that it reads as a sphere,
 /// not a flat disc face-on.
 const TILT: f32 = 0.42;
@@ -69,6 +85,8 @@ const OFFLINE_AFTER_SECS: i64 = 600;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Presence {
     Idle,
+    /// Picked up and planning: acknowledged, not yet working.
+    Planning,
     Working,
     /// Created, not yet heard from: the connect flow's last step.
     Waiting,
@@ -90,8 +108,10 @@ impl Presence {
             .is_none_or(|t| (Utc::now() - t.with_timezone(&Utc)).num_seconds() > OFFLINE_AFTER_SECS);
         if away {
             Presence::Offline
-        } else if matches!(state, "working" | "acknowledged") {
+        } else if state == "working" {
             Presence::Working
+        } else if state == "acknowledged" {
+            Presence::Planning
         } else {
             Presence::Idle
         }
@@ -100,6 +120,7 @@ impl Presence {
     fn words(self) -> &'static str {
         match self {
             Presence::Idle => "idle",
+            Presence::Planning => "planning",
             Presence::Working => "working",
             Presence::Waiting => "waiting for first contact",
             Presence::NeedsInput => "needs input",
@@ -126,7 +147,7 @@ pub fn paint_still(p: &egui::Painter, rect: Rect, seed: &str) {
     let side = rect.width();
     let center = rect.center();
     let globe_r = side * 0.5 * orb::INSET;
-    let (c1, c2) = avatar::tint_pair(seed);
+    let (c1, c2) = tints(seed);
     let (spin, tilt) = still_phase(seed);
     orb::paint(p, center, globe_r, side, (c1, c2), spin, tilt, None);
     orb::hairline(p, center, globe_r, c1);
@@ -137,25 +158,59 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
     let label = format!("{name}, {}", presence.words());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
 
-    let (mut c1, mut c2) = avatar::tint_pair(seed);
+    let (mut c1, mut c2) = tints(seed);
     if presence == Presence::Offline {
-        c1 = c1.lerp_to_gamma(colour::IDLE(), 0.7);
-        c2 = c2.lerp_to_gamma(colour::IDLE(), 0.7);
+        // Greyer and dimmer both: a hue shift alone still read as present.
+        c1 = c1.lerp_to_gamma(colour::IDLE(), 0.7).gamma_multiply(0.65);
+        c2 = c2.lerp_to_gamma(colour::IDLE(), 0.7).gamma_multiply(0.65);
     }
 
     let center = rect.center();
     let globe_r = side * 0.5 * orb::INSET;
     let dynamic = animate && ui.style().animation_time > f32::EPSILON;
     let p = ui.painter();
+    let paint = |spin: f32, dim: f32, light: &dyn Fn(&orb::Dot) -> f32| {
+        orb::paint_lit(p, center, globe_r, side, (c1, c2), spin, TILT, dim, light);
+    };
     match presence {
         Presence::Working if dynamic => {
-            orb::paint(p, center, globe_r, side, (c1, c2), spin_phase(ui, SPIN_PERIOD), TILT, None);
-            orb::orbit(p, center, globe_r, side, c2, spin_phase(ui, ORBIT_PERIOD) / TAU);
+            let t = spin_phase(ui, ORBIT_PERIOD) / TAU;
+            orb::orbits(p, center, globe_r, side, c2, t, TILT, false);
+            paint(spin_phase(ui, SPIN_PERIOD), 1.0, &|_| 0.0);
+            orb::orbits(p, center, globe_r, side, c2, t, TILT, true);
+            keep_moving(ui, rect);
+        }
+        Presence::Planning if dynamic => {
+            let phase = spin_phase(ui, WEAVE_PERIOD);
+            paint(spin_phase(ui, WEAVE_SPIN_PERIOD), orb::PATTERN_DIM, &|d| orb::plait(d, phase));
+            keep_moving(ui, rect);
+        }
+        Presence::NeedsInput if dynamic => {
+            let phase = spin_phase(ui, LISTEN_PERIOD) / TAU;
+            let (spin, _) = still_phase(seed);
+            paint(spin, orb::PATTERN_DIM, &|d| orb::listen(d, phase));
             keep_moving(ui, rect);
         }
         Presence::Waiting if dynamic => {
-            let spin = spin_phase(ui, SWEEP_PERIOD);
-            orb::paint(p, center, globe_r, side, (c1, c2), spin, TILT, Some(0.0));
+            let now = ui.input(|i| i.time);
+            let spin = spin_phase(ui, CONNECT_SPIN_PERIOD);
+            // Too small for lines to read: a meridian scan says "reaching out"
+            // at inline sizes instead.
+            if side < SM {
+                orb::paint(p, center, globe_r, side, (c1, c2), spin, TILT, Some(0.0));
+            } else {
+                // The sphere steps back so the figure drawn over it reads.
+                paint(spin, orb::PATTERN_DIM + 0.1, &|_| 0.0);
+                let cycle = (now / CONNECT_PERIOD).floor();
+                let t = ((now / CONNECT_PERIOD) - cycle) as f32;
+                // The longitude facing the viewer halfway through this cycle,
+                // so the figure turns across the middle of the face rather
+                // than drifting off one side of it.
+                let mid = (((cycle + 0.5) * CONNECT_PERIOD / CONNECT_SPIN_PERIOD).rem_euclid(1.0) * TAU as f64) as f32;
+                let dots = orb::project(orb::dot_count(side), spin, TILT);
+                let stars = orb::stars(&dots, mid + FRAC_PI_2);
+                orb::constellation(p, center, globe_r, side, c2, &dots, &stars, t);
+            }
             keep_moving(ui, rect);
         }
         // Idle never asks for its own frame — "the page sleeps unless the
@@ -163,12 +218,21 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
         // reads the clock, so it drifts a little across whatever repaints the
         // rest of the page causes anyway; below that it would only ever be
         // caught mid-turn by accident, so it takes the fixed still frame.
-        Presence::Idle if dynamic && side >= MD => {
-            orb::paint(p, center, globe_r, side, (c1, c2), spin_phase(ui, SPIN_PERIOD), TILT, None);
-        }
+        Presence::Idle if dynamic && side >= MD => paint(spin_phase(ui, SPIN_PERIOD), 1.0, &|_| 0.0),
+        // Still frames: reduced motion, the second copy of an agent on a
+        // page, and offline. Each still frame keeps a trace of its state so
+        // it is not mistaken for idle.
         _ => {
             let (spin, tilt) = still_phase(seed);
-            orb::paint(p, center, globe_r, side, (c1, c2), spin, tilt, None);
+            let (dim, light): (f32, &dyn Fn(&orb::Dot) -> f32) = match presence {
+                Presence::Planning => (orb::PATTERN_DIM, &|d| orb::plait(d, 0.0)),
+                Presence::NeedsInput => (orb::PATTERN_DIM, &|d| orb::listen(d, 0.25)),
+                _ => (1.0, &|_| 0.0),
+            };
+            orb::paint_lit(p, center, globe_r, side, (c1, c2), spin, tilt, dim, light);
+            if presence == Presence::Working {
+                orb::orbits(p, center, globe_r, side, c2, 0.15, tilt, true);
+            }
         }
     }
     orb::hairline(p, center, globe_r, c1);
@@ -180,6 +244,18 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
         p.circle_filled(c, rad, colour::WARN());
     }
     response.on_hover_text(label)
+}
+
+/// The owner's two tints, deepened on the light palette: they are pastels
+/// tuned for the dark canvas and wash out on a light one.
+fn tints(seed: &str) -> (Color32, Color32) {
+    let (c1, c2) = avatar::tint_pair(seed);
+    if colour::is_light() {
+        let ink = colour::TEXT();
+        (c1.lerp_to_gamma(ink, 0.3), c2.lerp_to_gamma(ink, 0.3))
+    } else {
+        (c1, c2)
+    }
 }
 
 /// A continuous turn, in radians, bounded to `[0, TAU)` so it never loses
@@ -411,7 +487,7 @@ mod tests {
         let now = Utc::now().to_rfc3339();
         let old = (Utc::now() - chrono::Duration::minutes(30)).to_rfc3339();
         assert_eq!(Presence::of("working", Some(&now)), Presence::Working);
-        assert_eq!(Presence::of("acknowledged", Some(&now)), Presence::Working);
+        assert_eq!(Presence::of("acknowledged", Some(&now)), Presence::Planning);
         assert_eq!(Presence::of("working", Some(&old)), Presence::Offline);
         assert_eq!(Presence::of("needs_input", Some(&old)), Presence::NeedsInput);
         assert_eq!(Presence::of("in_review", Some(&now)), Presence::Idle);
