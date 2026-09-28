@@ -1643,6 +1643,15 @@ pub async fn hand_off(
             .execute(&mut *tx)
             .await?;
     }
+    // Handing it off means work has started: a task still in triage or open
+    // moves to in progress; one further along keeps its status.
+    sqlx::query(
+        "UPDATE task SET status = 'in_progress', updated_at = now()
+          WHERE id = $1 AND status IN ('triage', 'open')",
+    )
+    .bind(task_id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     task::get(state, task_id, Some(person)).await
 }
