@@ -99,8 +99,17 @@ pub fn location() -> String {
         .unwrap_or_else(|| "<unknown>".into())
 }
 
-/// Which server to talk to: `ACP_URL`, then the one saved at sign-in, then a
-/// local one. A double-clicked `.app` has no environment, so the saved value is
+/// The server a fresh install talks to before anyone has signed in. Baked in
+/// at build time: `scripts/bundle-mac.sh` sets `LOOP_DEFAULT_SERVER` to the
+/// team's hosted server, so a teammate's first launch is already pointed at
+/// it; a plain `cargo build` (a developer) still gets a local one.
+const DEFAULT_SERVER: &str = match option_env!("LOOP_DEFAULT_SERVER") {
+    Some(url) => url,
+    None => "http://localhost:8080",
+};
+
+/// Which server to talk to: `ACP_URL`, then the one saved at sign-in, then
+/// the built-in default. A double-clicked `.app` has no environment, so the saved value is
 /// what points it at a hosted server; the env var still wins for a developer.
 pub fn base_url() -> String {
     std::env::var("ACP_URL")
@@ -108,7 +117,7 @@ pub fn base_url() -> String {
         .filter(|u| !u.trim().is_empty())
         .or_else(saved_server)
         .map(|u| u.trim().trim_end_matches('/').to_string())
-        .unwrap_or_else(|| "http://localhost:8080".into())
+        .unwrap_or_else(|| DEFAULT_SERVER.into())
 }
 
 fn saved_server() -> Option<String> {

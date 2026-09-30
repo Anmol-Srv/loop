@@ -86,6 +86,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut open_settings =
         ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma));
     let settings_open = sel(Tab::Settings);
+    let mut invite = false;
 
     let (clicked, search) = shell::sidebar(ui, ("Loop", "Airtribe engineering"), &groups, |ui| {
         if email.is_empty() {
@@ -101,6 +102,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             views::settings::appearance_compact(ui);
             ui.add_space(space::SM);
             viz::menu_rule(ui);
+            // Where an admin hands out setup codes, one click from anywhere.
+            if role == "admin" {
+                invite |= viz::menu_item_with(ui, icon::USER_PLUS, "Invite people", "");
+            }
             open_settings |= viz::menu_item_with(ui, icon::GEAR_SIX, "Settings", "\u{2318},");
             refresh |= viz::menu_item_with(ui, icon::ARROWS_CLOCKWISE, "Refresh", "");
             viz::menu_rule(ui);
@@ -130,6 +135,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         _ => {}
+    }
+    if invite {
+        views::settings::open_invite(&mut app.settings);
+        open_settings = true;
     }
     if open_settings {
         views::agents::close();

@@ -70,6 +70,15 @@ struct Members {
     revoking: Option<String>,
 }
 
+/// Open Settings on Members with the invite form ready — the account menu's
+/// "Invite people". Harmless for a non-admin: the tab never shows for them.
+pub fn open_invite(s: &mut State) {
+    s.section = 2;
+    if s.members.result.is_none() && !s.members.adding {
+        start_member_add(s);
+    }
+}
+
 const MEMBER_DEPARTMENTS: [&str; 3] = ["design", "frontend", "backend"];
 const MEMBER_ROLES: [&str; 3] = ["member", "manager", "admin"];
 

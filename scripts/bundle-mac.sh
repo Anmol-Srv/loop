@@ -7,6 +7,11 @@ cd "$(dirname "$0")/.."
 NAME="Loop"
 APP="target/$NAME.app"
 
+# Where a fresh install signs in before anyone has chosen a server: baked
+# into the binary. Override for another deployment, or set it to a local
+# server for a build that should never leave this Mac.
+export LOOP_DEFAULT_SERVER="${LOOP_DEFAULT_SERVER:-https://api-1.mycohort.live/loop}"
+
 # UNIVERSAL=1 builds for Intel as well and joins the two with lipo — only
 # needed if someone on the team has an Intel Mac, and it doubles the build.
 if [ "${UNIVERSAL:-0}" = "1" ]; then
