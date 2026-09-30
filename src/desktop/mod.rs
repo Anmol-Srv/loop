@@ -15,6 +15,7 @@ use net::Net;
 pub enum Tab {
     Home,
     MyTasks,
+    AllTasks,
     Triage,
     Projects,
     Agents,

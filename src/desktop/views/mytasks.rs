@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 use super::menus::{task_items, Pick, Viewer};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
+    avatar,
     cards as c, colour, motion, radius, shell, size, space, status_colour, status_label, text, theme, viz,
     widgets as w,
 };
@@ -47,9 +48,41 @@ struct State {
     status: Option<String>,
     project: Option<String>,
     priority: Option<String>,
+    /// All Tasks only: an assignee's email.
+    owner: Option<String>,
     /// The archived tasks instead of the live ones.
     archived: bool,
 }
+
+/// Which tasks the page lists. The two pages are one view: My Tasks is what is
+/// assigned to you, All Tasks is the whole team's, with an owner column and an
+/// owner filter. Each keeps its own filters, layout and in-flight move, keyed
+/// by scope — but every key stays under `mytasks`, so a view that moves a task
+/// refreshes both with one `invalidate_prefix`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum Scope {
+    Mine,
+    All,
+}
+
+impl Scope {
+    /// (Net key, path) for the live list and for the archived one.
+    fn sources(self) -> [(&'static str, &'static str); 2] {
+        match self {
+            Scope::Mine => [(MINE, "/api/user/tasks/mine"), (ARCHIVED, "/api/user/tasks/mine?archived=true")],
+            Scope::All => [(ALL, "/api/user/tasks"), (ALL_ARCHIVED, "/api/user/tasks?archived=true")],
+        }
+    }
+
+    /// This scope's copy of a piece of page state.
+    fn id(self, key: &str) -> egui::Id {
+        egui::Id::new((key, self))
+    }
+}
+
+/// The team's tasks, for All Tasks.
+const ALL: &str = "mytasks:all";
+const ALL_ARCHIVED: &str = "mytasks:all:archived";
 
 /// How the page is laid out, apart from what it is filtered to: Clear leaves
 /// these alone.
@@ -115,20 +148,45 @@ const COLS: [Col; 6] = [
     Col::right("Created", COL_CREATED).rank(2),
 ];
 
+/// All Tasks' columns: My Tasks' with the owner second, since whose it is is
+/// the first thing asked of a team list. `task_row` shifts the rest by one.
+const COLS_ALL: [Col; 7] = [
+    Col::left("Task", COL_TASK),
+    Col::left("Owner", COL_OWNER).rank(4),
+    Col::fill("Description", COL_DESCRIPTION).rank(3),
+    Col::left("Priority", COL_PRIORITY).rank(1),
+    Col::left("Status", COL_STATUS),
+    Col::left("Project", COL_PROJECT),
+    Col::right("Created", COL_CREATED).rank(2),
+];
+/// An avatar and a first name.
+const COL_OWNER: f32 = 130.0;
+
+/// My Tasks: what is assigned to you.
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
-    let filters_id = egui::Id::new(FILTERS);
+    page(app, ui, Scope::Mine);
+}
+
+/// All Tasks: everyone's, with the owner shown and filterable.
+pub fn all(app: &mut App, ui: &mut egui::Ui) {
+    page(app, ui, Scope::All);
+}
+
+fn page(app: &mut App, ui: &mut egui::Ui, scope: Scope) {
+    let filters_id = scope.id(FILTERS);
     let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
-    let mut view: View = ui.ctx().data_mut(|d| d.get_temp(egui::Id::new(VIEW))).unwrap_or_else(|| View {
+    let mut view: View = ui.ctx().data_mut(|d| d.get_temp(scope.id(VIEW))).unwrap_or_else(|| View {
         folded: vec![FOLDED_BY_DEFAULT.to_owned()],
         ..View::default()
     });
 
     let viewer = Viewer::of(app);
     let net = app.net.as_mut().unwrap();
-    let key = if state.archived { ARCHIVED } else { MINE };
-    net.get_once(MINE, "/api/user/tasks/mine");
+    let [(live_key, live_path), (archived_key, archived_path)] = scope.sources();
+    let key = if state.archived { archived_key } else { live_key };
+    net.get_once(live_key, live_path);
     if state.archived {
-        net.get_once(ARCHIVED, "/api/user/tasks/mine?archived=true");
+        net.get_once(archived_key, archived_path);
     }
 
     let loading = net.is_loading(key);
@@ -138,7 +196,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     // Newest first, whatever order the server sent. One sort, here, so the
     // filters below never reshuffle the list as they narrow it.
-    let sorted = memo(ui.ctx(), egui::Id::new(SORTED), (key, generation), || {
+    let sorted = memo(ui.ctx(), scope.id(SORTED), (key, generation), || {
         let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
         let mut order: Vec<usize> = (0..all.len()).collect();
         order.sort_by(|&a, &b| {
@@ -149,9 +207,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         let mut projects: Vec<String> = all.iter().map(|t| project_of(t).to_owned()).collect();
         projects.sort_unstable();
         projects.dedup();
-        (tasks.clone(), order, projects)
+        // (email, name) of everyone holding a task, for All Tasks' owner filter.
+        let mut owners: Vec<(String, String)> = all
+            .iter()
+            .filter_map(|t| Some((str_at(t, "assigneeEmail")?.to_owned(), str_at(t, "assigneeName")?.to_owned())))
+            .collect();
+        owners.sort_by(|a, b| a.1.cmp(&b.1));
+        owners.dedup();
+        (tasks.clone(), order, projects, owners)
     });
-    let (tasks, order, projects) = &*sorted;
+    let (tasks, order, projects, owners) = &*sorted;
     let all: &[Value] = tasks.as_array().map(Vec::as_slice).unwrap_or_default();
     // Triage is its own group above the list: filed for you, not yet taken.
     let (triage, rows): (Vec<&Value>, Vec<&Value>) =
@@ -160,10 +225,19 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let open = rows.iter().filter(|t| !finished(t)).count();
     let in_projects = projects.iter().filter(|p| **p != NO_PROJECT).count();
-    let subtitle = format!("{open} open across {}", plural(in_projects, "project"));
+    let (title, subtitle) = match scope {
+        Scope::Mine => ("My Tasks", format!("{open} open across {}", plural(in_projects, "project"))),
+        Scope::All => (
+            "All Tasks",
+            format!(
+                "{open} open across the team \u{00B7} {}",
+                if owners.len() == 1 { "1 person".to_owned() } else { format!("{} people", owners.len()) }
+            ),
+        ),
+    };
 
     let mut new_task = false;
-    shell::page_title(ui, "My Tasks", &subtitle, |ui| {
+    shell::page_title(ui, title, &subtitle, |ui| {
         if viewer.can_write {
             new_task = super::new_task::button(ui);
             ui.add_space(space::SM);
@@ -188,7 +262,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut picked: Option<(Value, Pick)> = None;
     // Triage has a tab of its own; here it is one quiet line that goes there,
     // so the decisions do not crowd the work already yours.
-    if !state.archived && !triage.is_empty() {
+    if scope == Scope::Mine && !state.archived && !triage.is_empty() {
         if super::triage::link_row(ui, triage.len()) {
             app.tab = crate::desktop::Tab::Triage;
         }
@@ -200,12 +274,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     if rows.is_empty() && !state.archived {
         if loading && triage.is_empty() {
             w::loading(ui, "Loading your work");
-        } else if triage.is_empty() {
-            w::empty(
-                ui,
-                "Nothing assigned to you.",
-                "When someone hands you a task it shows up here. Or start one yourself.",
-            );
+        } else if triage.is_empty() || scope == Scope::All {
+            let (message, detail) = match scope {
+                Scope::Mine => (
+                    "Nothing assigned to you.",
+                    "When someone hands you a task it shows up here. Or start one yourself.",
+                ),
+                Scope::All => ("No tasks yet.", "Every task on the team shows up here. Start the first one."),
+            };
+            w::empty(ui, message, detail);
             if viewer.can_write {
                 let mut start = false;
                 ui.vertical_centered(|ui| start = super::new_task::button(ui));
@@ -214,16 +291,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         }
-        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(VIEW), view));
+        ui.ctx().data_mut(|d| d.insert_temp(scope.id(VIEW), view));
         finish(app, open_task, picked);
         return;
     }
 
-    let shown_ix = memo(ui.ctx(), egui::Id::new(SHOWN), (key, generation, state.clone()), || {
+    let shown_ix = memo(ui.ctx(), scope.id(SHOWN), (key, generation, state.clone()), || {
         (0..rows.len()).filter(|&i| keep(rows[i], &state)).collect::<Vec<usize>>()
     });
     let shown: Vec<&Value> = shown_ix.iter().map(|&i| rows[i]).collect();
-    filter_bar(ui, &mut state, &projects, &mut view);
+    filter_bar(ui, scope, &mut state, &projects, owners, &mut view);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state.clone()));
 
     // The count heads the groups: how many of how many survive the filters.
@@ -236,32 +313,37 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(space::XS);
 
     if rows.is_empty() {
-        w::empty(ui, "Nothing archived.", "Tasks of yours that are archived show here.");
+        let detail = match scope {
+            Scope::Mine => "Tasks of yours that are archived show here.",
+            Scope::All => "Archived tasks from across the team show here.",
+        };
+        w::empty(ui, "Nothing archived.", detail);
     } else if shown.is_empty() {
         w::empty(ui, "Nothing matches.", "Clear a filter, or search for something else.");
     } else {
         let by = Group::of(view.group.as_deref());
-        let moving: Option<(String, String, String)> = ui.ctx().data(|d| d.get_temp(egui::Id::new(MOVING)));
+        let moving: Option<(String, String, String)> = ui.ctx().data(|d| d.get_temp(scope.id(MOVING)));
         let groups = group(&shown, by, view.board, moving.as_ref());
         if view.board {
             let can_move = by == Group::Status && !state.archived && viewer.can_write && moving.is_none();
-            let out = board(ui, &groups, &viewer, can_move);
+            let out = board(ui, scope, &groups, &viewer, can_move);
             open_task = out.open.or(open_task);
             picked = out.picked.or(picked);
             if let Some((id, from, to)) = out.moved {
                 let net = app.net.as_mut().unwrap();
-                net.invalidate(MOVE);
-                net.patch(MOVE, &format!("/api/user/tasks/{id}"), json!({ "status": to, "expectedStatus": from }));
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(MOVING), (id, from, to)));
+                let move_key = move_key(scope);
+                net.invalidate(move_key);
+                net.patch(move_key, &format!("/api/user/tasks/{id}"), json!({ "status": to, "expectedStatus": from }));
+                ui.ctx().data_mut(|d| d.insert_temp(scope.id(MOVING), (id, from, to)));
             }
         } else {
-            let out = list(ui, &groups, &viewer, &mut view.folded);
+            let out = list(ui, scope, &groups, &viewer, &mut view.folded);
             open_task = out.open.or(open_task);
             picked = out.picked.or(picked);
         }
     }
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(VIEW), view));
-    settle_move(ui.ctx(), app.net.as_mut().unwrap());
+    ui.ctx().data_mut(|d| d.insert_temp(scope.id(VIEW), view));
+    settle_move(ui.ctx(), app.net.as_mut().unwrap(), scope);
     ui.add_space(space::XXL);
     finish(app, open_task, picked);
 }
@@ -279,7 +361,14 @@ fn finish(app: &mut App, mut open_task: Option<String>, picked: Option<(Value, P
 
 /// Search, then the three menus. The count is not here: it rides on the
 /// table's heading, where a wrapped toolbar cannot run into it.
-fn filter_bar(ui: &mut egui::Ui, state: &mut State, projects: &[&str], view: &mut View) {
+fn filter_bar(
+    ui: &mut egui::Ui,
+    scope: Scope,
+    state: &mut State,
+    projects: &[&str],
+    owners: &[(String, String)],
+    view: &mut View,
+) {
     viz::toolbar(ui, |ui| {
         viz::search(ui, "Search tasks, descriptions, projects…", &mut state.query);
 
@@ -295,14 +384,21 @@ fn filter_bar(ui: &mut egui::Ui, state: &mut State, projects: &[&str], view: &mu
             (0..=4).map(|p| (p.to_string(), format!("P{p}"))).collect();
         viz::select(ui, "Any priority", &priorities, &mut state.priority);
 
+        if scope == Scope::All {
+            viz::select(ui, "Anyone", owners, &mut state.owner);
+        }
+
         if viz::filter(ui, "Archived", state.archived, false).clicked() {
             state.archived = !state.archived;
         }
 
-        let groupings = [
+        let mut groupings = vec![
             ("project".to_owned(), "Group: Project".to_owned()),
             ("priority".to_owned(), "Group: Priority".to_owned()),
         ];
+        if scope == Scope::All {
+            groupings.push(("owner".to_owned(), "Group: Owner".to_owned()));
+        }
         // Not a filter, so it reads as a setting rather than a narrowing:
         // the resting label is the current grouping, status included.
         viz::value_select(ui, "Group: Status", &groupings, &mut view.group);
@@ -330,6 +426,11 @@ fn keep(t: &Value, state: &State) -> bool {
             return false;
         }
     }
+    if let Some(o) = &state.owner {
+        if str_at(t, "assigneeEmail") != Some(o.as_str()) {
+            return false;
+        }
+    }
     // Title, description and project: the three things you would think to
     // type. Not the status — that is what the menu beside the box is for.
     viz::matches(
@@ -344,9 +445,12 @@ fn keep(t: &Value, state: &State) -> bool {
 
 // --------------------------------------------------------------------- table
 
-fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, scope: Scope, me: &str) {
     let status = str_at(t, "status").unwrap_or("open");
     let done = finished(t);
+    let mine = scope == Scope::Mine || str_at(t, "assigneePersonId") == Some(me);
+    // All Tasks puts the owner second (COLS_ALL); every later column moves one.
+    let o = usize::from(scope == Scope::All);
 
     row.at(0, |ui| {
         // Finished work stays legible and stops competing: the rows above it
@@ -354,7 +458,6 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         let ink = if done || super::board::archived(t) { colour::TEXT_MUTED() } else { colour::TEXT() };
         let labels = t.get("labels").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
         super::projects::name_with_labels(ui, str_at(t, "title").unwrap_or_default(), ink, labels);
-        // You are the owner of every row here, so the mark rides on the title.
         super::home::agent_marker(ui, t);
         // Blocked rides behind the title rather than replacing the status:
         // the status is still true, the blocker is why it is not moving.
@@ -366,24 +469,28 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
 
     // One line. The column clips, and a wrapped cell would make one row taller
     // than the rest of the table.
-    row.muted(1, str_at(t, "body").unwrap_or_default().trim().lines().next().unwrap_or(""));
+    if scope == Scope::All {
+        row.at(1, |ui| owner_cell(ui, t));
+    }
 
-    row.at(2, |ui| {
+    row.muted(1 + o, str_at(t, "body").unwrap_or_default().trim().lines().next().unwrap_or(""));
+
+    row.at(2 + o, |ui| {
         if let Some(p) = t.get("priority").and_then(Value::as_i64) {
             c::chip(ui, &format!("P{p}"), priority_tone(p), false);
         }
     });
 
-    row.at(3, |ui| {
+    row.at(3 + o, |ui| {
         if super::board::archived(t) {
             super::board::archived_chip(ui);
         } else {
-            // Every row here is the viewer's own, so a live delegate always
-            // says "you" — same split home's team-wide table reads by owner.
+            // A live delegate says "you" on your own rows and the owner's name
+            // on a teammate's — the same split home's team-wide table makes.
             let agent = t
                 .get("delegate")
                 .filter(|d| d.is_object() && !done)
-                .and_then(|d| super::home::agent_status(d, true));
+                .and_then(|d| super::home::agent_status(d, mine));
             match agent {
                 Some((label, tone)) => {
                     c::chip(ui, &label, tone, true).on_hover_text(status_label(status));
@@ -396,8 +503,8 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
     });
 
     // A standalone task reads "—", faint, like every empty cell.
-    row.muted(4, str_at(t, "projectName").unwrap_or_default());
-    row.muted(5, &age(str_at(t, "createdAt").unwrap_or_default()));
+    row.muted(4 + o, str_at(t, "projectName").unwrap_or_default());
+    row.muted(5 + o, &age(str_at(t, "createdAt").unwrap_or_default()));
 }
 
 // ------------------------------------------------------------------ groups
@@ -407,6 +514,8 @@ enum Group {
     Status,
     Project,
     Priority,
+    /// All Tasks only: one group per person, the unassigned last.
+    Owner,
 }
 
 impl Group {
@@ -414,6 +523,7 @@ impl Group {
         match v {
             Some("project") => Group::Project,
             Some("priority") => Group::Priority,
+            Some("owner") => Group::Owner,
             _ => Group::Status,
         }
     }
@@ -448,6 +558,7 @@ fn group<'a>(
             Group::Status => status_of(t, moving).to_owned(),
             Group::Project => project_of(t).to_owned(),
             Group::Priority => t.get("priority").and_then(Value::as_i64).map_or("none".into(), |p| p.to_string()),
+            Group::Owner => str_at(t, "assigneeName").unwrap_or(UNASSIGNED).to_owned(),
         }
     };
     // The order the groups appear in: fixed for status and priority, by name
@@ -458,7 +569,7 @@ fn group<'a>(
             order.iter().map(|s| (*s).to_owned()).collect()
         }
         Group::Priority => (0..=4).map(|p| p.to_string()).chain(["none".to_owned()]).collect(),
-        Group::Project => Vec::new(),
+        Group::Project | Group::Owner => Vec::new(),
     };
     for t in rows {
         let k = key_of(t);
@@ -468,6 +579,9 @@ fn group<'a>(
     }
     if by == Group::Project {
         keys.sort_by(|a, b| (a == NO_PROJECT).cmp(&(b == NO_PROJECT)).then_with(|| a.cmp(b)));
+    }
+    if by == Group::Owner {
+        keys.sort_by(|a, b| (a == UNASSIGNED).cmp(&(b == UNASSIGNED)).then_with(|| a.cmp(b)));
     }
 
     keys.into_iter()
@@ -481,6 +595,11 @@ fn group<'a>(
                     (format!("P{p}"), Some(priority_dot(p)))
                 }
                 Group::Project => (key.clone(), None),
+                // The person's own avatar hue, so a group reads as theirs.
+                Group::Owner => {
+                    let email = members.first().and_then(|t| str_at(t, "assigneeEmail"));
+                    (key.clone(), email.map(avatar::tint))
+                }
             };
             Bucket { key, label, dot, rows: members }
         })
@@ -509,7 +628,7 @@ struct Out {
 
 // --------------------------------------------------------------------- list
 
-fn list(ui: &mut egui::Ui, groups: &[Bucket<'_>], viewer: &Viewer, folded: &mut Vec<String>) -> Out {
+fn list(ui: &mut egui::Ui, scope: Scope, groups: &[Bucket<'_>], viewer: &Viewer, folded: &mut Vec<String>) -> Out {
     let mut out = Out::default();
     // The column labels ride on the first open group only; every group below
     // lines up under them.
@@ -533,11 +652,11 @@ fn list(ui: &mut egui::Ui, groups: &[Bucket<'_>], viewer: &Viewer, folded: &mut 
         let rows = &g.rows;
         let clicked = table::show_group(
             ui,
-            &format!("{TABLE}:{}", g.key),
-            &COLS,
+            &format!("{TABLE}:{}:{}", if scope == Scope::All { "all" } else { "mine" }, g.key),
+            if scope == Scope::All { &COLS_ALL[..] } else { &COLS[..] },
             rows.len(),
             header,
-            |row, i| task_row(row, rows[i]),
+            |row, i| task_row(row, rows[i], scope, &viewer.me),
             |ui, i| {
                 if let Some(pick) = task_items(ui, rows[i], viewer, true) {
                     out.picked = Some((rows[i].clone(), pick));
@@ -617,7 +736,7 @@ struct Drag {
     from: String,
 }
 
-fn board(ui: &mut egui::Ui, groups: &[Bucket<'_>], viewer: &Viewer, can_move: bool) -> Out {
+fn board(ui: &mut egui::Ui, scope: Scope, groups: &[Bucket<'_>], viewer: &Viewer, can_move: bool) -> Out {
     let mut out = Out::default();
     let n = groups.len().max(1) as f32;
     // Two points short of the edge, or the scroll area clips the last
@@ -630,15 +749,17 @@ fn board(ui: &mut egui::Ui, groups: &[Bucket<'_>], viewer: &Viewer, can_move: bo
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = space::MD;
             for g in groups {
-                column(ui, g, viewer, can_move, width, height, &mut out);
+                column(ui, scope, g, viewer, can_move, width, height, &mut out);
             }
         });
     });
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn column(
     ui: &mut egui::Ui,
+    scope: Scope,
     g: &Bucket<'_>,
     viewer: &Viewer,
     can_move: bool,
@@ -678,7 +799,11 @@ fn column(
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for t in &g.rows {
-                                card(ui, t, viewer, can_move, out);
+                                // A teammate's card does not drag: the server
+                                // only lets the assignee move a task.
+                                let own = scope == Scope::Mine
+                                    || str_at(t, "assigneePersonId") == Some(viewer.me.as_str());
+                                card(ui, scope, t, viewer, can_move && own, out);
                             }
                             if g.rows.is_empty() {
                                 ui.add_space(space::LG);
@@ -717,7 +842,7 @@ fn column(
 /// A board card: the title as the loudest thing, then priority, project and
 /// age. Click opens it, right-click is the row menu, and when the board is
 /// grouped by status it can be dragged to another column.
-fn card(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, can_move: bool, out: &mut Out) {
+fn card(ui: &mut egui::Ui, scope: Scope, t: &Value, viewer: &Viewer, can_move: bool, out: &mut Out) {
     let id_str = str_at(t, "id").unwrap_or_default();
     let id = egui::Id::new(("mytasks:card", id_str));
     let dragging = ui.ctx().is_being_dragged(id);
@@ -761,6 +886,13 @@ fn card(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, can_move: bool, out: &mut
                                 .color(colour::TEXT_FAINT()),
                         );
                         super::home::agent_marker(ui, t);
+                        // Whose card it is, on the team board.
+                        if scope == Scope::All {
+                            if let Some(email) = str_at(t, "assigneeEmail") {
+                                avatar::small(ui, email, size::AVATAR_SM)
+                                    .on_hover_text(str_at(t, "assigneeName").unwrap_or(email));
+                            }
+                        }
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(project_of(t)).size(text::SMALL).color(colour::TEXT_MUTED()),
@@ -841,13 +973,22 @@ fn ghost(ctx: &egui::Context, id: egui::Id, title: &str) {
 }
 
 /// Fold in a dropped card's reply: say where it went, or why it did not.
-fn settle_move(ctx: &egui::Context, net: &mut crate::desktop::net::Net) {
-    let moving_id = egui::Id::new(MOVING);
+/// A dropped card's PATCH, per scope, so the two pages settle their own moves.
+fn move_key(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Mine => MOVE,
+        Scope::All => "mytasks:all:move",
+    }
+}
+
+fn settle_move(ctx: &egui::Context, net: &mut crate::desktop::net::Net, scope: Scope) {
+    let moving_id = scope.id(MOVING);
+    let move_key = move_key(scope);
     let Some((_, _, to)) = ctx.data(|d| d.get_temp::<(String, String, String)>(moving_id)) else { return };
-    if net.is_loading(MOVE) {
+    if net.is_loading(move_key) {
         return;
     }
-    let Some(result) = net.peek(MOVE).cloned() else { return };
+    let Some(result) = net.peek(move_key).cloned() else { return };
     match result {
         Ok(v) if str_at(&v, "status") == Some("proposed") => {
             w::toast(ctx, "Recorded as a proposed change \u{2014} it needs approval.", false)
@@ -856,12 +997,31 @@ fn settle_move(ctx: &egui::Context, net: &mut crate::desktop::net::Net) {
         // The server's reason — a missing PR, a move the track does not have.
         Err(e) => w::toast(ctx, format!("{e} Open the task to finish the move there."), true),
     }
-    net.invalidate(MOVE);
+    net.invalidate(move_key);
     super::task::invalidate_after_move(net);
     ctx.data_mut(|d| d.remove::<(String, String, String)>(moving_id));
 }
 
 // -------------------------------------------------------------------- pieces
+
+/// Whose it is: their avatar and first name, or a faint "Unassigned".
+fn owner_cell(ui: &mut egui::Ui, t: &Value) {
+    ui.spacing_mut().item_spacing.x = space::XS;
+    match (str_at(t, "assigneeEmail"), str_at(t, "assigneeName")) {
+        (Some(email), Some(name)) => {
+            avatar::small(ui, email, size::AVATAR_SM);
+            let first = name.split_whitespace().next().unwrap_or(name);
+            ui.add(
+                egui::Label::new(egui::RichText::new(first).size(text::SMALL).color(colour::TEXT_2()))
+                    .truncate()
+                    .selectable(false),
+            );
+        }
+        _ => {
+            ui.label(egui::RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT()));
+        }
+    }
+}
 
 /// P0 shouts and P4 whispers, in the same chip vocabulary as status.
 fn priority_tone(p: i64) -> c::Tone {
@@ -885,6 +1045,9 @@ fn blocked(t: &Value) -> bool {
 fn finished(t: &Value) -> bool {
     t.get("doneAt").is_some_and(|v| !v.is_null()) || str_at(t, "status") == Some("dropped")
 }
+
+/// What a task with nobody on it is grouped under.
+const UNASSIGNED: &str = "Unassigned";
 
 /// What a standalone task is filed under in the project filter.
 const NO_PROJECT: &str = "No project";

@@ -67,6 +67,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks)).count(mine_open.to_string()),
             Tab::MyTasks,
         ),
+        (shell::NavItem::new(icon::LIST_BULLETS, "All Tasks", sel(Tab::AllTasks)), Tab::AllTasks),
     ];
     if triage > 0 || app.tab == Tab::Triage {
         items.push((shell::NavItem::new(icon::TRAY, "Triage", sel(Tab::Triage)).badge(triage), Tab::Triage));
@@ -158,6 +159,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             match app.tab {
                 Tab::Home => views::home::ui(app, ui),
                 Tab::MyTasks => views::mytasks::ui(app, ui),
+                Tab::AllTasks => views::mytasks::all(app, ui),
                 Tab::Triage => views::triage::page(app, ui),
                 Tab::Projects => views::board::ui(app, ui),
                 Tab::Agents => views::agents::ui(app, ui),

@@ -594,12 +594,23 @@ fn select_styled(
         .width(response.rect.width().max(MENU_MIN_W))
         .show(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            if menu_row(ui, any, slot.is_none(), false, false).clicked() {
+            // A value select's resting label is the current value, which is
+            // also one of the options: listing both showed it twice ("P2
+            // Normal" above "P2 Normal"). So the current value stays in its
+            // own place, ticked, and picking it again changes nothing.
+            // Callers that leave the current value out of `options` (a
+            // status offering only legal moves, "Group: Status" as the way
+            // back) still get it as the leading row.
+            let listed = resting_is_value && options.iter().any(|(_, label)| label == any);
+            let unchanged = slot.is_none();
+            let current = |label: &str| listed && unchanged && label == any;
+            if !listed && menu_row(ui, any, slot.is_none(), false, false).clicked() {
                 *slot = None;
             }
             for (value, label) in options {
-                if menu_row(ui, label, slot.as_deref() == Some(value), false, false).clicked() {
-                    *slot = Some(value.clone());
+                let on = slot.as_deref() == Some(value) || current(label);
+                if menu_row(ui, label, on, false, false).clicked() {
+                    *slot = if current(label) { None } else { Some(value.clone()) };
                 }
             }
         });
