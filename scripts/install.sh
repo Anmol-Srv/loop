@@ -14,7 +14,15 @@ set -euo pipefail
 
 # release-mac.sh rewrites this line to the server it uploads to.
 SERVER="https://api-1.mycohort.live/loop"
-URL="$SERVER/download/Loop.zip"
+# Each build has its own URL (Loop-<version>.zip), named by the small, uncached
+# `latest` file: a CDN in front of the server caches .zip downloads, and a
+# fixed Loop.zip would keep handing out the build it cached first.
+VERSION_WANTED=$(curl -fsS -m 15 "$SERVER/download/latest" 2>/dev/null | tr -d '[:space:]' || true)
+if [ -n "$VERSION_WANTED" ]; then
+  URL="$SERVER/download/Loop-$VERSION_WANTED.zip"
+else
+  URL="$SERVER/download/Loop.zip"
+fi
 APP="/Applications/Loop.app"
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -25,7 +33,7 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo "Downloading the latest Loop…"
+echo "Downloading Loop ${VERSION_WANTED:-(latest)}…"
 curl -fL --progress-bar "$URL" -o "$TMP/Loop.zip"
 ditto -x -k "$TMP/Loop.zip" "$TMP"
 [ -d "$TMP/Loop.app" ] || { echo "The download did not contain Loop.app." >&2; exit 1; }

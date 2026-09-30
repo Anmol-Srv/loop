@@ -40,10 +40,14 @@ printf '%s\n' "$LOOP_VERSION" > target/latest
 # Upload under temporary names, then swap in place: a teammate installing
 # mid-upload gets the old build whole, never half of the new one.
 ssh "$HOST" "mkdir -p $DIST_DIR"
-scp -q target/Loop.zip "$HOST:$DIST_DIR/.Loop.zip.part"
+# Each build under its own name, so no cache can serve a stale one; `latest`
+# (never cached) says which to fetch, and flips last, once the build is whole.
+ZIP="Loop-$LOOP_VERSION.zip"
+scp -q target/Loop.zip "$HOST:$DIST_DIR/.$ZIP.part"
 scp -q target/install.sh "$HOST:$DIST_DIR/.install.sh.part"
 scp -q target/latest "$HOST:$DIST_DIR/.latest.part"
-ssh "$HOST" "cd $DIST_DIR && cp Loop.zip Loop-previous.zip 2>/dev/null; mv .Loop.zip.part Loop.zip && mv .install.sh.part install.sh && mv .latest.part latest"
+ssh "$HOST" "cd $DIST_DIR && mv .$ZIP.part $ZIP && cp $ZIP Loop.zip && mv .install.sh.part install.sh && mv .latest.part latest \
+  && ls -t Loop-*.zip | tail -n +4 | xargs -r rm -f"
 
 echo
 echo "released $LOOP_VERSION — teammates install or update with:"
