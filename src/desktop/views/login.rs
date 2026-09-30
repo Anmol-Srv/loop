@@ -45,6 +45,9 @@ pub struct State {
     tried: bool,
     /// Unauthenticated bridge, alive only for the request in flight.
     net: Option<Net>,
+    /// Signing in to an extra workspace while still signed in to another:
+    /// the screen offers a way back to it instead of trapping you here.
+    pub adding: bool,
 }
 
 impl Default for State {
@@ -59,6 +62,7 @@ impl Default for State {
             error: None,
             tried: false,
             net: None,
+            adding: false,
         }
     }
 }
@@ -187,7 +191,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     if let Some(token) = token {
-        match creds::store(&token).and_then(|()| creds::store_server(&app.login.server)) {
+        let server = app.login.server.trim().trim_end_matches('/').to_owned();
+        match creds::store(&token)
+            .and_then(|()| creds::store_server(&server))
+            .and_then(|()| creds::remember(&server, &token))
+        {
             Ok(()) => {
                 app.login = State::default();
                 app.connect(token, &ctx);
@@ -202,6 +210,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 
     let busy = app.login.net.as_ref().is_some_and(|n| n.is_loading("auth"));
     let first_time = app.login.mode == Mode::FirstTime;
+    // Set by the "Back to …" link while adding a workspace; acted on once the
+    // screen is drawn, since switching needs the whole app.
+    let adding = app.login.adding;
+    let mut back_to: Option<creds::Workspace> = None;
+    let go_back = &mut back_to;
     // A face for the address once it looks like one: a quiet confirmation that
     // what was typed is what was meant.
     let face = app.login.email.contains('@').then(|| app.login.email.clone());
@@ -334,6 +347,24 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                     ui.add_space(space::LG);
                     w::caption(ui, "Ask an admin for a setup code. They expire after 48 hours.");
                 }
+                // Adding a workspace from inside another: the way back, so
+                // this screen never strands you.
+                if adding {
+                    if let Some(back) = creds::active().filter(|w| w.token.is_some()) {
+                        ui.add_space(space::LG);
+                        if w::icon_button(
+                            ui,
+                            egui_phosphor::regular::ARROW_LEFT,
+                            &format!("Back to {}", back.name),
+                            w::Emphasis::Link,
+                            true,
+                        )
+                        .clicked()
+                        {
+                            *go_back = Some(back);
+                        }
+                    }
+                }
             });
         });
 
@@ -361,6 +392,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         net.post("auth", path, body);
         app.login.net = Some(net);
         app.login.error = None;
+    }
+    if let Some(w) = back_to {
+        app.switch_workspace(&w, &ctx);
     }
 }
 

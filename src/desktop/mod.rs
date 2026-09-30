@@ -77,6 +77,8 @@ impl App {
     }
 
     pub fn sign_out(&mut self) {
+        // Only this workspace: the others keep their sign-in.
+        let _ = creds::forget(&creds::base_url());
         let _ = creds::clear();
         self.net = None;
         self.scopes.clear();
@@ -85,6 +87,44 @@ impl App {
         // Reset the whole login screen, error text included, so the next sign-in
         // does not open on the last one's failure.
         self.login = views::login::State::default();
+    }
+
+    /// Make `w` the workspace on screen. Everything page-level is dropped so
+    /// nothing from the last workspace shows in this one; a workspace with no
+    /// sign-in lands on the sign-in screen with its server filled in.
+    pub fn switch_workspace(&mut self, w: &creds::Workspace, ctx: &egui::Context) {
+        if let Err(e) = creds::activate(w) {
+            views::chrome::switch_failed(ctx, &e);
+            return;
+        }
+        self.net = None;
+        self.scopes.clear();
+        self.tab = Tab::Home;
+        self.project = None;
+        self.task = None;
+        self.board = views::board::State::default();
+        self.palette = views::palette::State::default();
+        self.settings = views::settings::State::default();
+        self.login = views::login::State::default();
+        // Per-page filters and layouts belong to the last workspace.
+        design::theme::reset_page_state(ctx);
+        match &w.token {
+            Some(token) => self.connect(token.clone(), ctx),
+            None => self.login.server = w.server.clone(),
+        }
+    }
+
+    /// Leave for the sign-in screen to add another workspace, remembering the
+    /// one on screen so the screen can offer the way back.
+    pub fn add_workspace(&mut self) {
+        self.net = None;
+        self.scopes.clear();
+        self.project = None;
+        self.task = None;
+        let mut login = views::login::State::default();
+        login.server.clear();
+        login.adding = true;
+        self.login = login;
     }
 
     fn absorb_identity(&mut self) {

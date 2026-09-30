@@ -130,3 +130,92 @@ fn saved_server() -> Option<String> {
 pub fn store_server(url: &str) -> Result<(), String> {
     write_private("server", url.trim().trim_end_matches('/'))
 }
+
+// ------------------------------------------------------------------ workspaces
+//
+// A workspace is one server and your sign-in there: the team's hosted server,
+// or a private one that only runs on this Mac. The active workspace's token and
+// server stay in `credentials` and `server`, so the CLI and everything that
+// reads them are unchanged; `workspaces.json` (0600, like the credential)
+// remembers the rest, and switching copies one into the active slot.
+
+/// One server you have signed in to.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct Workspace {
+    pub name: String,
+    pub server: String,
+    /// `None` after signing out: the workspace stays listed, ready to sign
+    /// back in to.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Runs on this Mac only; nothing in it reaches a shared server.
+    #[serde(default)]
+    pub private: bool,
+}
+
+const WORKSPACES: &str = "workspaces.json";
+
+fn same_server(a: &str, b: &str) -> bool {
+    a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
+}
+
+/// Every workspace, the active one included. On first use this is seeded from
+/// the existing sign-in, so nobody signs in again to get a switcher.
+pub fn workspaces() -> Vec<Workspace> {
+    let saved = dir()
+        .and_then(|d| fs::read_to_string(d.join(WORKSPACES)).ok())
+        .and_then(|raw| serde_json::from_str::<Vec<Workspace>>(&raw).ok());
+    if let Some(list) = saved {
+        return list;
+    }
+    match (load(), saved_server()) {
+        (Some(token), Some(server)) => {
+            vec![Workspace { name: "Airtribe".into(), server, token: Some(token), private: false }]
+        }
+        _ => Vec::new(),
+    }
+}
+
+pub fn save_workspaces(list: &[Workspace]) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+    write_private(WORKSPACES, &json)
+}
+
+/// Record a sign-in: the workspace for `server` gets this token (added if it
+/// is new, named after its host until renamed).
+pub fn remember(server: &str, token: &str) -> Result<(), String> {
+    let mut list = workspaces();
+    match list.iter_mut().find(|w| same_server(&w.server, server)) {
+        Some(w) => w.token = Some(token.to_owned()),
+        None => {
+            let host = server.split("://").last().unwrap_or(server).split('/').next().unwrap_or(server);
+            list.push(Workspace { name: host.to_owned(), server: server.trim_end_matches('/').to_owned(), token: Some(token.to_owned()), private: false });
+        }
+    }
+    save_workspaces(&list)
+}
+
+/// Forget the token for `server`, keeping the workspace listed.
+pub fn forget(server: &str) -> Result<(), String> {
+    let mut list = workspaces();
+    for w in list.iter_mut().filter(|w| same_server(&w.server, server)) {
+        w.token = None;
+    }
+    save_workspaces(&list)
+}
+
+/// Make `w` the active workspace: its server and token go into the slots the
+/// app and the CLI read.
+pub fn activate(w: &Workspace) -> Result<(), String> {
+    store_server(&w.server)?;
+    match &w.token {
+        Some(t) => store(t),
+        None => clear(),
+    }
+}
+
+/// The active workspace, by the server in the active slot.
+pub fn active() -> Option<Workspace> {
+    let server = base_url();
+    workspaces().into_iter().find(|w| same_server(&w.server, &server))
+}

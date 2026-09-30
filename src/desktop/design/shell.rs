@@ -69,12 +69,13 @@ pub struct NavGroup<'a> {
 /// window with no way to sign out.
 pub fn sidebar(
     ui: &mut Ui,
-    brand: (&str, &str),
+    brand: &Brand<'_>,
     groups: &[NavGroup<'_>],
     footer: impl FnOnce(&mut Ui),
-) -> (Option<(usize, usize)>, bool) {
+) -> (Option<(usize, usize)>, bool, Response) {
     let mut clicked = None;
     let mut search = false;
+    let mut switcher = None;
     let narrow = ui.max_rect().width() < size::SIDEBAR_COLLAPSE_AT;
     let width = if narrow { size::SIDEBAR_W_NARROW } else { size::SIDEBAR_W };
 
@@ -91,8 +92,8 @@ pub fn sidebar(
             // because the window has no title bar.
             ui.add_space(TRAFFIC_LIGHTS);
 
+            switcher = Some(workspace_button(ui, brand, narrow));
             if !narrow {
-                brand_row(ui, brand.0, brand.1);
                 ui.add_space(space::MD);
                 search = search_field(ui).clicked();
                 ui.add_space(space::MD);
@@ -100,6 +101,7 @@ pub fn sidebar(
                 // The box has no room, so search becomes one more icon row
                 // and its hover text carries the shortcut.
                 let item = NavItem::new(egui_phosphor::regular::MAGNIFYING_GLASS, "Search (\u{2318}K)", false);
+                ui.add_space(space::XS);
                 search = nav_item(ui, &item, true).clicked();
                 ui.add_space(space::SM);
             }
@@ -136,7 +138,7 @@ pub fn sidebar(
             });
         });
 
-    (clicked, search)
+    (clicked, search, switcher.expect("drawn above"))
 }
 
 /// The product mark: the orange loop, in its own colours on either palette,
@@ -176,28 +178,100 @@ fn mark_texture(ctx: &egui::Context) -> egui::TextureHandle {
     handle
 }
 
-fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
-    ui.horizontal(|ui| {
-        let texture = mark_texture(ui.ctx());
-        ui.add(
-            egui::Image::new(&texture).fit_to_exact_size(egui::Vec2::splat(MARK_SIZE)),
+/// The workspace on screen, as the sidebar's brand row shows it.
+pub struct Brand<'a> {
+    pub name: &'a str,
+    /// The server's host, or where a private workspace lives.
+    pub detail: &'a str,
+    /// Only on this Mac: the mark wears a lock.
+    pub private: bool,
+    /// More than one workspace to switch between: the caret only promises a
+    /// menu worth opening.
+    pub switchable: bool,
+}
+
+/// The workspace switcher: the mark, the workspace's name and where it lives,
+/// and a caret. The caller opens the menu under it. Collapsed, it is the mark
+/// alone, named for the accessibility tree and the hover.
+fn workspace_button(ui: &mut Ui, brand: &Brand<'_>, narrow: bool) -> Response {
+    let h = if narrow { size::NAV_ROW + space::XS } else { MARK_SIZE + space::MD };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let label = format!("Workspace: {}", brand.name);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    let response = super::motion::operable(ui, response, radius::MD as f32);
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let hot = response.hovered() || response.has_focus();
+    let fill = if open {
+        colour::SURFACE_ACTIVE()
+    } else {
+        super::motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER())
+    };
+    if fill != colour::TRANSPARENT() {
+        ui.painter().rect_filled(rect, radius::MD as f32, fill);
+    }
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let mark_c = if narrow {
+        rect.center()
+    } else {
+        egui::pos2(rect.left() + space::XS + MARK_SIZE / 2.0, rect.center().y)
+    };
+    let texture = mark_texture(ui.ctx());
+    let mark = egui::Rect::from_center_size(mark_c, egui::Vec2::splat(MARK_SIZE));
+    ui.painter().image(texture.id(), mark, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    if brand.private {
+        paint_lock_badge(ui.painter(), mark.right_bottom() - egui::vec2(2.0, 2.0));
+    }
+    if narrow {
+        return if open { response } else { response.on_hover_text(format!("{} \u{00B7} {}", brand.name, brand.detail)) };
+    }
+
+    let caret_w = if brand.switchable { size::ICON_COL } else { 0.0 };
+    let x = mark.right() + space::SM;
+    let room = (rect.right() - space::XS - caret_w - x).max(0.0);
+    let name = super::widgets::truncated(
+        ui,
+        brand.name,
+        egui::FontId::new(text::BODY, egui::FontFamily::Name(super::theme::SEMIBOLD.into())),
+        colour::TEXT(),
+        room,
+    );
+    let detail = super::widgets::truncated(ui, brand.detail, egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT(), room);
+    let top = rect.center().y - (name.size().y + detail.size().y) / 2.0;
+    let name_h = name.size().y;
+    let p = ui.painter();
+    p.galley(egui::pos2(x, top), name, colour::TEXT());
+    p.galley(egui::pos2(x, top + name_h), detail, colour::TEXT_FAINT());
+    if brand.switchable {
+        p.text(
+            egui::pos2(rect.right() - space::XS - caret_w / 2.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CARET_UP_DOWN,
+            egui::FontId::proportional(text::BODY),
+            if hot || open { colour::TEXT_2() } else { colour::TEXT_FAINT() },
         );
-        ui.add_space(space::SM);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(
-                RichText::new(name)
-                    .size(text::BODY)
-                    .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                    .color(colour::TEXT()),
-            );
-            ui.label(
-                RichText::new(tagline)
-                    .size(text::CAPTION)
-                    .color(colour::TEXT_FAINT()),
-            );
-        });
-    });
+    }
+    response
+}
+
+/// The mark into `rect`, with the private lock at its corner when asked —
+/// the switcher's rows draw it at their own size.
+pub fn paint_mark(ui: &Ui, rect: egui::Rect, private: bool) {
+    let texture = mark_texture(ui.ctx());
+    ui.painter().image(texture.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+    if private {
+        paint_lock_badge(ui.painter(), rect.right_bottom() - egui::vec2(1.0, 1.0));
+    }
+}
+
+/// A small lock on a disc of the chrome colour, at `c` — the mark's corner
+/// in a private workspace, and the private rows of the switcher.
+pub fn paint_lock_badge(p: &egui::Painter, c: egui::Pos2) {
+    p.circle_filled(c, 6.5, colour::CHROME());
+    p.circle_filled(c, 5.5, colour::SURFACE_ACTIVE());
+    super::glyph::lock(p, c, 8.0, colour::TEXT_2());
 }
 
 /// The palette's front door. Drawn as a box rather than a button because
@@ -250,6 +324,12 @@ fn search_field(ui: &mut Ui) -> Response {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response
+}
+
+/// One sidebar row, for a sidebar that is not the app's own — the Settings
+/// window's section list — so both sidebars are the same component.
+pub fn nav_row(ui: &mut Ui, item: &NavItem<'_>) -> Response {
+    nav_item(ui, item, false)
 }
 
 fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {

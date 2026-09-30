@@ -134,6 +134,18 @@ pub fn set_appearance(ctx: &egui::Context, a: Appearance) {
     follow(ctx);
 }
 
+/// Drop every page's remembered state (filters, layouts, caches) — what a
+/// workspace switch needs — while keeping the appearance, which also lives in
+/// egui's temp store and belongs to this Mac, not to a workspace.
+pub fn reset_page_state(ctx: &egui::Context) {
+    let a = appearance(ctx);
+    ctx.data_mut(|d| {
+        d.clear();
+        d.insert_temp(store_id(), a);
+    });
+    follow(ctx);
+}
+
 /// Resolve the setting against the system's and swap palettes if the answer
 /// changed. Once a frame: cheap when nothing moved, and it is what makes
 /// `System` track macOS switching at sunset.
