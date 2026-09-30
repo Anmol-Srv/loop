@@ -135,28 +135,37 @@ issues a fresh code, and redeeming it signs out every existing session.
 
 ## 7. Hand out the app
 
-Builds are published as GitHub Releases, and everyone installs and updates
-with the same command:
+The Loop server hands out its own installer and build, so installing never
+touches GitHub (whose download hosts some networks block, and which a private
+repo would lock). Everyone installs and updates with the same command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/loop/master/scripts/install.sh | bash
+curl -fsSL https://api-1.mycohort.live/loop/install.sh | bash
 ```
 
-It downloads the latest release, replaces `/Applications/Loop.app` (quitting
+It downloads the latest build, replaces `/Applications/Loop.app` (quitting
 Loop first) and opens it. Downloaded with curl, the app carries no quarantine
 flag, so macOS opens it without the unidentified-developer prompt. Sign-in,
 server and theme live outside the bundle, so an update keeps them.
 
+The files are served from `LOOP_DIST_DIR` (`src/routes/downloads.rs`). On the
+server that is `~/loop-dist`, mounted into the container:
+
+```yaml
+  server:
+    volumes:
+      - /home/ubuntu/loop-dist:/srv/loop-dist:ro
+```
+
 To publish a new build, commit and push, then on a Mac:
 
 ```bash
-scripts/release-mac.sh        # universal build, tagged v<date-time>, marked latest
+scripts/release-mac.sh        # universal build, uploaded to ~/loop-dist over SSH
 ```
 
 Teammates pick it up by re-running the install command; the account menu shows
-the version they are on. Fresh installs already point at the hosted server
-(`LOOP_DEFAULT_SERVER` in `scripts/bundle-mac.sh`), and Settings > Members >
-Copy invite message includes the install command.
+the version they are on. Settings > Members > Copy invite message includes the
+command, built from the server address the admin is signed in to.
 
 ## 8. Backups
 

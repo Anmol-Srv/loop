@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Publish a new Loop build as the latest GitHub release. Teammates then get it
-# by re-running the install command (scripts/install.sh), which always fetches
-# the latest release.
+# Publish a new Loop build to the Loop server. Teammates get it by re-running
+#
+#   curl -fsSL <server>/install.sh | bash
+#
+# which always fetches the latest upload. The server hands the files out from
+# LOOP_DIST_DIR (see src/routes/downloads.rs); this uploads them there over SSH.
 #
 #   scripts/release-mac.sh               # version = today's date and time
 #   LOOP_VERSION=2026.10.01 scripts/release-mac.sh
@@ -11,9 +14,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO="Anmol-Srv/loop"
+# Where the builds go, and the address teammates install from.
+HOST="${LOOP_RELEASE_HOST:-ubuntu@staging-airtribe-api}"
+DIST_DIR="${LOOP_RELEASE_DIR:-loop-dist}"
+export LOOP_DEFAULT_SERVER="${LOOP_DEFAULT_SERVER:-https://api-1.mycohort.live/loop}"
 export LOOP_VERSION="${LOOP_VERSION:-$(date +%Y.%m.%d-%H%M)}"
-TAG="v$LOOP_VERSION"
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "Uncommitted changes; commit and push before releasing." >&2
@@ -28,15 +33,18 @@ fi
 # Universal, so Intel and Apple Silicon Macs install the same download.
 UNIVERSAL=1 DIST=1 scripts/bundle-mac.sh
 
-gh release create "$TAG" target/Loop.zip \
-  --repo "$REPO" \
-  --target "$(git rev-parse HEAD)" \
-  --title "Loop $LOOP_VERSION" \
-  --notes "Install or update: \`curl -fsSL https://raw.githubusercontent.com/$REPO/master/scripts/install.sh | bash\`
+# The installer, pointed at this server, travels with the build.
+sed "s#^SERVER=.*#SERVER=\"$LOOP_DEFAULT_SERVER\"#" scripts/install.sh > target/install.sh
+printf '%s\n' "$LOOP_VERSION" > target/latest
 
-Built from $(git rev-parse --short HEAD): $(git log -1 --format=%s)" \
-  --latest
+# Upload under temporary names, then swap in place: a teammate installing
+# mid-upload gets the old build whole, never half of the new one.
+ssh "$HOST" "mkdir -p $DIST_DIR"
+scp -q target/Loop.zip "$HOST:$DIST_DIR/.Loop.zip.part"
+scp -q target/install.sh "$HOST:$DIST_DIR/.install.sh.part"
+scp -q target/latest "$HOST:$DIST_DIR/.latest.part"
+ssh "$HOST" "cd $DIST_DIR && cp Loop.zip Loop-previous.zip 2>/dev/null; mv .Loop.zip.part Loop.zip && mv .install.sh.part install.sh && mv .latest.part latest"
 
 echo
-echo "released $TAG — teammates update with:"
-echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/master/scripts/install.sh | bash"
+echo "released $LOOP_VERSION — teammates install or update with:"
+echo "  curl -fsSL $LOOP_DEFAULT_SERVER/install.sh | bash"

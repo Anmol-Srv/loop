@@ -970,14 +970,15 @@ fn invite_message(r: &InviteResult, base_url: &str) -> String {
         name = r.name,
         email = r.email,
         code = r.code,
-        install = INSTALL_COMMAND,
+        install = install_command(base_url),
     )
 }
 
-/// Installs Loop, and updates it: always the latest GitHub release
-/// (`scripts/install.sh`, published by `scripts/release-mac.sh`).
-const INSTALL_COMMAND: &str =
-    "curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/loop/master/scripts/install.sh | bash";
+/// Installs Loop, and updates it: the latest build this server hands out
+/// (`src/routes/downloads.rs`, uploaded by `scripts/release-mac.sh`).
+fn install_command(base_url: &str) -> String {
+    format!("curl -fsSL {base_url}/install.sh | bash")
+}
 
 /// "Remove Jane's access?" — the same shape as `confirm_remove`, worded for a
 /// person rather than a folder: what leaves is their sessions and their place

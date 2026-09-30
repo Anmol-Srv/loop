@@ -41,7 +41,7 @@ egui-notify = { version = "0.23.0", optional = true }
 # brings; the Linux portal backends stay off.
 rfd = { version = "0.17", default-features = false, optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"], optional = true }
-tower-http = { version = "0.7.1", features = ["trace"] }
+tower-http = { version = "0.7.1", features = ["trace", "fs"] }
 # Already in the tree (reqwest, sqlx); intake uploads arrive as base64 JSON.
 base64 = "0.22"
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Install Loop, or update it to the latest release. The same command does both:
 #
-#   curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/loop/master/scripts/install.sh | bash
+#   curl -fsSL https://api-1.mycohort.live/loop/install.sh | bash
 #
-# It downloads the latest build from GitHub Releases, quits Loop if it is
-# running, replaces /Applications/Loop.app and opens the new one. Your sign-in,
+# It downloads the latest build from the Loop server itself (not GitHub, whose
+# download hosts some networks block and which a private repo would lock),
+# quits Loop if it is running, replaces /Applications/Loop.app and opens it. Your sign-in,
 # server and theme live outside the app bundle, so an update keeps them.
 #
 # Downloaded with curl, the bundle carries no quarantine flag, so macOS opens
 # it without the "unidentified developer" prompt a browser download triggers.
 set -euo pipefail
 
-URL="https://github.com/Anmol-Srv/loop/releases/latest/download/Loop.zip"
+# release-mac.sh rewrites this line to the server it uploads to.
+SERVER="https://api-1.mycohort.live/loop"
+URL="$SERVER/download/Loop.zip"
 APP="/Applications/Loop.app"
 
 if [ "$(uname -s)" != "Darwin" ]; then
