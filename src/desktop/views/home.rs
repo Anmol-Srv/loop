@@ -264,7 +264,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         shown.len(),
         |row, i| {
             let r = &t.all[shown[i]];
-            task_row(row, &rows[r.at], r);
+            task_row(row, &rows[r.at], r, &my_person_id);
         },
         |ui, i| {
             let row = &rows[t.all[shown[i]].at];
@@ -918,9 +918,10 @@ fn keep(r: &Row, t: &Value, state: &State, my_person_id: &str, needle: &str) -> 
 
 // --------------------------------------------------------------------- table
 
-fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
+fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id: &str) {
     let status = r.bucket;
     let department = str_at(t, "discipline").unwrap_or_default();
+    let mine = !my_person_id.is_empty() && str_at(t, "assigneePersonId") == Some(my_person_id);
 
     row.at(0, |ui| w::dot(ui, status_colour(status)));
 
@@ -952,7 +953,21 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row) {
         } else {
             // Triage files under open for the figures; the chip says what it is.
             let status = if str_at(t, "status") == Some("triage") { "triage" } else { status };
-            c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+            // A live delegate says more than "In progress" ever could: whether
+            // it needs you right now or is just getting on with it. The task's
+            // own status is still a hover away, not hidden.
+            let agent = t
+                .get("delegate")
+                .filter(|d| d.is_object() && !finished(t))
+                .and_then(|d| agent_status(d, mine));
+            match agent {
+                Some((label, tone)) => {
+                    c::chip(ui, &label, tone, true).on_hover_text(status_label(status));
+                }
+                None => {
+                    c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+                }
+            }
         }
     });
     row.muted(5, str_at(t, "projectName").unwrap_or_default());
@@ -979,6 +994,32 @@ pub(super) fn agent_marker(ui: &mut egui::Ui, t: &Value) {
         return;
     };
     w::agent_mark(ui, size::AVATAR_SM - space::XS).on_hover_text(format!("With {name}"));
+}
+
+/// What a live delegate is doing, in the status column's own words and tone
+/// — the same three buckets the task page's header pill reads into, so a
+/// list row and the task it opens never disagree. The state itself is never
+/// hidden from a teammate; `mine` only decides whether "you" or the owner's
+/// name is who it is waiting on, the way `agent_session::now_line` already
+/// splits it for the session's own line.
+pub(super) fn agent_status(d: &Value, mine: bool) -> Option<(String, c::Tone)> {
+    let state = d.get("state").and_then(Value::as_str)?;
+    Some(match state {
+        "working" | "acknowledged" => ("Agent working".to_owned(), c::Tone::Info),
+        "plan_review" | "needs_input" | "in_review" => {
+            let who = if mine {
+                "you".to_owned()
+            } else {
+                str_at(d, "ownerName")
+                    .and_then(|n| n.split_whitespace().next())
+                    .unwrap_or("the owner")
+                    .to_owned()
+            };
+            (format!("Waiting on {who}"), c::Tone::Running)
+        }
+        "done" => ("Agent done".to_owned(), c::Tone::Quiet),
+        other => (super::agents::state_words(other).to_owned(), c::Tone::Neutral),
+    })
 }
 
 /// How loud a priority is allowed to be — the task tables' scale, so P1 is

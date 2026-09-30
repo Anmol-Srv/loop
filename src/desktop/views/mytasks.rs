@@ -378,7 +378,20 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         if super::board::archived(t) {
             super::board::archived_chip(ui);
         } else {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
+            // Every row here is the viewer's own, so a live delegate always
+            // says "you" — same split home's team-wide table reads by owner.
+            let agent = t
+                .get("delegate")
+                .filter(|d| d.is_object() && !done)
+                .and_then(|d| super::home::agent_status(d, true));
+            match agent {
+                Some((label, tone)) => {
+                    c::chip(ui, &label, tone, true).on_hover_text(status_label(status));
+                }
+                None => {
+                    c::chip(ui, status_label(status), c::status_tone(status), true);
+                }
+            }
         }
     });
 
