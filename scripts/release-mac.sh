@@ -33,8 +33,24 @@ fi
 # Universal, so Intel and Apple Silicon Macs install the same download.
 UNIVERSAL=1 DIST=1 scripts/bundle-mac.sh
 
-# The installer, pointed at this server, travels with the build.
+# The server programs, for a private workspace on a Mac without the repository
+# (scripts/private-workspace.sh downloads them). Universal, like the app.
+for t in aarch64-apple-darwin x86_64-apple-darwin; do
+  cargo build --quiet --release --bin acp-server --bin acp-admin --target "$t"
+done
+rm -rf target/server-dist && mkdir -p target/server-dist
+for b in acp-server acp-admin; do
+  lipo -create -output "target/server-dist/$b" \
+    "target/aarch64-apple-darwin/release/$b" "target/x86_64-apple-darwin/release/$b"
+done
+codesign --force --sign - target/server-dist/acp-server target/server-dist/acp-admin 2>/dev/null || true
+SERVER_TGZ="loop-server-$LOOP_VERSION.tar.gz"
+tar -czf "target/$SERVER_TGZ" -C target/server-dist acp-server acp-admin
+
+# The installer and the private-workspace setup, pointed at this server, travel
+# with the build.
 sed "s#^SERVER=.*#SERVER=\"$LOOP_DEFAULT_SERVER\"#" scripts/install.sh > target/install.sh
+sed "s#^DOWNLOADS=.*#DOWNLOADS=\"$LOOP_DEFAULT_SERVER\"#" scripts/private-workspace.sh > target/private-workspace.sh
 printf '%s\n' "$LOOP_VERSION" > target/latest
 
 # Upload under temporary names, then swap in place: a teammate installing
@@ -45,9 +61,12 @@ ssh "$HOST" "mkdir -p $DIST_DIR"
 ZIP="Loop-$LOOP_VERSION.zip"
 scp -q target/Loop.zip "$HOST:$DIST_DIR/.$ZIP.part"
 scp -q target/install.sh "$HOST:$DIST_DIR/.install.sh.part"
+scp -q "target/$SERVER_TGZ" "$HOST:$DIST_DIR/.$SERVER_TGZ.part"
+scp -q target/private-workspace.sh "$HOST:$DIST_DIR/.private-workspace.sh.part"
 scp -q target/latest "$HOST:$DIST_DIR/.latest.part"
-ssh "$HOST" "cd $DIST_DIR && mv .$ZIP.part $ZIP && cp $ZIP Loop.zip && mv .install.sh.part install.sh && mv .latest.part latest \
-  && ls -t Loop-*.zip | tail -n +4 | xargs -r rm -f"
+ssh "$HOST" "cd $DIST_DIR && mv .$ZIP.part $ZIP && cp $ZIP Loop.zip && mv .$SERVER_TGZ.part $SERVER_TGZ \
+  && mv .install.sh.part install.sh && mv .private-workspace.sh.part private-workspace.sh && mv .latest.part latest \
+  && ls -t Loop-*.zip | tail -n +4 | xargs -r rm -f && ls -t loop-server-*.tar.gz | tail -n +4 | xargs -r rm -f"
 
 echo
 echo "released $LOOP_VERSION — teammates install or update with:"

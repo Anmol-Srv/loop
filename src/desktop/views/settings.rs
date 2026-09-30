@@ -293,7 +293,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             members_section(ui, net, &mut app.settings);
         }
         Section::Workspaces => {
-            if let Some(target) = workspaces_section(ui, &mut app.settings) {
+            let email = app
+                .net
+                .as_ref()
+                .and_then(|n| n.data("__me"))
+                .and_then(|m| m.get("email"))
+                .and_then(Value::as_str)
+                .unwrap_or("you@airtribe.live")
+                .to_owned();
+            if let Some(target) = workspaces_section(ui, &mut app.settings, &email) {
                 app.switch_workspace(&target, ui.ctx());
             }
         }
@@ -576,13 +584,17 @@ fn account_section(
     ui.add_space(space::XL);
 
     let mut sign_out = false;
-    group(ui, "", |ui| {
-        row(ui, "Sign out of this workspace", "Other workspaces stay signed in.", false, |ui| {
-            if w::danger(ui, "Sign out", true).clicked() {
-                sign_out = true;
-            }
+    // Not in a private workspace: it lives on this Mac, and its account has no
+    // password to sign back in with.
+    if !creds::active().is_some_and(|w| w.private) {
+        group(ui, "", |ui| {
+            row(ui, "Sign out of this workspace", "Other workspaces stay signed in.", false, |ui| {
+                if w::danger(ui, "Sign out", true).clicked() {
+                    sign_out = true;
+                }
+            });
         });
-    });
+    }
     sign_out
 }
 
@@ -797,7 +809,10 @@ fn folders_section(ui: &mut egui::Ui, net: &mut Net, s: &mut State, can_write: b
             .and_then(Value::as_str)
             .unwrap_or("this folder")
             .to_owned();
-        match confirm_remove(ui.ctx(), egui::Id::new("settings:folder:remove"), &name) {
+        let title = format!("Remove the \u{201c}{name}\u{201d} folder?");
+        let body = "Your agent won\u{2019}t offer it for a task with no project. A task already pinned \
+                    to it falls back to your default.";
+        match confirm_remove(ui.ctx(), egui::Id::new("settings:folder:remove"), &title, body) {
             Some(true) => {
                 s.removing = None;
                 s.busy = true;
@@ -948,7 +963,7 @@ fn settle(net: &mut Net, s: &mut State) {
 /// "Remove the "mycohort-api" folder?" — Some(true) to remove, Some(false) to
 /// keep, None while it is still asking. The same shape as `viz::confirm_remove`,
 /// which is a label's wording and private to `tag_picker`; this is a folder's.
-fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool> {
+fn confirm_remove(ctx: &egui::Context, id: egui::Id, title: &str, body: &str) -> Option<bool> {
     let mut answer = None;
     let modal = egui::Modal::new(id.with("modal"))
         .backdrop_color(colour::CANVAS().gamma_multiply(0.7))
@@ -962,17 +977,14 @@ fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool>
         .show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(
-                RichText::new(format!("Remove the \u{201c}{name}\u{201d} folder?"))
+                RichText::new(title)
                     .size(text::CARD)
                     .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                     .color(colour::TEXT()),
             );
             ui.add_space(space::SM);
             ui.label(
-                RichText::new(
-                    "Your agent won\u{2019}t offer it for a task with no project. A task already pinned \
-                     to it falls back to your default.",
-                )
+                RichText::new(body)
                 .size(text::BODY)
                 .color(colour::TEXT_2()),
             );
@@ -1442,7 +1454,7 @@ fn same_server(a: &str, b: &str) -> bool {
     a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
 }
 
-fn workspaces_section(ui: &mut egui::Ui, s: &mut State) -> Option<creds::Workspace> {
+fn workspaces_section(ui: &mut egui::Ui, s: &mut State, email: &str) -> Option<creds::Workspace> {
     let ctx = ui.ctx().clone();
     let list = creds::workspaces();
     let active_server = creds::base_url();
@@ -1461,7 +1473,7 @@ fn workspaces_section(ui: &mut egui::Ui, s: &mut State) -> Option<creds::Workspa
         });
     }
 
-    private_workspace_group(ui, &list);
+    private_workspace_group(ui, &list, email);
     switch_to
 }
 
@@ -1541,7 +1553,15 @@ fn workspace_row(
     });
 
     if s.ws_removing.as_deref() == Some(key.as_str()) {
-        match confirm_remove(ctx, egui::Id::new("settings:workspace:remove").with(&key), &ws.name) {
+        let title = format!("Remove {} from your workspaces?", ws.name);
+        let body = if ws.private {
+            "It leaves the switcher only. Its server and everything in it stay on this Mac; \
+             run scripts/private-workspace.sh again to bring it back."
+        } else {
+            "It leaves the switcher and signs this Mac out of it. Nothing on the server changes; \
+             you can add it again with Add workspace."
+        };
+        match confirm_remove(ctx, egui::Id::new("settings:workspace:remove").with(&key), &title, body) {
             Some(true) => {
                 let mut list = creds::workspaces();
                 list.retain(|w| !same_server(&w.server, &key));
@@ -1572,56 +1592,69 @@ fn commit_rename(ctx: &egui::Context, s: &mut State, server: &str) {
 
 /// The one workspace private to this Mac, if there is one — or, if not, how
 /// to make one.
-fn private_workspace_group(ui: &mut egui::Ui, list: &[creds::Workspace]) {
+fn private_workspace_group(ui: &mut egui::Ui, list: &[creds::Workspace], email: &str) {
     let private = list.iter().find(|w| w.private);
-    group(ui, "Private workspace", |ui| {
-        ui.horizontal(|ui| {
-            ui.set_min_height(ROW_MIN_H);
-            ui.vertical(|ui| {
-                match private {
-                    None => {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(
-                                    "A workspace that lives only on this Mac \u{2014} tasks and projects you \
-                                     create there never reach the team server.",
-                                )
-                                .size(text::SMALL)
-                                .color(colour::TEXT_MUTED()),
-                            )
-                            .wrap(),
-                        );
-                        ui.add_space(space::SM);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("scripts/private-workspace.sh")
-                                    .monospace()
-                                    .size(text::SMALL)
-                                    .color(colour::TEXT_2()),
-                            );
-                            ui.add_space(space::SM);
-                            if w::secondary(ui, "Copy", true).clicked() {
-                                ui.ctx().copy_text("scripts/private-workspace.sh".to_owned());
-                                w::toast(ui.ctx(), "Copied.", false);
-                            }
-                        });
-                    }
-                    Some(p) => {
-                        ui.label(
-                            RichText::new(&p.name)
-                                .size(text::BODY)
-                                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                                .color(colour::TEXT()),
-                        );
-                        ui.add_space(2.0);
-                        ui.label(
-                            RichText::new(format!("Answers at {}", p.server))
-                                .size(text::SMALL)
-                                .color(colour::TEXT_MUTED()),
-                        );
-                    }
+    // The setup script is served by the team server (src/routes/downloads.rs),
+    // so it is reachable on any teammate's Mac — no repository needed.
+    let team = list
+        .iter()
+        .find(|w| !w.private)
+        .map(|w| w.server.clone())
+        .unwrap_or_else(creds::base_url);
+    let command = format!("curl -fsSL {team}/private-workspace.sh | bash -s -- {email}");
+    let prompt = format!(
+        "Set up a private Loop workspace on this Mac: its own database and a server that only this \
+         Mac can reach, so tasks and projects created there never go to the team server.\n\n\
+         1. Run this in Terminal:\n   {command}\n\
+         2. It needs Postgres and installs it with Homebrew if nothing is running. If it stops because \
+         Homebrew is missing, install Homebrew from https://brew.sh and run step 1 again.\n\
+         3. When it finishes, check that http://127.0.0.1:8181/health/ready answers \"ready\".\n\
+         4. Tell me when it's done. Loop then shows \"Private\" in its workspace switcher (top left, \u{2318}2).\n\n\
+         Don't change anything else on this Mac."
+    );
+
+    group(ui, "Private workspace", |ui| match private {
+        Some(p) if p.token.is_some() => {
+            row(ui, &p.name, "Only on this Mac \u{00b7} starts at login \u{00b7} nothing reaches the team server", false, |ui| {
+                c::chip(ui, "Running here", c::Tone::Ok, true);
+            });
+        }
+        state => {
+            let (title, detail) = match state {
+                Some(p) => (
+                    format!("Reconnect {}", p.name),
+                    "Its server and data are still on this Mac; running the setup again signs it back in \
+                     here. It keeps everything.",
+                ),
+                None => (
+                    "Set up a private workspace".to_owned(),
+                    "A workspace that lives only on this Mac: its own server and data, so tasks and \
+                     projects you create there never reach the team server.",
+                ),
+            };
+            row(ui, &title, detail, false, |ui| {
+                if w::primary(ui, "Copy setup prompt for Claude", true)
+                    .on_hover_text("Paste into Claude Code; it runs the setup and handles anything missing")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(prompt.clone());
+                    w::toast(ui.ctx(), "Copied \u{2014} paste it into Claude Code.", false);
                 }
             });
-        });
+            ui.add_space(space::XS);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&command).monospace().size(text::SMALL).color(colour::TEXT_2()))
+                        .truncate(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if w::ghost(ui, "Copy command").clicked() {
+                        ui.ctx().copy_text(command.clone());
+                        w::toast(ui.ctx(), "Copied.", false);
+                    }
+                });
+            });
+            ui.add_space(space::SM);
+        }
     });
 }

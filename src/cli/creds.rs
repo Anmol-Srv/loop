@@ -176,6 +176,12 @@ pub fn workspaces() -> Vec<Workspace> {
     }
 }
 
+/// When the workspace list last changed on disk, so a cached copy knows to
+/// read it again.
+pub fn workspaces_modified() -> Option<std::time::SystemTime> {
+    fs::metadata(dir()?.join(WORKSPACES)).and_then(|m| m.modified()).ok()
+}
+
 pub fn save_workspaces(list: &[Workspace]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
     write_private(WORKSPACES, &json)

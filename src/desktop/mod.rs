@@ -93,6 +93,14 @@ impl App {
     /// nothing from the last workspace shows in this one; a workspace with no
     /// sign-in lands on the sign-in screen with its server filled in.
     pub fn switch_workspace(&mut self, w: &creds::Workspace, ctx: &egui::Context) {
+        // A private workspace with no sign-in cannot be signed back in to from
+        // the login screen — its account has no password. Stay put and show
+        // where to reconnect it instead of a login it cannot pass.
+        if w.private && w.token.is_none() {
+            views::settings::open_section(&mut self.settings, views::settings::Section::Workspaces);
+            design::widgets::toast(ctx, format!("{} needs reconnecting \u{2014} see Settings \u{203a} Workspaces.", w.name), true);
+            return;
+        }
         if let Err(e) = creds::activate(w) {
             views::chrome::switch_failed(ctx, &e);
             return;

@@ -17,5 +17,8 @@ pub fn routes() -> Router<AppState> {
     let dir = std::env::var("LOOP_DIST_DIR").unwrap_or_else(|_| "/srv/loop-dist".into());
     Router::new()
         .route_service("/install.sh", ServeFile::new(format!("{dir}/install.sh")))
+        // A private workspace on a Mac without the repository: the setup
+        // script, which then downloads the server programs from /download.
+        .route_service("/private-workspace.sh", ServeFile::new(format!("{dir}/private-workspace.sh")))
         .nest_service("/download", ServeDir::new(dir))
 }

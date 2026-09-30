@@ -106,6 +106,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         private: here.is_some_and(|w| w.private),
         switchable: true,
     };
+    // A private workspace lives on this Mac; there is nothing to sign out of,
+    // and signing out would strand it (its account has no password to sign
+    // back in with).
+    let private_here = here.is_some_and(|w| w.private);
     let mut switch_to: Option<usize> = shortcut_workspace(ui.ctx(), spaces.len());
     let mut add_workspace = false;
     let mut manage_workspaces = false;
@@ -128,8 +132,10 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                 invite |= viz::menu_item_with(ui, icon::USER_PLUS, "Invite people", "");
             }
             open_settings |= viz::menu_item_with(ui, icon::GEAR_SIX, "Settings\u{2026}", "\u{2318},");
-            viz::menu_rule(ui);
-            sign_out |= viz::menu_item_with(ui, icon::SIGN_OUT, "Sign out", "");
+            if !private_here {
+                viz::menu_rule(ui);
+                sign_out |= viz::menu_item_with(ui, icon::SIGN_OUT, "Sign out", "");
+            }
         });
     });
 
@@ -379,22 +385,31 @@ fn sentence(s: &str) -> String {
 
 const WORKSPACES_KEY: &str = "chrome:workspaces";
 
-/// The saved workspaces, read from disk once and kept in egui's temp store
-/// until `forget_workspaces` — not a file read on every repaint.
+/// The saved workspaces, kept in egui's temp store and read again only when
+/// the file changes — so a workspace added outside the app (the private
+/// workspace script) appears without a relaunch, and a repaint costs a stat,
+/// not a file read.
 fn workspaces(ctx: &egui::Context) -> Vec<crate::desktop::creds::Workspace> {
     let id = egui::Id::new(WORKSPACES_KEY);
-    if let Some(list) = ctx.data(|d| d.get_temp::<Vec<crate::desktop::creds::Workspace>>(id)) {
-        return list;
+    let stamp = crate::desktop::creds::workspaces_modified();
+    if let Some((seen, list)) =
+        ctx.data(|d| d.get_temp::<(Option<std::time::SystemTime>, Vec<crate::desktop::creds::Workspace>)>(id))
+    {
+        if seen == stamp {
+            return list;
+        }
     }
     let list = crate::desktop::creds::workspaces();
-    ctx.data_mut(|d| d.insert_temp(id, list.clone()));
+    ctx.data_mut(|d| d.insert_temp(id, (stamp, list.clone())));
     list
 }
 
 /// Drop the cached list after anything that changes it (a sign-in, a
 /// rename, a removal).
 pub fn forget_workspaces(ctx: &egui::Context) {
-    ctx.data_mut(|d| d.remove::<Vec<crate::desktop::creds::Workspace>>(egui::Id::new(WORKSPACES_KEY)));
+    ctx.data_mut(|d| {
+        d.remove::<(Option<std::time::SystemTime>, Vec<crate::desktop::creds::Workspace>)>(egui::Id::new(WORKSPACES_KEY))
+    });
 }
 
 /// A switch that could not write the active slot: say so, stay put.
