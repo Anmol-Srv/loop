@@ -247,7 +247,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
                             submit |= entered(w::field(ui, "Setup code", &mut s.code, false, "K7QF-M2XT-9PDR"));
                             ui.add_space(space::MD);
                             submit |=
-                                entered(w::field(ui, "New password", &mut s.password, true, "At least 12 characters\u{2026}"));
+                                entered(w::field(ui, "New password", &mut s.password, true, "At least 8 characters\u{2026}"));
                             ui.add_space(space::MD);
                             submit |=
                                 entered(w::field(ui, "Confirm password", &mut s.confirm, true, ""));

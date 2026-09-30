@@ -5,10 +5,14 @@
 //! Folders: where your agent works when a task has no project (or its
 //! project has no folder for you). Private, like a repo's local path —
 //! nobody else's list, and nobody else sees yours.
+//! Members: admin only — the team, from `acp-admin` moved into the app.
 
+use chrono::{DateTime, Utc};
 use egui::RichText;
 use serde_json::{json, Value};
 
+use super::board::str_at;
+use super::projects::PEOPLE_KEY;
 use crate::desktop::design::{
     avatar, cards as c, colour, motion, radius, shell, size, space, text, theme, viz, widgets as w,
 };
@@ -18,9 +22,12 @@ use crate::desktop::App;
 pub(super) const FOLDERS_KEY: &str = "settings:folders";
 const ACTION_KEY: &str = "settings:folders:action";
 
+const MEMBERS_KEY: &str = "settings:members";
+const MEMBERS_ACTION_KEY: &str = "settings:members:action";
+
 #[derive(Default)]
 pub struct State {
-    /// Which section is showing: 0 Profile, 1 Folders.
+    /// Which section is showing: 0 Profile, 1 Folders, 2 Members (admin only).
     section: usize,
     adding: bool,
     name: String,
@@ -28,7 +35,43 @@ pub struct State {
     error: Option<String>,
     removing: Option<String>,
     busy: bool,
+    members: Members,
 }
+
+/// What the setup-code result card, once it lands, needs to build the invite
+/// message: whose it is and the code itself.
+#[derive(Clone)]
+struct InviteResult {
+    name: String,
+    email: String,
+    code: String,
+}
+
+/// Which mutation `MEMBERS_ACTION_KEY` is carrying, so `settle_members` knows
+/// what a success means: a new code to show, or nothing to say at all.
+enum MemberAction {
+    Add,
+    Invite { name: String, email: String },
+    Patch,
+    Revoke,
+}
+
+#[derive(Default)]
+struct Members {
+    adding: bool,
+    name: String,
+    email: String,
+    department: Option<String>,
+    role: Option<String>,
+    error: Option<String>,
+    busy: bool,
+    action: Option<MemberAction>,
+    result: Option<InviteResult>,
+    revoking: Option<String>,
+}
+
+const MEMBER_DEPARTMENTS: [&str; 3] = ["design", "frontend", "backend"];
+const MEMBER_ROLES: [&str; 3] = ["member", "manager", "admin"];
 
 /// The viewer's own folders, for pickers elsewhere (the task rail, triage's
 /// menu). Empty until a page that needs them has asked — call `want_folders`
@@ -53,8 +96,6 @@ pub(super) fn default_name(folders: &[Value]) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-const SECTIONS: [&str; 2] = ["Profile", "Folders"];
-
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let can_write = app.can_write();
     let scopes = app.scopes.clone();
@@ -64,13 +105,20 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let net = net.as_mut().expect("signed in");
     want_folders(net);
     settle(net, s);
+    let is_admin = net.data("__me").is_some_and(|m| str_at(m, "role") == "admin");
+    if is_admin {
+        net.get_once(MEMBERS_KEY, "/api/admin/people");
+    }
+    settle_members(ui.ctx(), net, s);
 
     shell::page_title(ui, "Settings", "Your account, and how Loop looks on this Mac.", |_| {});
-    if let Some(i) = c::tabs(ui, &SECTIONS, s.section) {
+    let sections: &[&str] = if is_admin { &["Profile", "Folders", "Members"] } else { &["Profile", "Folders"] };
+    if let Some(i) = c::tabs(ui, sections, s.section.min(sections.len() - 1)) {
         s.section = i;
     }
-    match s.section {
-        0 => profile(ui, net, &scopes),
+    match (s.section, is_admin) {
+        (0, _) => profile(ui, net, &scopes),
+        (2, true) => members_section(ui, net, s),
         _ => folders_section(ui, net, s, can_write),
     }
 }
@@ -587,4 +635,449 @@ fn confirm_remove(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool>
         answer = Some(false);
     }
     answer
+}
+
+// ------------------------------------------------------------------ members
+
+fn members(net: &Net) -> Vec<Value> {
+    net.data(MEMBERS_KEY).and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+fn members_section(ui: &mut egui::Ui, net: &mut Net, s: &mut State) {
+    let rows = members(net);
+    let error = net.error(MEMBERS_KEY).map(str::to_owned);
+    let loading = net.is_loading(MEMBERS_KEY) && rows.is_empty() && error.is_none();
+    let me_id = net.data("__me").map(|m| str_at(m, "personId").to_owned());
+
+    shell::section_count_with(ui, "Members", rows.len(), |ui| {
+        if !s.members.adding && w::primary(ui, "Invite someone", true).clicked() {
+            start_member_add(s);
+        }
+    });
+    ui.add_space(space::SM);
+
+    if let Some(result) = s.members.result.clone() {
+        if member_result_card(ui, net, &result) {
+            s.members.result = None;
+        }
+        ui.add_space(space::MD);
+    }
+
+    if let Some(err) = &error {
+        w::error(ui, err);
+        return;
+    }
+    if let Some(err) = &s.members.error {
+        w::error(ui, err);
+        ui.add_space(space::SM);
+    }
+
+    if s.members.adding {
+        member_add_form(ui, net, s);
+        ui.add_space(space::MD);
+    }
+
+    if loading {
+        w::loading(ui, "Loading members");
+        return;
+    }
+    if rows.is_empty() {
+        if !s.members.adding {
+            w::empty(ui, "No members yet.", "Invite someone to get the team onto Loop.");
+        }
+        return;
+    }
+
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for (i, row) in rows.iter().enumerate() {
+            if i > 0 {
+                ui.add_space(space::MD);
+            }
+            member_row(ui, net, row, s, me_id.as_deref());
+        }
+    });
+
+    if let Some(id) = s.members.revoking.clone() {
+        let name = rows
+            .iter()
+            .find(|p| p.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("this person")
+            .to_owned();
+        match confirm_revoke(ui.ctx(), egui::Id::new("settings:member:revoke"), &name) {
+            Some(true) => {
+                if let Some(row) = rows.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(id.as_str())) {
+                    let email = row.get("email").and_then(Value::as_str).unwrap_or_default().to_owned();
+                    s.members.revoking = None;
+                    s.members.busy = true;
+                    s.members.action = Some(MemberAction::Revoke);
+                    net.invalidate(MEMBERS_ACTION_KEY);
+                    net.post(MEMBERS_ACTION_KEY, "/api/admin/revoke", json!({ "email": email }));
+                }
+            }
+            Some(false) => s.members.revoking = None,
+            None => {}
+        }
+    }
+}
+
+fn start_member_add(s: &mut State) {
+    s.members.adding = true;
+    s.members.name.clear();
+    s.members.email.clear();
+    s.members.department = None;
+    s.members.role = Some("member".to_owned());
+    s.members.error = None;
+}
+
+fn member_add_form(ui: &mut egui::Ui, net: &mut Net, s: &mut State) {
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        w::field(ui, "Name", &mut s.members.name, false, "e.g. Priya Sharma\u{2026}");
+        ui.add_space(space::MD);
+        w::field(ui, "Email", &mut s.members.email, false, "name@airtribe.live");
+        let email_typed = !s.members.email.trim().is_empty();
+        let email_ok = s.members.email.trim().to_lowercase().ends_with("@airtribe.live");
+        if email_typed && !email_ok {
+            ui.add_space(space::XS);
+            w::error(ui, "Needs an @airtribe.live address.");
+        }
+        ui.add_space(space::MD);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                w::caption(ui, "Department");
+                ui.add_space(space::XXS);
+                let options: Vec<(String, String)> =
+                    MEMBER_DEPARTMENTS.iter().map(|d| (d.to_string(), sentence(d))).collect();
+                viz::select(ui, "Department", &options, &mut s.members.department);
+            });
+            ui.add_space(space::MD);
+            ui.vertical(|ui| {
+                w::caption(ui, "Role");
+                ui.add_space(space::XXS);
+                let options: Vec<(String, String)> =
+                    MEMBER_ROLES.iter().map(|r| (r.to_string(), sentence(r))).collect();
+                viz::select(ui, "Role", &options, &mut s.members.role);
+            });
+        });
+        ui.add_space(space::MD);
+        let ready = !s.members.name.trim().is_empty()
+            && email_ok
+            && s.members.department.is_some()
+            && s.members.role.is_some()
+            && !s.members.busy;
+        ui.horizontal(|ui| {
+            if w::primary(ui, "Add and create setup code", ready).clicked() {
+                s.members.busy = true;
+                s.members.error = None;
+                s.members.action = Some(MemberAction::Add);
+                net.invalidate(MEMBERS_ACTION_KEY);
+                net.post(
+                    MEMBERS_ACTION_KEY,
+                    "/api/admin/people",
+                    json!({
+                        "email": s.members.email.trim(),
+                        "name": s.members.name.trim(),
+                        "department": s.members.department.clone().unwrap_or_default(),
+                        "role": s.members.role.clone().unwrap_or_else(|| "member".to_owned()),
+                    }),
+                );
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Cancel").clicked() {
+                s.members.adding = false;
+            }
+        });
+    });
+}
+
+fn member_row(ui: &mut egui::Ui, net: &mut Net, row: &Value, s: &mut State, me_id: Option<&str>) {
+    let id = row.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let name = row.get("name").and_then(Value::as_str).unwrap_or_default();
+    let email = row.get("email").and_then(Value::as_str).unwrap_or_default();
+    let role = row.get("role").and_then(Value::as_str).unwrap_or_default();
+    let department = row.get("department").and_then(Value::as_str).unwrap_or_default();
+    let invite_expires_at = row.get("inviteExpiresAt").and_then(Value::as_str);
+    let last_seen_at = row.get("lastSeenAt").and_then(Value::as_str);
+    // A live session counts as joined too: someone signed in by an admin's
+    // `acp-admin session` has no password yet, but they are plainly in.
+    let joined = row.get("joined").and_then(Value::as_bool).unwrap_or(false) || last_seen_at.is_some();
+    let is_me = me_id == Some(id.as_str());
+
+    ui.horizontal(|ui| {
+        ui.set_min_height(size::CONTROL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            viz::more(ui, |ui| {
+                if viz::menu_item(ui, "New setup code", false, None) {
+                    s.members.busy = true;
+                    s.members.action =
+                        Some(MemberAction::Invite { name: name.to_owned(), email: email.to_owned() });
+                    net.invalidate(MEMBERS_ACTION_KEY);
+                    net.post(MEMBERS_ACTION_KEY, "/api/admin/invite", json!({ "email": email }));
+                }
+                let why = is_me.then_some("You can\u{2019}t remove your own access");
+                if viz::menu_item(ui, "Remove access\u{2026}", true, why) {
+                    s.members.revoking = Some(id.clone());
+                }
+            });
+
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                avatar::small(ui, email, size::AVATAR_MD);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = space::XXS;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(name)
+                                .size(text::BODY)
+                                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                                .color(colour::TEXT()),
+                        );
+                        member_status_chip(ui, joined, invite_expires_at);
+                    });
+                    ui.label(RichText::new(email).size(text::SMALL).color(colour::TEXT_MUTED()));
+                });
+            });
+        });
+    });
+
+    ui.add_space(space::XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+
+        let mut dept_slot: Option<String> = None;
+        let dept_options: Vec<(String, String)> = MEMBER_DEPARTMENTS
+            .iter()
+            .filter(|d| **d != department)
+            .map(|d| (d.to_string(), sentence(d)))
+            .collect();
+        viz::value_select(ui, &sentence(department), &dept_options, &mut dept_slot);
+        if let Some(next) = dept_slot {
+            s.members.busy = true;
+            s.members.action = Some(MemberAction::Patch);
+            net.invalidate(MEMBERS_ACTION_KEY);
+            net.patch(MEMBERS_ACTION_KEY, &format!("/api/admin/people/{id}"), json!({ "department": next }));
+        }
+
+        let mut role_slot: Option<String> = None;
+        let role_options: Vec<(String, String)> = MEMBER_ROLES
+            .iter()
+            .filter(|r| **r != role)
+            .map(|r| (r.to_string(), sentence(r)))
+            .collect();
+        viz::value_select(ui, &sentence(role), &role_options, &mut role_slot);
+        if let Some(next) = role_slot {
+            s.members.busy = true;
+            s.members.action = Some(MemberAction::Patch);
+            net.invalidate(MEMBERS_ACTION_KEY);
+            net.patch(MEMBERS_ACTION_KEY, &format!("/api/admin/people/{id}"), json!({ "role": next }));
+        }
+
+        if let Some(seen) = last_seen_at {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                w::muted(ui, &format!("Last seen {}", relative(seen)));
+            });
+        }
+    });
+}
+
+fn member_status_chip(ui: &mut egui::Ui, joined: bool, invite_expires_at: Option<&str>) {
+    if joined {
+        c::chip(ui, "Joined", c::Tone::Ok, false);
+        return;
+    }
+    match invite_expires_at {
+        Some(t) => {
+            let h = hours_left(t);
+            if h > 0 {
+                c::chip(ui, &format!("Invite pending \u{00b7} expires in {h}h"), c::Tone::Running, false);
+            } else {
+                c::chip(ui, "Invite expired", c::Tone::Quiet, false);
+            }
+        }
+        None => {
+            c::chip(ui, "Not invited", c::Tone::Quiet, false);
+        }
+    }
+}
+
+/// The setup-code result card. True once "Done" is clicked, for the caller to
+/// dismiss it — this draws the card and nothing else, so it cannot also hold
+/// the state it would need to dismiss itself.
+fn member_result_card(ui: &mut egui::Ui, net: &Net, r: &InviteResult) -> bool {
+    let mut done = false;
+    w::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        w::caption(ui, "Setup code");
+        ui.add_space(space::XS);
+        ui.label(
+            RichText::new(&r.code)
+                .monospace()
+                .size(text::TITLE)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT()),
+        );
+        ui.add_space(space::SM);
+        ui.label(
+            RichText::new(format!("Valid 48 hours, single use. For {}.", r.email))
+                .size(text::SMALL)
+                .color(colour::TEXT_MUTED()),
+        );
+        ui.add_space(space::MD);
+        ui.horizontal(|ui| {
+            if w::secondary(ui, "Copy code", true).clicked() {
+                ui.ctx().copy_text(r.code.clone());
+                w::toast(ui.ctx(), "Copied.", false);
+            }
+            ui.add_space(space::XS);
+            if w::secondary(ui, "Copy invite message", true).clicked() {
+                ui.ctx().copy_text(invite_message(r, &net.base_url));
+                w::toast(ui.ctx(), "Copied.", false);
+            }
+            ui.add_space(space::XS);
+            if w::ghost(ui, "Done").clicked() {
+                done = true;
+            }
+        });
+    });
+    done
+}
+
+fn invite_message(r: &InviteResult, base_url: &str) -> String {
+    format!(
+        "Hey {name}, you\u{2019}re set up on Loop \u{2014} here\u{2019}s how to get in:\n\n\
+         1. Install Loop from the DMG I sent you.\n\
+         2. First launch only, run once in Terminal:\n   \
+            xattr -dr com.apple.quarantine /Applications/Loop.app\n\
+         3. Open Loop and choose \u{201c}First time here?\u{201d}\n\
+         4. Enter:\n   \
+            Email: {email}\n   \
+            Code: {code}\n   \
+            Password: pick one, 8+ characters\n   \
+            Server: {base_url}\n\n\
+         The code is valid for 48 hours and works once, so set it up soon.",
+        name = r.name,
+        email = r.email,
+        code = r.code,
+    )
+}
+
+/// "Remove Jane's access?" — the same shape as `confirm_remove`, worded for a
+/// person rather than a folder: what leaves is their sessions and their place
+/// on the team, not a row they can re-add in a click.
+fn confirm_revoke(ctx: &egui::Context, id: egui::Id, name: &str) -> Option<bool> {
+    let mut answer = None;
+    let modal = egui::Modal::new(id.with("modal"))
+        .backdrop_color(colour::CANVAS().gamma_multiply(0.7))
+        .frame(
+            egui::Frame::new()
+                .fill(colour::SURFACE())
+                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
+                .corner_radius(radius::LG)
+                .inner_margin(egui::Margin::same(space::XL as i8)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(
+                RichText::new(format!("Remove {name}\u{2019}s access?"))
+                    .size(text::CARD)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT()),
+            );
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(
+                    "Every session they hold ends immediately. Their history on the board stays; \
+                     they can be invited back later under the same address.",
+                )
+                .size(text::BODY)
+                .color(colour::TEXT_2()),
+            );
+            ui.add_space(space::LG);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if w::danger(ui, "Remove access", true).clicked() {
+                    answer = Some(true);
+                }
+                if w::ghost(ui, "Cancel").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+    if modal.should_close() && answer.is_none() {
+        answer = Some(false);
+    }
+    answer
+}
+
+/// Fold in whatever the add, invite, patch or revoke request returned.
+fn settle_members(ctx: &egui::Context, net: &mut Net, s: &mut State) {
+    if !s.members.busy || net.is_loading(MEMBERS_ACTION_KEY) {
+        return;
+    }
+    s.members.busy = false;
+    let action = s.members.action.take();
+    match net.peek(MEMBERS_ACTION_KEY).cloned() {
+        Some(Ok(data)) => {
+            net.invalidate(MEMBERS_ACTION_KEY);
+            net.invalidate(MEMBERS_KEY);
+            net.invalidate(PEOPLE_KEY);
+            match action {
+                Some(MemberAction::Add) => {
+                    let person = data.get("person");
+                    let name = person.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or_default();
+                    let email = person.and_then(|p| p.get("email")).and_then(Value::as_str).unwrap_or_default();
+                    let code = data.get("code").and_then(Value::as_str).unwrap_or_default();
+                    s.members.result = Some(InviteResult {
+                        name: name.to_owned(),
+                        email: email.to_owned(),
+                        code: code.to_owned(),
+                    });
+                    s.members.adding = false;
+                }
+                Some(MemberAction::Invite { name, email }) => {
+                    let code = data.get("code").and_then(Value::as_str).unwrap_or_default().to_owned();
+                    s.members.result = Some(InviteResult { name, email, code });
+                }
+                Some(MemberAction::Revoke) => {
+                    w::toast(ctx, "Access removed.", false);
+                }
+                Some(MemberAction::Patch) | None => {}
+            }
+        }
+        Some(Err(e)) => {
+            net.invalidate(MEMBERS_ACTION_KEY);
+            match action {
+                Some(MemberAction::Add) => s.members.error = Some(e),
+                _ => w::toast(ctx, e, true),
+            }
+        }
+        None => {}
+    }
+}
+
+/// Parse a server timestamp. Every date this view reads comes back as
+/// RFC3339, the same as `board`'s.
+fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(ts).ok().map(|t| t.with_timezone(&Utc))
+}
+
+/// Hours left on a setup code, rounded up so "expires in 1h" still means
+/// there is time, not none. 0 once it has actually expired.
+fn hours_left(expires_at: &str) -> i64 {
+    let Some(then) = parse_ts(expires_at) else { return 0 };
+    let mins = (then - Utc::now()).num_minutes();
+    if mins <= 0 { 0 } else { (mins + 59) / 60 }
+}
+
+/// How long ago, for a last-seen caption.
+fn relative(ts: &str) -> String {
+    let Some(then) = parse_ts(ts) else { return String::new() };
+    match (Utc::now() - then).num_seconds().max(0) {
+        s if s < 60 => "just now".to_owned(),
+        s if s < 3600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3600),
+        s => format!("{}d ago", s / 86_400),
+    }
 }

@@ -139,14 +139,10 @@ pub fn sidebar(
     (clicked, search)
 }
 
-/// The product mark and name.
-/// The mark, as an alpha mask.
-///
-/// The source art is a white glyph on a black disc. Stored as luminance-only
-/// so the black never renders — a bitmap with its own background would sit on
-/// the sidebar as a slightly-wrong-coloured square — and so the mark can be
-/// tinted like any other ink.
-const MARK: &[u8] = include_bytes!("../../../assets/mark.png");
+/// The product mark: the orange loop, in its own colours on either palette,
+/// cut from the same art as the app icon (`scripts/make-icon.py`). 128px,
+/// so it stays crisp at 26pt on a Retina display.
+const MARK: &[u8] = include_bytes!("../../../assets/logo-small.png");
 const MARK_SIZE: f32 = 26.0;
 
 /// Decode once, then hand out the same handle every frame.
@@ -161,12 +157,12 @@ fn mark_texture(ctx: &egui::Context) -> egui::TextureHandle {
         return handle;
     }
 
-    let decoded = image::load_from_memory(MARK).expect("the mark is baked in").to_luma_alpha8();
+    let decoded = image::load_from_memory(MARK).expect("the mark is baked in").to_rgba8();
     let (w, h) = decoded.dimensions();
-    // Every pixel is white and the alpha carries the shape, so one tint at
-    // draw time colours the whole mark.
-    let pixels: Vec<egui::Color32> =
-        decoded.pixels().map(|p| egui::Color32::from_white_alpha(p.0[1])).collect();
+    let pixels: Vec<egui::Color32> = decoded
+        .pixels()
+        .map(|p| egui::Color32::from_rgba_unmultiplied(p.0[0], p.0[1], p.0[2], p.0[3]))
+        .collect();
     let handle = ctx.load_texture(
         "brand:mark",
         egui::ColorImage {
@@ -184,9 +180,7 @@ fn brand_row(ui: &mut Ui, name: &str, tagline: &str) {
     ui.horizontal(|ui| {
         let texture = mark_texture(ui.ctx());
         ui.add(
-            egui::Image::new(&texture)
-                .fit_to_exact_size(egui::Vec2::splat(MARK_SIZE))
-                .tint(colour::TEXT()),
+            egui::Image::new(&texture).fit_to_exact_size(egui::Vec2::splat(MARK_SIZE)),
         );
         ui.add_space(space::SM);
         ui.vertical(|ui| {

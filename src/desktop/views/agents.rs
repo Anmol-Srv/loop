@@ -244,6 +244,9 @@ struct Local {
     revoked_open: bool,
     /// What to say once a role switch lands.
     role_said: Option<String>,
+    /// The "How agents work" guide, toggled from the header once an owner has
+    /// at least one agent. Always shown, expanded, under the empty state.
+    guide_open: bool,
 }
 
 thread_local! {
@@ -395,6 +398,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         .filter(|a| str_of(a, "status") == Some("revoked"))
         .collect();
     let mut connect = false;
+    let mut toggle_guide = false;
 
     shell::page_title(
         ui,
@@ -404,8 +408,21 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
             if !live.is_empty() && w::primary(ui, "Connect an agent", true).clicked() {
                 connect = true;
             }
+            if !live.is_empty() {
+                let label = if local.guide_open { "Hide setup guide" } else { "Setup guide" };
+                if w::ghost(ui, label).clicked() {
+                    toggle_guide = true;
+                }
+            }
         },
     );
+    if toggle_guide {
+        local.guide_open = !local.guide_open;
+    }
+    if !live.is_empty() && local.guide_open {
+        setup_guide(ui, &my_seed);
+        ui.add_space(space::LG);
+    }
 
     // Failures of the card actions. A failed create stays in its dialog.
     if local.connect.is_none() {
@@ -422,6 +439,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         skeleton_cards(ui);
     } else if live.is_empty() {
         connect |= empty_state(ui, &my_seed);
+        ui.add_space(space::LG);
+        setup_guide(ui, &my_seed);
     } else {
         act = grid(ui, &live);
     }
@@ -539,6 +558,146 @@ fn empty_state(ui: &mut egui::Ui, seed: &str) -> bool {
         ui.add_space(space::XL);
     });
     clicked
+}
+
+/// A short, scannable walkthrough of how an agent gets set up and stays
+/// reachable, plus the globe legend. Shown expanded under the empty state,
+/// or toggled from the header once the owner has at least one agent.
+fn setup_guide(ui: &mut egui::Ui, seed: &str) {
+    c::surface(ui, false, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new("How agents work")
+                .size(text::CARD)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT()),
+        );
+        ui.add_space(space::MD);
+
+        guide_step(
+            ui,
+            1,
+            "Install a runtime",
+            &["Claude Code, Codex or Hermes \u{2014} pick one and get it running on your Mac."],
+        );
+        guide_command(ui, "Claude Code", "npm install -g @anthropic-ai/claude-code");
+        guide_command(ui, "Codex", "npm install -g @openai/codex");
+        w::muted(
+            ui,
+            "Hermes \u{2014} runs from an existing profile (\u{201c}$HERMES_HOME\u{201d}); ask your team to set one up.",
+        );
+        ui.add_space(space::SM);
+
+        guide_step(
+            ui,
+            2,
+            "Connect it",
+            &[
+                "Agents \u{203A} Connect an agent \u{203A} choose the runtime, name it, copy the prompt.",
+                "Paste it into a fresh session \u{2014} it installs the skill and MCP server, then says hello.",
+            ],
+        );
+        ui.add_space(space::SM);
+
+        guide_step(
+            ui,
+            3,
+            "Tell it where to work",
+            &[
+                "Add repo folders: a project\u{2019}s Repositories \u{203A} On my Mac \u{203A} Choose\u{2026}",
+                "Set a default in Settings \u{203A} Folders, for tasks with no project.",
+            ],
+        );
+        ui.add_space(space::SM);
+
+        guide_step(
+            ui,
+            4,
+            "Hand off a task",
+            &[
+                "On a task, Hand off \u{203A} your agent.",
+                "It posts a plan for you to approve, then works and submits for review.",
+            ],
+        );
+        ui.add_space(space::SM);
+
+        guide_step(
+            ui,
+            5,
+            "Keep it reachable",
+            &[
+                "Claude Code / Codex only check in when run \u{2014} say \u{201c}check my Airtribe inbox\u{201d}, or loop it.",
+                "Hermes wakes itself once its watcher and gateway are running.",
+            ],
+        );
+
+        ui.add_space(space::LG);
+        let (rule, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+        ui.add_space(space::SM);
+
+        w::caption(ui, "What the globe means");
+        ui.add_space(space::XS);
+        guide_legend(ui, seed);
+    });
+}
+
+/// One guide step: a bold numbered line, then up to two short muted lines.
+fn guide_step(ui: &mut egui::Ui, n: usize, title: &str, lines: &[&str]) {
+    ui.label(
+        RichText::new(format!("{n}. {title}"))
+            .size(text::SMALL)
+            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+            .color(colour::TEXT()),
+    );
+    for line in lines {
+        ui.label(RichText::new(*line).size(text::SMALL).color(colour::TEXT_MUTED()));
+    }
+}
+
+/// A copyable command: a monospace block with a small Copy button.
+fn guide_command(ui: &mut egui::Ui, label: &str, code: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        ui.label(RichText::new(label).size(text::SMALL).color(colour::TEXT_2()));
+    });
+    egui::Frame::new()
+        .fill(colour::LOG_BG())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
+        .corner_radius(radius::SM)
+        .inner_margin(egui::Margin::symmetric(space::SM as i8, space::XXS as i8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(code).monospace().size(text::SMALL).color(colour::LOG_TEXT()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if w::ghost(ui, "Copy").clicked() {
+                        ui.ctx().copy_text(code.to_owned());
+                        w::toast(ui.ctx(), "Copied.", false);
+                    }
+                });
+            });
+        });
+    ui.add_space(space::XXS);
+}
+
+/// The presence globes, each beside what it means.
+fn guide_legend(ui: &mut egui::Ui, seed: &str) {
+    let items: [(Presence, &str); 6] = [
+        (Presence::Working, "Working \u{2014} busy on your task."),
+        (Presence::Planning, "Planning \u{2014} read the task, about to propose a plan."),
+        (Presence::NeedsInput, "Needs you \u{2014} a question, or a plan to approve."),
+        (Presence::Waiting, "Connecting \u{2014} created, hasn\u{2019}t said hello yet."),
+        (Presence::Idle, "Idle \u{2014} connected, nothing to do."),
+        (Presence::Offline, "Offline \u{2014} quiet for the last ten minutes."),
+    ];
+    for (presence, text) in items {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            face::avatar_still(ui, seed, face::SM, presence, "Example agent");
+            ui.label(RichText::new(text).size(text::SMALL).color(colour::TEXT_MUTED()));
+        });
+        ui.add_space(space::XXS);
+    }
 }
 
 /// Where the cards will be, while they load.

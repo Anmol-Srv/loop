@@ -5,7 +5,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use crate::errors::{AppError, AppResult};
 
 /// Minimum password length. No composition rules — see the auth design, §3.
-pub const MIN_LENGTH: usize = 12;
+pub const MIN_LENGTH: usize = 8;
 
 /// argon2id with the crate's recommended defaults; the salt comes from the
 /// system RNG and travels inside the returned PHC string.

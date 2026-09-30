@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use serde::Serialize;
@@ -63,6 +64,43 @@ const PERSON_ROW_COLUMNS: &str = "id, email, name, role, department";
 pub async fn list(state: &AppState) -> AppResult<Vec<PersonRow>> {
     Ok(sqlx::query_as(&format!(
         "SELECT {PERSON_ROW_COLUMNS} FROM person WHERE deleted_at IS NULL ORDER BY name"
+    ))
+    .fetch_all(&state.db)
+    .await?)
+}
+
+/// A person as the Members panel sees them: everything the picker rows need
+/// to show a status chip without a second round trip.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminPersonRow {
+    pub id: Uuid,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub department: String,
+    /// Has a password been set — the only thing that makes an account usable.
+    pub joined: bool,
+    /// The one live (unused) setup code's expiry, if they have one.
+    pub invite_expires_at: Option<DateTime<Utc>>,
+    /// The most recent `last_used_at` among their live session credentials.
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+const ADMIN_PERSON_ROW_COLUMNS: &str = "
+    id, email, name, role, department,
+    password_hash IS NOT NULL AS joined,
+    (SELECT expires_at FROM setup_code
+      WHERE person_id = person.id AND used_at IS NULL) AS invite_expires_at,
+    (SELECT max(last_used_at) FROM credential
+      WHERE owner_id = person.id AND kind = 'session'
+        AND revoked_at IS NULL AND expires_at > now()) AS last_seen_at";
+
+/// The team, for the admin Members panel. `list` stays lean for pickers; this
+/// carries what an admin needs to act on an account instead.
+pub async fn list_admin(state: &AppState) -> AppResult<Vec<AdminPersonRow>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT {ADMIN_PERSON_ROW_COLUMNS} FROM person WHERE deleted_at IS NULL ORDER BY name"
     ))
     .fetch_all(&state.db)
     .await?)
@@ -206,6 +244,80 @@ pub async fn add_person(state: &AppState, email: &str, name: &str) -> AppResult<
     .fetch_optional(&state.db)
     .await?
     .is_some())
+}
+
+/// Add one member from the Members panel, with a department and a role, and
+/// hand back a setup code — the invite in one action rather than three.
+///
+/// An email still on the books but soft-deleted is reinstated rather than
+/// rejected: `email` is uniquely constrained regardless of `deleted_at`, so a
+/// former member's old row is the only place that address can live again.
+/// Their old password goes with the reinstatement: removal revoked their
+/// sessions but kept the hash, and a returning member gets back in through
+/// the new setup code, not whatever they last signed in with.
+pub async fn admin_add(
+    state: &AppState,
+    email: &str,
+    name: &str,
+    department: &str,
+    role: &str,
+) -> AppResult<(AdminPersonRow, String)> {
+    let email = normalise(email)?;
+    let name = match name.trim() {
+        "" => email.trim_end_matches(DOMAIN).to_string(),
+        n => n.to_string(),
+    };
+    if !ROLES.contains(&role) {
+        return Err(AppError::BadRequest(format!(
+            "unknown role '{role}'; expected one of {}",
+            ROLES.join(", ")
+        )));
+    }
+    if !DEPARTMENTS.contains(&department) {
+        return Err(AppError::BadRequest(format!(
+            "unknown department '{department}'; expected one of {}",
+            DEPARTMENTS.join(", ")
+        )));
+    }
+
+    let mut tx = state.db.begin().await?;
+
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM person WHERE email = $1 AND deleted_at IS NULL)",
+    )
+    .bind(&email)
+    .fetch_one(&mut *tx)
+    .await?;
+    if active {
+        return Err(AppError::Conflict(format!(
+            "'{email}' is already a member \u{2014} issue a new setup code instead"
+        )));
+    }
+
+    let person_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO person (email, name, role, department) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (email) DO UPDATE
+           SET name = $2, role = $3, department = $4, deleted_at = NULL,
+               password_hash = NULL, updated_at = now()
+         RETURNING id",
+    )
+    .bind(&email)
+    .bind(&name)
+    .bind(role)
+    .bind(department)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let code = setup_code::issue(&mut tx, person_id).await?;
+    let person: AdminPersonRow = sqlx::query_as(&format!(
+        "SELECT {ADMIN_PERSON_ROW_COLUMNS} FROM person WHERE id = $1"
+    ))
+    .bind(person_id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((person, code))
 }
 
 /// Read `email,Name` (or bare `email`) lines and create members. Existing

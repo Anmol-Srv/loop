@@ -37,6 +37,23 @@ pub struct PersonPatch {
     pub role: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonAdd {
+    pub email: String,
+    pub name: String,
+    pub department: String,
+    pub role: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonAdded {
+    pub person: controllers::people::AdminPersonRow,
+    /// The admin passes this on out of band; only its hash is stored.
+    pub code: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Invite {
@@ -80,6 +97,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/role", post(role))
         .route("/api/admin/revoke", post(revoke))
         .route("/api/admin/sessions", get(sessions))
+        .route("/api/admin/people", get(people).post(add_people))
         .route("/api/admin/people/{id}", patch(update))
 }
 
@@ -108,6 +126,31 @@ async fn refuse_if_last_admin(state: &AppState, email: &str, action: &str) -> Ap
     }
 
     Ok(())
+}
+
+/// The team, for the Members panel: every non-deleted person with enough to
+/// render a status chip — whether they've set a password, the setup code
+/// still outstanding, and when they were last seen.
+async fn people(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> AppResult<ApiResponse<Vec<controllers::people::AdminPersonRow>>> {
+    caller.require("admin")?;
+    Ok(ApiResponse::ok(controllers::people::list_admin(&state).await?))
+}
+
+/// Add a member and issue their setup code in one action — the Members
+/// panel's "Invite someone" form. Department and role are checked before
+/// anything is written, so a typo cannot half-apply.
+async fn add_people(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(body): Json<PersonAdd>,
+) -> AppResult<ApiResponse<PersonAdded>> {
+    caller.require("admin")?;
+    let (person, code) =
+        controllers::people::admin_add(&state, &body.email, &body.name, &body.department, &body.role).await?;
+    Ok(ApiResponse::ok(PersonAdded { person, code }))
 }
 
 async fn invite(

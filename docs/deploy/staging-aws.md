@@ -129,7 +129,7 @@ for e in dhaval@airtribe.live chinmay.kunkikar@airtribe.live \
 done
 ```
 
-Each person sets their own password (12+ characters) with their code on first
+Each person sets their own password (8+ characters) with their code on first
 sign-in. A forgotten password is the same step: `acp-admin invite <email>`
 issues a fresh code, and redeeming it signs out every existing session.
 
@@ -151,7 +151,7 @@ Send it with these steps for the teammate:
    xattr -dr com.apple.quarantine "/Applications/Airtribe Control Plane.app"
    ```
 3. Open it and click **First time here?**
-4. Enter your email, the setup code you were sent, and a password of 12 or
+4. Enter your email, the setup code you were sent, and a password of 8 or
    more characters (twice). In **Server** at the bottom, replace
    `http://localhost:8080` with `https://13-201-4-7.sslip.io`. Then
    **Set your password**.

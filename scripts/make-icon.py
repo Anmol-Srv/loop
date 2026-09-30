@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build a macOS iconset from the app's mark.
+"""Build a macOS iconset from the app's logo.
 
-The mark is stored as an alpha mask (`assets/mark.png`) so the sidebar can
-tint it; here it is composited in the app's own ink onto a rounded plate in
-the app's own chrome colour. One source, so the icon and the sidebar cannot
-disagree about what the logo is.
+The logo (`assets/logo.png`, the orange loop, square and cropped to its art)
+is composited in its own colours onto a rounded plate in the app's chrome
+colour. The sidebar draws `assets/logo-small.png`, cut from the same art, so
+the icon and the sidebar cannot disagree about what the logo is.
 """
 import pathlib
 import sys
@@ -12,14 +12,14 @@ import sys
 from PIL import Image, ImageDraw
 
 PLATE = (0x11, 0x12, 0x14)
-INK = (0xF2, 0xF3, 0xF5)
 # macOS art occupies roughly this much of its tile; a full-bleed glyph looks
-# oversized next to every other icon in the Dock.
-INSET = 0.58
+# oversized next to every other icon in the Dock. The loop is round and
+# airy, so it takes a little more of the tile than a solid glyph would.
+INSET = 0.68
 CORNER = 0.225
 
 
-def tile(alpha: Image.Image, px: int) -> Image.Image:
+def tile(logo: Image.Image, px: int) -> Image.Image:
     out = Image.new("RGBA", (px, px), (0, 0, 0, 0))
     mask = Image.new("L", (px, px), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
@@ -28,27 +28,24 @@ def tile(alpha: Image.Image, px: int) -> Image.Image:
     out.paste(Image.new("RGBA", (px, px), PLATE + (255,)), (0, 0), mask)
 
     inner = max(1, int(px * INSET))
-    a = alpha.resize((inner, inner), Image.LANCZOS)
-    glyph = Image.merge(
-        "RGBA", tuple(Image.new("L", (inner, inner), c) for c in INK) + (a,)
-    )
+    art = logo.resize((inner, inner), Image.LANCZOS)
     off = (px - inner) // 2
-    out.paste(glyph, (off, off), glyph)
+    out.alpha_composite(art, (off, off))
     return out
 
 
 def main() -> None:
     out = pathlib.Path(sys.argv[1])
-    alpha = Image.open("assets/mark.png").split()[-1]
+    logo = Image.open("assets/logo.png").convert("RGBA")
     for size in (16, 32, 64, 128, 256, 512, 1024):
         for scale, suffix in ((1, ""), (2, "@2x")):
             px = size * scale
             if px > 1024:
                 continue
-            tile(alpha, px).save(out / f"icon_{size}x{size}{suffix}.png")
+            tile(logo, px).save(out / f"icon_{size}x{size}{suffix}.png")
     # The window's runtime icon (acp-app embeds it); eframe shows this in the
     # Dock, not the bundle's icns, so it is written from the same tile.
-    tile(alpha, 512).save("assets/icon.png")
+    tile(logo, 512).save("assets/icon.png")
 
 
 if __name__ == "__main__":
