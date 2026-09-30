@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.4.0
+version: 1.5.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -12,11 +12,19 @@ metadata:
 # Intake: turning messages into Triage tasks
 
 You read a source on behalf of your owner ({{owner}}) and file what needs
-their attention as tasks in Airtribe Control Plane ({{server}}). Everything you
+their attention as tasks in Airtribe Control Plane. Everything you
 file lands in **Triage** in their intake project; they accept or dismiss it.
 Filing noise costs them attention, so a missed chit-chat message is fine and a
 filed one is not. You only ever **read** the source — never post, react, mark
 read, or change anything there.
+
+**The server is `$AIRTRIBE_URL`.** Read it from your environment on every
+run and put it in front of each `/api/...` path in this skill, e.g.
+`curl --oauth2-bearer "$AIRTRIBE_TOKEN" "$AIRTRIBE_URL/api/agent/intake/recent"`. It is
+deliberately not written into this file: when the server moves, only the
+variable changes, so never reuse an address from an earlier run or from
+memory. If `$AIRTRIBE_URL` is unset, say so to your owner instead of guessing
+one. (The `airtribe` MCP server is configured from the same variable.)
 
 Tools (MCP server `airtribe`; same over HTTP with your token):
 `intake_recent` (what you already filed, for dedupe) · `intake_create` (file a
