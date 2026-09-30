@@ -12,6 +12,12 @@ APP="target/$NAME.app"
 # server for a build that should never leave this Mac.
 export LOOP_DEFAULT_SERVER="${LOOP_DEFAULT_SERVER:-https://api-1.mycohort.live/loop}"
 
+# The version shown in the account menu and Info.plist. release-mac.sh sets it
+# to the release's date stamp; a local build says "dev".
+export LOOP_VERSION="${LOOP_VERSION:-dev}"
+BUNDLE_VERSION=$(printf '%s' "$LOOP_VERSION" | tr -c '0-9' '.' | tr -s '.' | sed 's/^\.//; s/\.$//')
+BUNDLE_VERSION=${BUNDLE_VERSION:-0}
+
 # UNIVERSAL=1 builds for Intel as well and joins the two with lipo — only
 # needed if someone on the team has an Intel Mac, and it doubles the build.
 if [ "${UNIVERSAL:-0}" = "1" ]; then
@@ -39,13 +45,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>$NAME</string>
   <key>CFBundleDisplayName</key><string>$NAME</string>
   <key>CFBundleIdentifier</key><string>live.airtribe.controlplane</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>$BUNDLE_VERSION</string>
   <!-- No window restoration. The app has one window and rebuilds its state
        from the server on launch, so there is nothing to restore — and with it
        on, any hard kill (a rebuild, a crash) makes macOS greet the next
        launch with a "reopen its windows?" dialog that blocks the app. -->
   <key>NSQuitAlwaysKeepsWindows</key><false/>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$LOOP_VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>acp-app</string>
   <key>CFBundleIconFile</key><string>icon</string>

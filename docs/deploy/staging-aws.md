@@ -135,30 +135,28 @@ issues a fresh code, and redeeming it signs out every existing session.
 
 ## 7. Hand out the app
 
-Build the zip on your Mac:
+Builds are published as GitHub Releases, and everyone installs and updates
+with the same command:
 
 ```bash
-DIST=1 scripts/bundle-mac.sh          # UNIVERSAL=1 too if anyone is on an Intel Mac
-# → target/Airtribe-Control-Plane.zip
+curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/loop/master/scripts/install.sh | bash
 ```
 
-Send it with these steps for the teammate:
+It downloads the latest release, replaces `/Applications/Loop.app` (quitting
+Loop first) and opens it. Downloaded with curl, the app carries no quarantine
+flag, so macOS opens it without the unidentified-developer prompt. Sign-in,
+server and theme live outside the bundle, so an update keeps them.
 
-1. Unzip, and drag **Airtribe Control Plane** into **Applications**.
-2. The app is not signed with an Apple developer ID yet, so macOS blocks it
-   the first time. Run this once in Terminal:
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/Airtribe Control Plane.app"
-   ```
-3. Open it and click **First time here?**
-4. Enter your email, the setup code you were sent, and a password of 8 or
-   more characters (twice). In **Server** at the bottom, replace
-   `http://localhost:8080` with `https://13-201-4-7.sslip.io`. Then
-   **Set your password**.
+To publish a new build, commit and push, then on a Mac:
 
-After that it is the plain **Sign in** form, and the server is remembered.
+```bash
+scripts/release-mac.sh        # universal build, tagged v<date-time>, marked latest
+```
 
-The sidebar's footer shows which server you are signed in to.
+Teammates pick it up by re-running the install command; the account menu shows
+the version they are on. Fresh installs already point at the hosted server
+(`LOOP_DEFAULT_SERVER` in `scripts/bundle-mac.sh`), and Settings > Members >
+Copy invite message includes the install command.
 
 ## 8. Backups
 

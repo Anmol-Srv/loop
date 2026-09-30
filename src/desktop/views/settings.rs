@@ -957,11 +957,11 @@ fn member_result_card(ui: &mut egui::Ui, net: &Net, r: &InviteResult) -> bool {
 fn invite_message(r: &InviteResult, base_url: &str) -> String {
     format!(
         "Hey {name}, you\u{2019}re set up on Loop \u{2014} here\u{2019}s how to get in:\n\n\
-         1. Install Loop from the DMG I sent you.\n\
-         2. First launch only, run once in Terminal:\n   \
-            xattr -dr com.apple.quarantine /Applications/Loop.app\n\
-         3. Open Loop and choose \u{201c}First time here?\u{201d}\n\
-         4. Enter:\n   \
+         1. Install Loop \u{2014} paste this into Terminal:\n   \
+            {install}\n   \
+            (Run the same command any time to update.)\n\
+         2. Loop opens; choose \u{201c}First time here?\u{201d}\n\
+         3. Enter:\n   \
             Email: {email}\n   \
             Code: {code}\n   \
             Password: pick one, 8+ characters\n   \
@@ -970,8 +970,14 @@ fn invite_message(r: &InviteResult, base_url: &str) -> String {
         name = r.name,
         email = r.email,
         code = r.code,
+        install = INSTALL_COMMAND,
     )
 }
+
+/// Installs Loop, and updates it: always the latest GitHub release
+/// (`scripts/install.sh`, published by `scripts/release-mac.sh`).
+const INSTALL_COMMAND: &str =
+    "curl -fsSL https://raw.githubusercontent.com/Anmol-Srv/loop/master/scripts/install.sh | bash";
 
 /// "Remove Jane's access?" — the same shape as `confirm_remove`, worded for a
 /// person rather than a folder: what leaves is their sessions and their place

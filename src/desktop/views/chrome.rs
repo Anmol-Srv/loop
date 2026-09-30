@@ -177,6 +177,14 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     w::toasts(ui.ctx());
 }
 
+/// This build's version, stamped by `scripts/bundle-mac.sh` (the release's
+/// date for a published build, "dev" otherwise) — what to compare against
+/// the latest release when someone asks whether they are up to date.
+const VERSION: &str = match option_env!("LOOP_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};
+
 /// The account menu's width: the sidebar's own, so it reads as part of it
 /// rather than a panel laid over the page. Room for the theme switch.
 const ACCOUNT_MENU_W: f32 = size::SIDEBAR_W - space::LG;
@@ -302,7 +310,7 @@ fn account_header(ui: &mut egui::Ui, who: &Who<'_>) {
         ui.add_space(space::XS);
         ui.add(
             egui::Label::new(
-                egui::RichText::new(format!("Signed in to {}", who.host))
+                egui::RichText::new(format!("Signed in to {} \u{00B7} Loop {VERSION}", who.host))
                     .size(text::CAPTION)
                     .color(colour::TEXT_FAINT()),
             )
