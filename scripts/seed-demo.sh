@@ -24,7 +24,7 @@ adm set-department evana@airtribe.live design     >/dev/null
 adm set-department chinmay@airtribe.live frontend >/dev/null
 
 # A local-only password, so the app can sign in after every re-seed.
-PASSWORD=loop-local-dev
+PASSWORD=12345678
 for who in anmol pratik evana chinmay; do adm set-password "$who@airtribe.live" "$PASSWORD" >/dev/null; done
 
 H=$(adm session anmol@airtribe.live | sed -n 2p)
