@@ -32,8 +32,11 @@ restraint), Raycast (speed, crispness).
 ## Anti-references
 - Chatbot UI: no chat bubbles or messenger layouts for agent activity.
 - Neon "AI" glow: no purple gradients, sparkles, glowing orbs, "magic" motifs.
-- Cropped or clipped content passed off as a fix; visible scrollbars; blue
-  selection borders (removed app-wide).
+- Cropped or clipped content passed off as a fix; blue selection borders
+  (removed app-wide).
+- Scrollbars on screen at rest. They follow the macOS "Show scroll bars"
+  setting: shown while scrolling or when the bar is hovered, and always shown
+  when macOS asks for them (Always, or a mouse under Automatic).
 
 ## Visibility principles
 - Team-visible: that a task is with an agent, whose, its state and "now" line,

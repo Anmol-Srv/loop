@@ -252,12 +252,32 @@ pub mod colour {
         };
     }
     read!(
-        CANVAS, CHROME, SURFACE, SURFACE_HOVER, SURFACE_ACTIVE, INSET, LINE, LINE_SOFT,
-        LINE_STRONG, TEXT, TEXT_2, TEXT_MUTED, TEXT_FAINT, TEXT_DISABLED, OK, WARN, DANGER, AGENT,
-        INFO, IDLE, OK_BG, WARN_BG, DANGER_BG, AGENT_BG, INFO_BG, GLOW, WASH_TOP, WASH_BOTTOM,
-        GLASS, GLASS_HOVER, GLASS_ACTIVE, EDGE_MID, EDGE_MID_HOVER, EDGE_HI_HOVER, LOG_BG,
-        LOG_TEXT, LOG_SEQ,
+        CANVAS, CHROME, SURFACE, SURFACE_HOVER, SURFACE_ACTIVE, INSET, LINE_STRONG, TEXT, TEXT_2,
+        TEXT_MUTED, OK, WARN, DANGER, AGENT, INFO, IDLE, OK_BG, WARN_BG, DANGER_BG, AGENT_BG,
+        INFO_BG, GLOW, WASH_TOP, WASH_BOTTOM, EDGE_HI_HOVER, LOG_BG, LOG_TEXT, LOG_SEQ,
     );
+
+    static CONTRAST: AtomicBool = AtomicBool::new(false);
+    static OPAQUE: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_system(contrast: bool, opaque: bool) {
+        CONTRAST.store(contrast, Relaxed);
+        OPAQUE.store(opaque, Relaxed);
+    }
+
+    macro_rules! swap {
+        ($flag:ident: $($name:ident => $to:ident),* $(,)?) => {
+            $( #[inline] pub fn $name() -> Color32 {
+                let p = palette();
+                if $flag.load(Relaxed) { p.$to } else { p.$name }
+            } )*
+        };
+    }
+    swap!(CONTRAST:
+        TEXT_FAINT => TEXT_MUTED, TEXT_DISABLED => TEXT_MUTED, LINE => LINE_STRONG,
+        LINE_SOFT => LINE_STRONG, EDGE_MID => EDGE_HI_HOVER, EDGE_MID_HOVER => EDGE_HI_HOVER,
+    );
+    swap!(OPAQUE: GLASS => SURFACE, GLASS_HOVER => SURFACE_HOVER, GLASS_ACTIVE => SURFACE_ACTIVE);
 
     /// The one accent: primary actions, the current selection, attention
     /// badges. Never decoration.

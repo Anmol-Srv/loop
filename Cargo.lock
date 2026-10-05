@@ -149,6 +149,8 @@ dependencies = [
  "egui_kittest",
  "http-body-util",
  "image",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "reqwest",
  "rfd",
  "rpassword",
