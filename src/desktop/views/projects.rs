@@ -71,9 +71,6 @@ const NAME_MIN_W: f32 = 90.0;
 /// Two label chips on a row, then a "+N". Two is what fits beside a name
 /// without the name becoming an abbreviation.
 const MAX_LABEL_CHIPS: usize = 2;
-/// Half the most one badge may reserve beside a name; a longer label
-/// truncates inside its badge rather than squeezing the name away.
-const LABEL_CHIP_W: f32 = 52.0;
 /// The description's floor. Below this a one-liner is cut to nothing useful,
 /// so the table would rather squeeze the window than this column.
 const COL_DESCRIPTION: f32 = 200.0;
@@ -584,17 +581,23 @@ pub(super) fn label_colours(name: &str) -> (egui::Color32, egui::Color32) {
 /// recognisable, a clipped badge is not. Projects and every task table.
 pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32, labels: &[Value]) {
     ui.spacing_mut().item_spacing.x = space::XS;
-    let shown = labels.len().min(MAX_LABEL_CHIPS);
-    let extra = labels.len() - shown;
-    // What the badges will really take, measured the way a badge lays out.
     let badge_w = |s: &str| {
         ui.painter().layout_no_wrap(s.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT()).size().x
             + space::SM * 2.0
             + space::XS
     };
-    let reserve: f32 = labels.iter().take(shown).map(|l| badge_w(str_at(l, "name")).min(LABEL_CHIP_W * 2.0)).sum::<f32>()
-        + if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
-    let width = (ui.available_width() - reserve).max(NAME_MIN_W);
+    let widths: Vec<f32> = labels.iter().map(|l| badge_w(str_at(l, "name"))).collect();
+    let avail = ui.available_width();
+    let fits = |k: usize| {
+        let extra = labels.len() - k;
+        let plus = if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
+        NAME_MIN_W + widths[..k].iter().sum::<f32>() + plus <= avail
+    };
+    let shown = (0..=labels.len().min(MAX_LABEL_CHIPS)).rev().find(|&k| fits(k)).unwrap_or(0);
+    let extra = labels.len() - shown;
+    let reserve: f32 =
+        widths[..shown].iter().sum::<f32>() + if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
+    let width = (avail - reserve).max(NAME_MIN_W);
     ui.allocate_ui(egui::vec2(width, table::ROW_H), |ui| {
         table::strong_label(ui, name, ink);
     });

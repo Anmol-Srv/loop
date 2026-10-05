@@ -30,6 +30,9 @@ const TASK_IN_PROGRESS: &str = "22222222-0000-0000-0000-000000000001";
 const TASK_SHIPPED: &str = "22222222-0000-0000-0000-000000000003";
 const TASK_HANDOFF: &str = "22222222-0000-0000-0000-000000000005";
 const TASK_AGENT: &str = "22222222-0000-0000-0000-000000000004";
+const LONG_PROJECT: &str = "11111111-0000-0000-0000-000000000006";
+const TASK_LONG: &str = "22222222-0000-0000-0000-000000000006";
+const TASK_LONG_AGENT: &str = "22222222-0000-0000-0000-000000000007";
 
 const SHOTS: &[Shot] = &[
     Shot { name: "home", tab: Tab::Home, project: None, task: None, signed_in: true },
@@ -44,6 +47,11 @@ const SHOTS: &[Shot] = &[
     Shot { name: "task-shipped", tab: Tab::Home, project: None, task: Some(TASK_SHIPPED), signed_in: true },
     Shot { name: "task-agent", tab: Tab::Home, project: None, task: Some(TASK_AGENT), signed_in: true },
     Shot { name: "task-handoff", tab: Tab::Home, project: None, task: Some(TASK_HANDOFF), signed_in: true },
+    Shot { name: "long-task", tab: Tab::Home, project: None, task: Some(TASK_LONG), signed_in: true },
+    Shot { name: "long-agent", tab: Tab::Home, project: None, task: Some(TASK_LONG_AGENT), signed_in: true },
+    Shot { name: "long-project", tab: Tab::Projects, project: Some(LONG_PROJECT), task: None, signed_in: true },
+    Shot { name: "long-projects", tab: Tab::Projects, project: None, task: None, signed_in: true },
+    Shot { name: "long-mytasks", tab: Tab::AllTasks, project: None, task: None, signed_in: true },
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
     Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
     Shot { name: "login-error", tab: Tab::Home, project: None, task: None, signed_in: false },

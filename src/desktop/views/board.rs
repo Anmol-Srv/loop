@@ -447,12 +447,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             if let Some(err) = &flow_error {
                 ui.add_space(space::XL);
                 w::error(ui, err);
-            } else if let Some(f) = flow.as_ref().filter(|f| !flow_columns(f).is_empty()) {
-                // The same sentence as the rail's progress, broken down by
-                // department. A project whose tasks have no department yet
-                // draws nothing, and the spacing goes with it.
-                ui.add_space(space::MD);
-                flow_strip(ui, f);
             }
 
             shell::divider(ui);
@@ -557,6 +551,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 &all_labels,
                 label_error.as_deref(),
                 (done, total),
+                flow.as_deref(),
                 can_write,
                 requests,
             );
@@ -821,6 +816,7 @@ fn rail(
     all_labels: &[Value],
     label_error: Option<&str>,
     (done, total): (i64, i64),
+    flow: Option<&Value>,
     can_write: bool,
     requests: &mut Vec<Request>,
 ) {
@@ -898,9 +894,30 @@ fn rail(
             faint(ui, "No tasks yet");
             return;
         }
-        ui.spacing_mut().item_spacing.x = space::SM;
-        w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT());
-        value(ui, &format!("{done} of {total} done"));
+        let split = flow.map(flow_columns).unwrap_or_default();
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = space::XXS;
+            ui.horizontal(|ui| {
+                ui.set_min_height(size::CONTROL);
+                ui.spacing_mut().item_spacing.x = space::SM;
+                w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT());
+                value(ui, &format!("{done} of {total} done"));
+            });
+            if split.len() > 1 {
+                for d in &split {
+                    let name = str_at(d, "discipline");
+                    let font = egui::FontId::proportional(text::SMALL);
+                    let mut line = egui::text::LayoutJob::default();
+                    line.append(name, 0.0, egui::TextFormat::simple(font.clone(), discipline_colour(name)));
+                    line.append(
+                        &format!("{} of {}", num_at(d, "done"), num_at(d, "total")),
+                        space::XS,
+                        egui::TextFormat::simple(font, colour::TEXT_MUTED()),
+                    );
+                    ui.label(line);
+                }
+            }
+        });
     });
 
     // One row per person holding work here, busiest first. A stack of
@@ -949,7 +966,10 @@ fn rail(
 
     let key = str_at(head, "key");
     if !key.is_empty() {
-        shell::property(ui, "Key", |ui| w::mono_caption(ui, key));
+        shell::property(ui, "Key", |ui| {
+            ui.add(egui::Label::new(RichText::new(key).monospace().size(text::CAPTION).color(colour::TEXT_FAINT())).truncate())
+                .on_hover_text(key);
+        });
     }
     if let Some((relative, absolute)) = created(str_at(head, "createdAt")) {
         shell::property(ui, "Created", |ui| {
@@ -1591,36 +1611,6 @@ fn flow_columns(flow: &Value) -> Vec<&Value> {
             .unwrap_or(FLOW_ORDER.len())
     });
     columns
-}
-
-/// The per-discipline split, as one line of facts.
-///
-/// This was a labelled progress bar per discipline. The bar was a figure's
-/// worth of ink for a fraction that is 0/1 or 1/1 on a project this size, and
-/// the meta line above already carries the total — what is left worth saying
-/// is the split, in the same label/value vocabulary as the line it sits under.
-///
-/// It reports, it does not gate: no arrow between the disciplines, because
-/// frontend and backend can and do run before design has finished.
-fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        for (i, d) in flow_columns(flow).iter().enumerate() {
-            if i > 0 {
-                ui.add_space(space::XL);
-            }
-            let name = str_at(d, "discipline");
-            // The discipline's own colour carries the name, so the split is
-            // scannable without a legend or a swatch beside it.
-            ui.label(
-                RichText::new(name)
-                    .size(text::SMALL)
-                    .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                    .color(discipline_colour(name)),
-            );
-            value(ui, &format!("{}/{}", num_at(d, "done"), num_at(d, "total")));
-        }
-    });
 }
 
 // --------------------------------------------------------------------- table

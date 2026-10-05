@@ -340,7 +340,7 @@ fn stepper_follows_the_state() {
     let app = RefCell::new(None);
     let p = task_page(&app, &f);
     assert!(p.has("Needs Anmol: current"));
-    assert!(p.has("Waiting on Anmol\u{2019}s answer"));
+    assert!(!p.has("Waiting on Anmol\u{2019}s answer"), "the stepper already says whose turn it is");
 }
 
 #[test]
@@ -823,4 +823,22 @@ fn the_toolbar_keeps_the_actions_and_takes_the_title_once_it_scrolls_away() {
     let take_back = p.button("Take back").rect();
     assert!(take_back.center().y > bar.top() && take_back.center().y < bar.bottom(), "the actions stay put");
     assert!(in_bar(&p), "scrolled past it, the bar names the task");
+}
+
+#[test]
+fn a_long_now_line_stays_inside_the_column() {
+    let long = "Rewriting the reminder scheduler to read each learner's timezone from their profile and fall back to the cohort's city when it is missing";
+    let mut f = task_fixtures("working", true);
+    for (key, value) in f.iter_mut() {
+        if *key == "task:one" {
+            value["delegate"]["now"] = json!(long);
+        }
+    }
+    let app = RefCell::new(None);
+    let p = page(&app, &f, Tab::Home, Some(TASK), (820.0, 1400.0), false, false);
+    let edge = p.button("More actions").rect().right();
+    let now = p.harness.get_by_label(long).rect();
+    assert!(now.right() <= edge + 0.5, "the now line ends at {} past the column's {edge}", now.right());
+    let send = p.harness.get_all_by_label_contains("Send to").next().unwrap().rect();
+    assert!(send.right() <= edge + 0.5, "what follows it keeps the column too: {} vs {edge}", send.right());
 }

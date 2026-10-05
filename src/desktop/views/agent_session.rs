@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use egui::{pos2, vec2, RichText};
 use serde_json::Value;
 
-use super::agents::{runtime_label, state_words};
+use super::agents::state_words;
 use super::projects::PROSE_W;
-use super::task::{ago, day_label, elide, exact};
+use super::task::{ago, day_label, day_time, elide, exact};
 use crate::desktop::design::agent::{self as face, Presence, Step};
 use crate::desktop::design::{
     avatar, cards as c, colour, glyph, motion, pad, radius, shell, size, space, status_label, text, theme, widgets as w,
@@ -133,57 +133,11 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     let short = short_name(agent);
     let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
     let owner_first = first_name(owner);
-    // The agent's own id for its globe, so two agents one person owns never
-    // wear the same one.
-    let agent_seed = str_of(d, "id").unwrap_or(agent);
-    let presence = Presence::of(state, str_of(d, "lastSeenAt"));
     let held = !matches!(state, "done" | "stopped");
     let mut ask = None;
 
     shell::divider(ui);
     shell::section(ui, "Agent session");
-
-    // ---- who, and since when
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
-        face::avatar(ui, agent_seed, face::MD, presence, agent);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let name = RichText::new(agent)
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT());
-            // The agent's page is its owner's (and admins'), so only they get
-            // a way into it.
-            match str_of(d, "id").filter(|_| s.private) {
-                Some(id) => {
-                    let r = ui
-                        .add(egui::Label::new(name).sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(format!("Open {short}\u{2019}s page"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, format!("Open {agent}")));
-                    if r.clicked() {
-                        super::agents::open(id);
-                    }
-                }
-                None => {
-                    ui.label(name);
-                }
-            }
-            let mut who = format!("{owner_first}\u{2019}s agent");
-            if let Some(rt) = str_of(d, "runtime") {
-                who += &format!(" \u{00B7} {}", runtime_label(rt));
-            }
-            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_MUTED()));
-        });
-        if let Some(at) = str_of(d, "delegatedAt") {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("Started {}", ago(at))).size(text::SMALL).color(colour::TEXT_MUTED()))
-                    .on_hover_text(exact(at));
-            });
-        }
-    });
-    ui.add_space(space::MD);
 
     // ---- where it is
     let (steps, current, complete) = stages(state, s, owner_first);
@@ -192,10 +146,10 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         _ => colour::INFO(),
     };
     face::stepper(ui, &steps, current, complete, tone);
-    ui.add_space(space::MD);
-
-    // ---- what it is doing now
-    now_line(ui, d, state, s.mine, owner_first, short);
+    if !matches!(state, "needs_input" | "plan_review" | "in_review") {
+        ui.add_space(space::MD);
+        now_line(ui, d, state, short);
+    }
     if let Some(repo) = s.unset_repo.filter(|_| s.mine && held) {
         ui.add_space(space::SM);
         ui.horizontal_wrapped(|ui| {
@@ -497,10 +451,6 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
         .iter()
         .filter(|n| f.private || !str_of(n, "kind").is_some_and(private_kind))
         .collect();
-    // A review approved the work when nothing was submitted after it and the
-    // session ended — the note carries no decision of its own.
-    let last_submission = notes.iter().rposition(|n| str_of(n, "kind") == Some("submission"));
-    let last_review = notes.iter().rposition(|n| str_of(n, "kind") == Some("review"));
 
     let mut items: Vec<(i64, Item)> = Vec::new();
     if let Some(at) = f.delegate.and_then(|d| str_of(d, "delegatedAt")) {
@@ -606,8 +556,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                         prev_minor = true;
                     }
                     "review" => {
-                        let approved = state == "done" && pos == last_review && last_submission.is_none_or(|s| Some(s) < pos);
-                        let (mark, verb) = if approved {
+                        let (mark, verb) = if pos.is_some_and(|at| approved(&notes, at, state)) {
                             (Mark::Approved, "approved the work")
                         } else {
                             (Mark::Changes, "asked for changes")
@@ -762,7 +711,7 @@ fn stages(state: &str, s: &Session, owner_first: &str) -> (Vec<Step>, usize, boo
 
 /// The line under the stepper. While the agent works, what it says it is doing
 /// and how fresh that is; otherwise whose move it is, in words.
-fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: &str, short: &str) {
+fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, short: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
         let words = match state {
@@ -770,10 +719,14 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
                 face::spinner(ui, text::BODY);
                 match str_of(d, "now").map(str::trim).filter(|n| !n.is_empty()) {
                     Some(now) => {
-                        let shown = ui.add(egui::Label::new(RichText::new(now).size(text::BODY).color(colour::TEXT_2())).truncate());
+                        let at = str_of(d, "nowAt");
+                        let when = at.map(|a| ui.painter().layout_no_wrap(ago(a), egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT()));
+                        let room = ui.available_width() - when.as_ref().map_or(0.0, |g| g.size().x + space::SM);
+                        let line = w::truncated(ui, now, egui::FontId::proportional(text::BODY), colour::TEXT_2(), room.max(0.0));
+                        let shown = ui.add(egui::Label::new(line));
                         shown.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, now));
-                        if let Some(at) = str_of(d, "nowAt") {
-                            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                        if let (Some(a), Some(g)) = (at, when) {
+                            ui.add(egui::Label::new(g)).on_hover_text(exact(a));
                         }
                         return;
                     }
@@ -782,18 +735,11 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
                 }
             }
             "handed_off" => format!("Waiting for {short} to pick this up"),
-            "needs_input" if mine => "Waiting on your answer".to_owned(),
-            "needs_input" => format!("Waiting on {owner_first}\u{2019}s answer"),
-            "plan_review" if mine => "Waiting on your plan review".to_owned(),
-            "plan_review" => format!("Waiting on {owner_first}\u{2019}s plan review"),
-            "in_review" if mine => "Waiting on your review".to_owned(),
-            "in_review" => format!("Waiting on {owner_first}\u{2019}s review"),
             "done" => "Finished \u{2014} the review approved it".to_owned(),
             "stopped" => format!("Taken back from {short}"),
             other => state_words(other).to_owned(),
         };
-        let ink = if matches!(state, "needs_input" | "plan_review" | "in_review") { colour::ASK() } else { colour::TEXT_MUTED() };
-        ui.label(RichText::new(words).size(text::SMALL).color(ink));
+        ui.label(RichText::new(words).size(text::SMALL).color(colour::TEXT_MUTED()));
     });
 }
 
@@ -803,8 +749,6 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
 pub(super) enum Node<'a> {
     /// A person's disc: their answers, instructions, the hand-off.
     Person(&'a str),
-    /// The agent's globe, still — the header already carries the one live
-    /// copy, so every mention of the agent elsewhere shows its still frame.
     Agent(&'a str),
     Mark(Mark),
 }
@@ -853,7 +797,7 @@ pub(super) fn entry(
                     ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
                 }
                 if let Some(at) = at {
-                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                    ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                 }
                 if private {
                     ui.add_space(space::XS);
@@ -984,7 +928,7 @@ fn minor_line(ui: &mut egui::Ui, node: Node, who: &str, rest: &str, at: Option<&
     // Measured up front so the rest of the line truncates around it rather
     // than running under it — the same order `entry`'s row reads in, just
     // painted by hand instead of laid out by egui.
-    let time = at.map(|a| p.layout_no_wrap(ago(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT()));
+    let time = at.map(|a| p.layout_no_wrap(day_time(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT()));
     if !rest.is_empty() {
         x += space::XS;
         let time_w = time.as_ref().map_or(0.0, |g| g.size().x + space::SM);
@@ -1054,7 +998,7 @@ fn substantive(
                 );
                 ui.label(RichText::new(kind_label).size(text::SMALL).color(colour::TEXT_MUTED()));
                 if let Some(at) = at {
-                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                    ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                 }
                 if private {
                     ui.add_space(space::XS);
@@ -1520,6 +1464,13 @@ fn elapsed(raw: &str) -> String {
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
+}
+
+/// A review approved the work when nothing was submitted after it and the
+/// session ended — the note carries no decision of its own.
+fn approved(notes: &[&Value], at: usize, state: &str) -> bool {
+    let last = |kind: &str| notes.iter().rposition(|n| str_of(n, "kind") == Some(kind));
+    state == "done" && last("review") == Some(at) && last("submission").is_none_or(|s| s < at)
 }
 
 #[cfg(test)]

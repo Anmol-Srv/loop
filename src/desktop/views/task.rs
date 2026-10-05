@@ -33,7 +33,7 @@ use egui::RichText;
 use serde_json::{json, Value};
 
 use super::agent_session::{self as session, Session};
-use super::agents::{state_tone, state_words, AGENTS_KEY};
+use super::agents::AGENTS_KEY;
 use super::menus::{task_items, Pick, Viewer};
 use super::projects::{label_badge, label_picker, person_option, LABELS_KEY, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::agent::{self as face, Presence};
@@ -573,6 +573,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                     .as_deref()
                     .and_then(Value::as_array)
                     .map_or(&[], Vec::as_slice),
+                private,
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -1069,6 +1070,7 @@ struct Rail<'a> {
     label_error: Option<&'a str>,
     /// The viewer's own folders, for the picker a project-less task offers.
     folders: &'a [Value],
+    private: bool,
 }
 
 /// The ids of the labels a task wears.
@@ -1229,24 +1231,26 @@ fn rail(
         shell::property(ui, "Delegate", |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let name = str_of(d, "name").unwrap_or("Agent");
-            // The agent's own id, not its owner's — two of one person's
-            // agents must not wear the same globe.
             let seed = str_of(d, "id").unwrap_or(name);
-            // Still: the session's header carries the one moving ring.
-            face::avatar_still(
-                ui,
-                seed,
-                face::SM,
-                Presence::of(state, str_of(d, "lastSeenAt")),
-                name,
-            );
-            ui.add(
-                egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT()))
-                    .truncate(),
-            );
-        });
-        shell::property(ui, "Agent state", |ui| {
-            c::chip(ui, state_words(state), state_tone(state), true);
+            face::avatar(ui, seed, face::SM, Presence::of(state, str_of(d, "lastSeenAt")), name);
+            let owner = str_of(d, "ownerName").or_else(|| str_of(task, "assigneeName")).unwrap_or("its owner");
+            let mut who = format!("{}\u{2019}s agent", owner.split_whitespace().next().unwrap_or(owner));
+            if let Some(rt) = str_of(d, "runtime") {
+                who += &format!(" \u{00B7} {}", super::agents::runtime_label(rt));
+            }
+            let label = egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT())).truncate();
+            match str_of(d, "id").filter(|_| r.private) {
+                Some(id) => {
+                    let link = ui.add(label.sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(who);
+                    link.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, format!("Open {name}")));
+                    if link.clicked() {
+                        super::agents::open(id);
+                    }
+                }
+                None => {
+                    ui.add(label).on_hover_text(who);
+                }
+            }
         });
         shell::property(ui, "Last seen", |ui| match str_of(d, "lastSeenAt") {
             Some(at) => {
@@ -2455,6 +2459,18 @@ fn plural(n: i64, unit: &str) -> String {
 
 /// "Today", "Yesterday", or "Mon 22 Sep", in local time — a quiet separator
 /// for a list that reads top to bottom by time.
+pub(super) fn day_time(raw: &str) -> String {
+    let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
+        return String::new();
+    };
+    let local = t.with_timezone(&LocalTz);
+    if local.date_naive() == LocalTz::now().date_naive() {
+        ago(raw)
+    } else {
+        local.format("%H:%M").to_string()
+    }
+}
+
 pub(super) fn day_label(raw: &str) -> String {
     let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
         return String::new();
@@ -2484,4 +2500,5 @@ mod link_label_tests {
         );
         assert_eq!(link_label("https://figma.com/design/abc"), None);
     }
+
 }
