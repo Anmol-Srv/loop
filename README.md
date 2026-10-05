@@ -69,7 +69,7 @@ Requires Rust 1.96+ and Postgres 17.
 ```bash
 brew services start postgresql@17
 createdb -p 5433 acp_dev          # 5432 is taken by Docker on some machines
-cp .env.example .env              # edit DATABASE_URL if your port differs
+cp .env.example .env              # edit DATABASE_URL or PORT if yours differ
 cargo build
 ```
 
@@ -81,14 +81,28 @@ Migrations run automatically when the server starts.
 cargo run --bin acp-server        # listens on :8080
 ```
 
-Bootstrap yourself a token. `acp-admin` talks to the database directly, which is
-the only way to mint the first one — every other path requires a token already.
+For a board with something on it, seed demo data while the server runs. It
+wipes the database first, then creates two projects, the team, blocked work and
+two agent tasks, and gives everyone the local password `12345678`:
 
 ```bash
-cargo run --bin acp-admin -- add-person you@airtribe.live "Your Name"
-cargo run --bin acp-admin -- mint laptop --owner you@airtribe.live --scopes read,write
-export ACP_TOKEN=<the token it prints once>
+scripts/seed-demo.sh              # reads PORT and DATABASE_URL from .env
 ```
+
+Then sign in to the app as `chinmay@airtribe.live` (or `anmol@`, `pratik@`,
+`evana@`) with `12345678`.
+
+To start from an empty database instead, bootstrap yourself as the first admin.
+`acp-admin` talks to the database directly, which is the only way in before
+anyone can sign in.
+
+```bash
+cargo run --bin acp-admin -- bootstrap-admin you@airtribe.live "Your Name"   # prints a setup code
+cargo run --bin acp -- setup --email you@airtribe.live                       # redeem it, choose a password
+```
+
+`acp-admin session you@airtribe.live` prints a session token instead, for
+scripts that need `ACP_TOKEN`.
 
 ## Using it
 
