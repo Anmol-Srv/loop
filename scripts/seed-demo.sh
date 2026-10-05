@@ -4,9 +4,10 @@
 # waiting on a human. Safe to re-run — it truncates first.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-BASE=${ACP_URL:-http://localhost:8080}
-# The database the server uses: DATABASE_URL from the environment or .env.
+# The server and database it uses: PORT and DATABASE_URL from the environment or .env.
+[ -z "${PORT:-}" ] && [ -f .env ] && PORT=$(sed -n 's/^PORT=//p' .env)
 [ -z "${DATABASE_URL:-}" ] && [ -f .env ] && DATABASE_URL=$(sed -n 's/^DATABASE_URL=//p' .env)
+BASE=${ACP_URL:-http://localhost:${PORT:-8080}}
 export PGOPTIONS='-c client_min_messages=warning'
 PSQL="psql -q ${DATABASE_URL:-postgres://localhost:5432/acp_dev}"
 
@@ -22,6 +23,7 @@ adm set-department anmol@airtribe.live backend    >/dev/null
 adm set-department pratik@airtribe.live design    >/dev/null
 adm set-department evana@airtribe.live design     >/dev/null
 adm set-department chinmay@airtribe.live frontend >/dev/null
+adm set-role chinmay@airtribe.live admin >/dev/null
 
 # A local-only password, so the app can sign in after every re-seed.
 PASSWORD=12345678
@@ -125,5 +127,5 @@ agent "$T_HOME" ask '{"body":"The mock shows two empty states for the inbox. Whi
 
 echo
 echo "seeded."
-echo "  sign in as   chinmay@airtribe.live / $PASSWORD   (anmol, pratik and evana work too)"
+echo "  sign in as   chinmay@airtribe.live / $PASSWORD   (admin; anmol, pratik and evana work too)"
 echo "  agent        $A"
