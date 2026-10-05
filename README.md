@@ -34,6 +34,10 @@ Or run it straight from cargo while developing:
 cargo run --features app --bin acp-app
 ```
 
+`scripts/dev-app.sh` rebuilds and relaunches it against the local server on
+`PORT` from `.env`, with its sign-in kept in `.dev-home/` so it never touches the
+installed Loop.app's credentials.
+
 Sign in with your @airtribe.live email and password. The session is stored at
 `~/Library/Application Support/airtribe-control-plane/credentials` (mode 0600),
 shared with the CLI, so you sign in once for both.
