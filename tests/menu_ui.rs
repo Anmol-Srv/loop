@@ -6,10 +6,13 @@ use egui_kittest::Harness;
 #[test]
 fn edit_menu_items_reach_the_focused_text_field() {
     let mut text = String::from("hand it to Hermes");
+    let pasted = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = pasted.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(320.0, 120.0))
         .build_ui(move |ui| {
             menu::deliver(ui.ctx());
+            seen.set(seen.get() || menu::pasted(ui.ctx()));
             ui.add(egui::TextEdit::singleline(&mut text));
         });
     harness.run_steps(2);
@@ -38,4 +41,5 @@ fn edit_menu_items_reach_the_focused_text_field() {
         .get(&egui::ViewportId::ROOT)
         .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::RequestPaste));
     assert!(asked, "Paste asks the window for the clipboard");
+    assert!(pasted.get(), "and tells the page, which looks for an image or files to attach");
 }

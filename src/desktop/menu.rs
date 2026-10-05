@@ -147,9 +147,19 @@ pub fn deliver(ctx: &egui::Context) {
     for h in mine {
         match h {
             Held::Events(events) => ctx.input_mut(|i| i.events.extend(events)),
-            Held::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+            Held::Paste => {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new((PASTED, here)), true));
+                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+            }
         }
     }
+}
+
+const PASTED: &str = "menu:pasted";
+
+pub fn pasted(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new((PASTED, ctx.viewport_id()));
+    ctx.data_mut(|d| d.remove_temp::<bool>(id)).unwrap_or(false)
 }
 
 fn chord(key: Key, modifiers: Modifiers) -> Vec<Event> {

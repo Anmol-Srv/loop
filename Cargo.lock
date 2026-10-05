@@ -135,6 +135,7 @@ dependencies = [
 name = "acp-server"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "argon2",
  "axum",
  "base64 0.22.1",

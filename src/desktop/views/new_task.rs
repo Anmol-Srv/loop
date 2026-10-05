@@ -3,7 +3,7 @@
 //! with one it lands in that project's first phase.
 
 use egui::{Key, Modifiers};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::board::str_at;
 use super::projects::{label_picker, person_option, DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES};
@@ -15,6 +15,7 @@ use crate::desktop::App;
 const KEY: &str = "newtask:create";
 /// A label typed into the picker; its reply joins the draft's set.
 const LABEL_KEY: &str = "newtask:label";
+const FILE_KEY: &str = "newtask:file";
 
 pub struct Draft {
     title: String,
@@ -28,12 +29,18 @@ pub struct Draft {
     /// Focus goes to the title once, on the first frame.
     focused: bool,
     sent: bool,
+    files: Vec<Value>,
+    swallow_paste: bool,
 }
 
 /// The open dialog, if there is one. Lives in `board::State`, beside the
 /// other task actions.
 #[derive(Default)]
-pub struct State(Option<Draft>);
+pub struct State {
+    draft: Option<Draft>,
+    pending: Vec<(String, Value)>,
+    uploading: Option<String>,
+}
 
 /// Open it fresh, assigned to the viewer. Nothing for a read-only viewer: the
 /// server would refuse what the form sends.
@@ -42,7 +49,7 @@ pub fn open(app: &mut App) {
         return;
     }
     let me = app.net.as_ref().and_then(|n| n.data("__me")).map(|m| str_at(m, "personId").to_owned());
-    app.board.new_task.0 = Some(Draft {
+    app.board.new_task.draft = Some(Draft {
         title: String::new(),
         body: String::new(),
         assignee: me.filter(|m| !m.is_empty()),
@@ -52,12 +59,14 @@ pub fn open(app: &mut App) {
         labels: Vec::new(),
         focused: false,
         sent: false,
+        files: Vec::new(),
+        swallow_paste: false,
     });
 }
 
 /// `C` with nothing focused and nothing else open: what Linear does.
 pub fn shortcut(app: &mut App, ctx: &egui::Context) {
-    if app.board.new_task.0.is_some() || app.palette.open {
+    if app.board.new_task.draft.is_some() || app.palette.open {
         return;
     }
     let free = !ctx.egui_wants_keyboard_input() && ctx.memory(|m| m.top_modal_layer().is_none());
@@ -66,10 +75,38 @@ pub fn shortcut(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+pub fn intake(app: &mut App, ctx: &egui::Context) {
+    let Some(d) = app.board.new_task.draft.as_mut() else { return };
+    d.files.extend(super::task::pasted_files(ctx, &mut d.swallow_paste));
+    d.files.extend(super::task::dropped_files(ctx));
+}
+
+fn settle_uploads(ctx: &egui::Context, net: &mut crate::desktop::net::Net, s: &mut State) {
+    if let Some(name) = s.uploading.clone() {
+        if net.is_loading(FILE_KEY) {
+            return;
+        }
+        if let Some(Err(e)) = net.peek(FILE_KEY) {
+            w::toast(ctx, format!("Could not attach {name}: {e}"), true);
+        }
+        s.uploading = None;
+        net.invalidate(FILE_KEY);
+        net.invalidate_prefix("task:");
+    }
+    if s.pending.is_empty() {
+        return;
+    }
+    let (task, body) = s.pending.remove(0);
+    s.uploading = Some(str_at(&body, "name").to_owned());
+    net.post(FILE_KEY, &format!("/api/user/tasks/{task}/files"), body);
+}
+
 /// The dialog, once a frame from the shell so it sits over whichever page.
 pub fn ui(app: &mut App, ctx: &egui::Context) {
-    let Some(d) = app.board.new_task.0.as_mut() else { return };
     let net = app.net.as_mut().expect("chrome runs signed in");
+    let state = &mut app.board.new_task;
+    settle_uploads(ctx, net, state);
+    let Some(d) = state.draft.as_mut() else { return };
     net.get_once(PEOPLE_KEY, "/api/user/people");
     super::triage::want_projects(net);
     net.get_once(LABELS_KEY, "/api/user/labels");
@@ -88,15 +125,23 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
     // The reply to a create sent on an earlier frame.
     if d.sent && !net.is_loading(KEY) {
         d.sent = false;
-        if let Some(Ok(_)) = net.peek(KEY) {
-            w::toast(ctx, format!("Created \u{201c}{}\u{201d}.", d.title.trim()), false);
+        if let Some(Ok(task)) = net.peek(KEY) {
+            let id = str_at(task, "id").to_owned();
+            let held = d.files.len();
+            let attaching = match held {
+                0 => String::new(),
+                1 => "; attaching 1 file".to_owned(),
+                n => format!("; attaching {n} files"),
+            };
+            w::toast(ctx, format!("Created \u{201c}{}\u{201d}{attaching}.", d.title.trim()), false);
+            state.pending.extend(d.files.drain(..).map(|f| (id.clone(), f)));
             net.invalidate(KEY);
             net.invalidate_prefix("home");
             net.invalidate_prefix("mytasks");
             net.invalidate_prefix("board:");
             net.invalidate_prefix("palette:");
             net.invalidate(super::chrome::COUNTS);
-            app.board.new_task.0 = None;
+            state.draft = None;
             return;
         }
     }
@@ -120,6 +165,32 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
         }
         ui.add_space(space::MD);
         w::field_multiline(ui, "Description", &mut d.body, 3, "Add detail, links, acceptance\u{2026}");
+        if !d.files.is_empty() {
+            ui.add_space(space::SM);
+            let mut remove = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(space::MD, space::XS);
+                for (i, f) in d.files.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        let icon = if str_at(f, "mime").starts_with("image/") {
+                            egui_phosphor::regular::IMAGE
+                        } else {
+                            egui_phosphor::regular::FILE_TEXT
+                        };
+                        ui.label(egui::RichText::new(icon).size(text::SMALL).color(colour::TEXT_MUTED()));
+                        ui.label(egui::RichText::new(str_at(f, "name")).size(text::SMALL).color(colour::TEXT_2()));
+                        if !busy && super::task::remove_x(ui).clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+            });
+            w::caption(ui, "Attached once the task is created.");
+            if let Some(i) = remove {
+                d.files.remove(i);
+            }
+        }
         ui.add_space(space::MD);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
@@ -164,7 +235,7 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
         net.post(KEY, "/api/user/tasks", body);
         d.sent = true;
     } else if (close || modal.should_close()) && !busy {
-        app.board.new_task.0 = None;
+        state.draft = None;
     }
 }
 

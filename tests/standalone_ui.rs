@@ -202,6 +202,49 @@ fn new_task_from_my_tasks_creates_and_closes() {
     assert!(p.has("Created \u{201c}Rotate the webhook secret\u{201d}."));
 }
 
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn files_given_to_the_form_wait_for_the_task_then_upload() {
+    let shot = std::env::temp_dir().join("loop-new-task-shot.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([40, 90, 200, 255])).save(&shot).unwrap();
+    let f = base();
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1000.0), false);
+    p.button("New task");
+    p.type_title("Checkout totals look wrong");
+    p.harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot.clone())));
+    p.steps(3);
+    assert!(p.has("loop-new-task-shot.png"), "held in the form, by name");
+    assert!(p.has("Attached once the task is created."));
+
+    p.harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot.clone())));
+    p.steps(3);
+    assert_eq!(p.harness.query_all_by_label("loop-new-task-shot.png").count(), 2);
+    p.harness.get_all_by_label("Remove").next().unwrap().click();
+    p.steps(3);
+    assert_eq!(p.harness.query_all_by_label("loop-new-task-shot.png").count(), 1, "one can be taken back out");
+
+    let uploading = |p: &Page<'_>| p.app.borrow().as_ref().unwrap().net.as_ref().unwrap().is_loading("newtask:file");
+    p.button("Create task");
+    assert!(!uploading(&p), "nothing to attach to until the task exists");
+    p.seed("newtask:create", json!({"id": "new", "title": "Checkout totals look wrong"}));
+    p.steps(3);
+    assert!(!p.dialog_open());
+    assert!(p.has("Created \u{201c}Checkout totals look wrong\u{201d}; attaching 1 file."));
+    assert!(uploading(&p), "then it goes up, to the new task");
+}
+
 #[test]
 fn escape_closes_and_cmd_enter_submits() {
     let f = base();

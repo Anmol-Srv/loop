@@ -243,6 +243,7 @@ struct Local {
     resource_error: Option<String>,
     /// Files picked or dropped, waiting to go up one at a time.
     uploads: Vec<Value>,
+    swallow_paste: bool,
     /// The name of the file going up now.
     uploading: Option<String>,
     /// The agent action in flight — its past tense, for the notice.
@@ -276,6 +277,7 @@ impl Local {
             removing: false,
             resource_error: None,
             uploads: Vec::new(),
+            swallow_paste: false,
             uploading: None,
             agent_busy: None,
             pick: None,
@@ -315,6 +317,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let me = me_str(app, "personId");
     let admin = me_str(app, "role") == "admin";
     let can_write = app.can_write();
+    if can_write {
+        local.uploads.extend(pasted_files(ui.ctx(), &mut local.swallow_paste));
+    }
 
     local.archiving = app.board.tasks.busy();
     local.deciding = app.board.tasks.deciding.as_deref() == Some(task_id);
@@ -1821,7 +1826,7 @@ fn resources(
     }
     settle_upload(ui.ctx(), net, task_id, local);
     if can_write {
-        take_dropped(ui.ctx(), local);
+        local.uploads.extend(dropped_files(ui.ctx()));
     }
 
     let rows = net.shared(ARTIFACTS_KEY);
@@ -1852,7 +1857,7 @@ fn resources(
             .add_filter("Screenshots, PDFs and docs", &["png", "jpg", "jpeg", "gif", "webp", "pdf", "md", "markdown", "txt"])
             .pick_files()
         {
-            queue_paths(ui.ctx(), local, &paths);
+            local.uploads.extend(upload_bodies(ui.ctx(), &paths));
         }
     }
     prompt_panel(ui, net, task_id, local);
@@ -1978,7 +1983,7 @@ const TILE_H: f32 = 52.0;
 const REMOVE_W: f32 = 28.0;
 
 /// A tile's remove control: a small ×, named for screen readers and on hover.
-fn remove_x(ui: &mut egui::Ui) -> egui::Response {
+pub(super) fn remove_x(ui: &mut egui::Ui) -> egui::Response {
     let r = ui.add(
         egui::Button::new(RichText::new(egui_phosphor::regular::X).size(text::SMALL).color(colour::TEXT_MUTED()))
             .frame(false)
@@ -2199,8 +2204,8 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
 
 /// Read picked or dropped files into the upload queue, refusing what the
 /// server would refuse anyway with a sentence now rather than a 415 later.
-fn queue_paths(ctx: &egui::Context, local: &mut Local, paths: &[std::path::PathBuf]) {
-    use base64::Engine;
+pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -> Vec<Value> {
+    let mut out = Vec::new();
     for path in paths {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_owned();
         let Some(mime) = mime_of(path) else {
@@ -2208,25 +2213,68 @@ fn queue_paths(ctx: &egui::Context, local: &mut Local, paths: &[std::path::PathB
             continue;
         };
         match std::fs::read(path) {
-            Ok(bytes) if bytes.len() > 8 * 1024 * 1024 => {
-                w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
-            }
-            Ok(bytes) => local.uploads.push(json!({
-                "name": name,
-                "mime": mime,
-                "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
-            })),
+            Ok(bytes) => out.extend(upload_body(ctx, name, mime, &bytes)),
             Err(e) => w::toast(ctx, format!("Could not read {name}: {e}"), true),
         }
     }
+    out
 }
 
-/// Files dropped on the window while this task is open join the queue.
-fn take_dropped(ctx: &egui::Context, local: &mut Local) {
-    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-    if !dropped.is_empty() {
-        queue_paths(ctx, local, &dropped);
+fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8]) -> Option<Value> {
+    use base64::Engine;
+    if bytes.len() > 8 * 1024 * 1024 {
+        w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
+        return None;
     }
+    Some(json!({
+        "name": name,
+        "mime": mime,
+        "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    }))
+}
+
+pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Value> {
+    let pasted_text = |e: &egui::Event| matches!(e, egui::Event::Paste(_));
+    if std::mem::take(swallow) {
+        ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
+    }
+    let asked = crate::desktop::menu::pasted(ctx) || ctx.input(|i| i.events.iter().any(pasted_text));
+    if !asked {
+        return Vec::new();
+    }
+    let Ok(mut clip) = arboard::Clipboard::new() else { return Vec::new() };
+    let files = clip.get().file_list().unwrap_or_default();
+    let found = if !files.is_empty() {
+        upload_bodies(ctx, &files)
+    } else if let Ok(image) = clip.get_image() {
+        let name = format!("Pasted image {}.png", chrono::Local::now().format("%H.%M.%S"));
+        match png(&image) {
+            Ok(bytes) => upload_body(ctx, name, "image/png", &bytes).into_iter().collect(),
+            Err(e) => {
+                w::toast(ctx, format!("Could not paste the image: {e}"), true);
+                Vec::new()
+            }
+        }
+    } else {
+        return Vec::new();
+    };
+    *swallow = true;
+    ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
+    found
+}
+
+fn png(image: &arboard::ImageData<'_>) -> Result<Vec<u8>, String> {
+    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.to_vec())
+        .ok_or("the clipboard image is malformed")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
+pub(super) fn dropped_files(ctx: &egui::Context) -> Vec<Value> {
+    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+    ctx.input_mut(|i| i.raw.dropped_files.clear());
+    upload_bodies(ctx, &dropped)
 }
 
 const UPLOAD_KEY: &str = "task:upload";
@@ -2476,7 +2524,7 @@ pub(super) fn day_label(raw: &str) -> String {
 
 #[cfg(test)]
 mod link_label_tests {
-    use super::link_label;
+    use super::{link_label, png};
 
     #[test]
     fn names_commits_and_prs() {
@@ -2491,4 +2539,13 @@ mod link_label_tests {
         assert_eq!(link_label("https://figma.com/design/abc"), None);
     }
 
+    #[test]
+    fn a_clipboard_image_becomes_a_png() {
+        let image = arboard::ImageData { width: 2, height: 1, bytes: vec![255, 0, 0, 255, 0, 0, 255, 255].into() };
+        let decoded = image::load_from_memory(&png(&image).unwrap()).unwrap().to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (2, 1));
+        assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
+        let short = arboard::ImageData { width: 4, height: 4, bytes: vec![0; 3].into() };
+        assert!(png(&short).is_err());
+    }
 }

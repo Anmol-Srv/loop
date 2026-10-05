@@ -27,6 +27,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     views::new_task::shortcut(app, ui.ctx());
+    views::new_task::intake(app, ui.ctx());
 
     // The counts ride on every tab, so they are their own small fetch rather
     // than a read of Home's payload, which every other tab would then wait on.
