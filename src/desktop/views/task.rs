@@ -182,9 +182,6 @@ const EXPECTS_URL: &str = "Needs a URL starting http:// or https://.";
 /// It is a panel and not a modal because the thing it asks about — "did you
 /// open a PR?" — is answered by looking at the page behind it.
 struct Prompt {
-    /// The status to move to once the evidence lands. `None` when the panel
-    /// was opened by "+ Add" and no move is waiting on it.
-    then: Option<&'static str>,
     /// The kinds this panel will accept. The first is the default, so it is
     /// the picker's resting label rather than one of its options.
     kinds: Vec<Kind>,
@@ -193,20 +190,15 @@ struct Prompt {
     /// The first field: a URL for most kinds, a hash for a commit.
     value: String,
     title: String,
-    /// Set once "or mark it done manually" is taken: the panel swaps the link
-    /// form for this one reason. `None` while the link form is showing.
-    reason: Option<String>,
 }
 
 impl Prompt {
-    fn new(then: Option<&'static str>, kinds: Vec<Kind>) -> Self {
+    fn new(kinds: Vec<Kind>) -> Self {
         Self {
-            then,
             kinds,
             kind: None,
             value: String::new(),
             title: String::new(),
-            reason: None,
         }
     }
 
@@ -229,10 +221,6 @@ struct Local {
     /// The agent session's drafts and its step log.
     session: session::State,
     patching: bool,
-    /// The status the page showed when the move was asked for. Sent as
-    /// `expectedStatus`, so a move made from a stale page is refused rather
-    /// than undoing a teammate's.
-    move_from: String,
     /// The last move's outcome: the message, and whether it failed. A failure
     /// is the server's own sentence — it is the only thing that explains a 403.
     notice: Option<(String, bool)>,
@@ -253,6 +241,10 @@ struct Local {
     /// A failed remove, shown over the list it failed in rather than up by
     /// the title where the move notices live.
     resource_error: Option<String>,
+    /// Files picked or dropped, waiting to go up one at a time.
+    uploads: Vec<Value>,
+    /// The name of the file going up now.
+    uploading: Option<String>,
     /// The agent action in flight — its past tense, for the notice.
     agent_busy: Option<String>,
     /// A pick from the title's menu, acted on once the page is drawn.
@@ -277,7 +269,6 @@ impl Local {
             task_id,
             session: session::State::default(),
             patching: false,
-            move_from: String::new(),
             notice: None,
             prompt: None,
             attaching: false,
@@ -289,6 +280,8 @@ impl Local {
             confirm_remove: None,
             removing: false,
             resource_error: None,
+            uploads: Vec::new(),
+            uploading: None,
             agent_busy: None,
             pick: None,
             archiving: false,
@@ -421,26 +414,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let mine = !me.is_empty() && str_of(&task, "assigneePersonId") == Some(me.as_str());
     let track = Track::of(str_of(&task, "discipline"));
     let can_act = admin || mine;
-    // Nothing leaves triage but Accept and Dismiss, which the title carries.
-    let moves = if status == "triage" {
-        Vec::new()
-    } else {
-        legal_moves(net.data(TRACKS_KEY), track, &status)
-    };
+    let moves = legal_moves(net.data(TRACKS_KEY), track, &status);
     let updated_at = str_of(&task, "updatedAt").map(str::to_owned);
-    // Read out of the cache before the closures borrow `net` mutably: the whole
-    // question the gate asks of the list is "is the required kind already here?".
-    let held: Vec<String> = net
-        .data(ARTIFACTS_KEY)
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|r| str_of(r, "kind"))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Fold in the reply to a move started on an earlier frame. Done here, where
     // `net` is still free, so neither column has to own it.
     settle_move(net, local);
@@ -552,7 +527,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         |ui, part| match part {
             shell::Part::Header => {
                 editing = headline(
-                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write, &held,
+                    ui, net, task_id, &task, &status, track, &moves, can_act, can_write,
                     &handoff, &viewer, delegate, local,
                 );
             }
@@ -562,6 +537,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 }
                 manual_reason(ui, &task);
                 super::triage::source_card(ui, net, &task);
+                resources(ui, net, task_id, &task, &me, admin, can_write, local);
 
                 if let Some(d) = delegate {
                     // The header's agent pill asked to jump here.
@@ -578,7 +554,6 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                             .as_deref()
                             .and_then(Value::as_array)
                             .map_or(&[], Vec::as_slice),
-                        notes_loaded: notes.is_some() || net.error(NOTES_KEY).is_some(),
                         evidence: evidence
                             .as_deref()
                             .and_then(Value::as_array)
@@ -600,10 +575,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 }
 
                 shell::divider(ui);
-                resources(ui, net, track, can_write, local);
-
-                shell::divider(ui);
-                notes(ui, net, task_id, delegate.is_some(), local);
+                activity(ui, net, task_id, &task, delegate, private, local);
             }
         },
         |ui| {
@@ -639,7 +611,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     match from_rail {
         Some(Ask::Move(next)) => {
             local.notice = None;
-            start_move(net, task_id, &status, next, track, &held, local);
+            start_move(net, task_id, &status, next, local);
         }
         Some(Ask::NewLabel(body)) => net.post(NEW_LABEL_KEY, "/api/user/labels", body),
         Some(Ask::Details(mut body)) => {
@@ -727,7 +699,6 @@ fn headline(
     moves: &[&'static str],
     can_act: bool,
     can_write: bool,
-    held: &[String],
     handoff: &Handoff,
     viewer: &Viewer,
     delegate: Option<&Value>,
@@ -913,7 +884,7 @@ fn headline(
 
     if let Some(next) = go {
         local.notice = None;
-        start_move(net, task_id, status, next, track, held, local);
+        start_move(net, task_id, status, next, local);
     }
     if let Some(category) = recategorise {
         let mut body = json!({ "category": category });
@@ -933,7 +904,6 @@ fn headline(
         );
     }
 
-    prompt_panel(ui, net, task_id, local);
 
     if super::board::archived(task) {
         ui.add_space(space::MD);
@@ -1793,9 +1763,11 @@ impl Track {
             Track::Design => &[
                 "open",
                 "in_progress",
-                "blocked",
-                "handoff",
+                "research",
                 "completed",
+                "handoff",
+                "shipped",
+                "blocked",
                 "dropped",
             ],
         }
@@ -1817,14 +1789,6 @@ impl Track {
         }
     }
 
-    /// The artifact kinds that count as evidence on this track, in the order
-    /// the picker should offer them.
-    fn evidence(self) -> &'static [Kind] {
-        match self {
-            Track::Eng => &[Kind::Pr, Kind::Commit],
-            Track::Design => &[Kind::Figma],
-        }
-    }
 }
 
 /// Where a task on `track` may go from `status`, from `GET /api/user/tracks` —
@@ -1849,28 +1813,18 @@ fn legal_moves(table: Option<&Value>, track: Track, status: &str) -> Vec<&'stati
 /// The single next step from here, or nothing when the state is terminal.
 ///
 /// Anything else a task could do is in the rail's dropdown; this is only the
-/// move you almost always came to the page to make. Design's `completed` is
-/// the end of design's road, so it gets no button — the dropdown is where a
-/// reopen lives.
+/// move you almost always came to the page to make. Both tracks end at
+/// shipped, so it gets no button — the dropdown is where a reopen lives.
 fn primary_move(track: Track, status: &str) -> Option<(&'static str, &'static str)> {
     Some(match (track, status) {
         (_, "open") => ("Start", "in_progress"),
-        (Track::Eng, "in_progress") => ("Complete", "completed"),
-        (Track::Design, "in_progress") => ("Hand off", "handoff"),
-        (Track::Eng, "completed") => ("Ship", "shipped"),
-        (_, "handoff") => ("Complete", "completed"),
+        (_, "in_progress") | (_, "research") => ("Complete", "completed"),
+        (Track::Eng, "completed") => ("Mark shipped", "shipped"),
+        (Track::Design, "completed") => ("Hand off", "handoff"),
+        (_, "handoff") => ("Mark shipped", "shipped"),
         (_, "blocked") => ("Resume", "in_progress"),
         _ => return None,
     })
-}
-
-/// The one move on each track the server will not let you make on your word
-/// alone. Everything else is a state change; this is a claim about the world.
-fn needs_evidence(track: Track, next: &str) -> bool {
-    matches!(
-        (track, next),
-        (Track::Eng, "completed") | (Track::Design, "handoff")
-    )
 }
 
 /// Shipping is the exception to "only the assignee moves it": whoever put the
@@ -1890,25 +1844,6 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
-/// One hue per kind, so a list of five resources is scannable rather than read.
-fn kind_tone(kind: &str) -> c::Tone {
-    match kind {
-        "pr" => c::Tone::Info,
-        "commit" => c::Tone::Ok,
-        "figma" => c::Tone::Agent,
-        _ => c::Tone::Quiet,
-    }
-}
-
-/// What the two buttons in the prompt say. Copy follows the move it is
-/// standing in for, so nobody has to translate "attach" into "hand off".
-fn prompt_verbs(then: Option<&str>) -> (&'static str, &'static str) {
-    match then {
-        Some("handoff") => ("Attach and hand off", "Hand off without a link"),
-        Some(_) => ("Attach and complete", "Complete without a link"),
-        None => ("Attach", ""),
-    }
-}
 
 /// Fold in the reply to a move we started earlier.
 fn settle_move(net: &mut crate::desktop::net::Net, local: &mut Local) {
@@ -1938,31 +1873,10 @@ fn settle_move(net: &mut crate::desktop::net::Net, local: &mut Local) {
     invalidate_after_move(net);
 }
 
-/// Ask for a state change, or ask for the evidence it depends on first.
-///
-/// The gate is a missing *fact*, not a missing permission: if the PR is already
-/// attached, the move is just a move.
-fn start_move(
-    net: &mut crate::desktop::net::Net,
-    task_id: &str,
-    from: &str,
-    next: &'static str,
-    track: Track,
-    held: &[String],
-    local: &mut Local,
-) {
-    local.move_from = from.to_owned();
-    if needs_evidence(track, next)
-        && !track
-            .evidence()
-            .iter()
-            .any(|k| held.iter().any(|h| h == k.api()))
-    {
-        local.prompt = Some(Prompt::new(Some(next), track.evidence().to_vec()));
-    } else {
-        patch_status(net, task_id, from, next, None);
-        local.patching = true;
-    }
+/// Move it. A person may put a task in any state, with or without evidence.
+fn start_move(net: &mut crate::desktop::net::Net, task_id: &str, from: &str, next: &'static str, local: &mut Local) {
+    patch_status(net, task_id, from, next, None);
+    local.patching = true;
 }
 
 fn patch_status(
@@ -2072,16 +1986,9 @@ fn prompt_panel(
         match net.peek(ATTACH_KEY) {
             Some(Ok(_)) => {
                 local.attaching = false;
-                let then = local.prompt.as_ref().and_then(|p| p.then);
                 local.prompt = None;
                 net.invalidate(ARTIFACTS_KEY);
-                match then {
-                    Some(next) => {
-                        patch_status(net, task_id, &local.move_from, next, None);
-                        local.patching = true;
-                    }
-                    None => local.notice = Some(("Attached.".to_string(), false)),
-                }
+                local.notice = Some(("Attached.".to_string(), false));
             }
             Some(Err(e)) => {
                 local.notice = Some((e.to_string(), true));
@@ -2095,38 +2002,14 @@ fn prompt_panel(
     let Some(prompt) = local.prompt.as_mut() else {
         return;
     };
-    let (attach_verb, manual_verb) = prompt_verbs(prompt.then);
     let busy = local.attaching || local.patching;
 
     let mut post: Option<Value> = None;
-    let mut manual: Option<String> = None;
     let mut close = false;
 
     ui.add_space(space::MD);
     c::surface(ui, false, |ui| {
         ui.set_width(ui.available_width());
-
-        if let Some(reason) = prompt.reason.as_mut() {
-            w::field(
-                ui,
-                "Why it is done without a link",
-                reason,
-                false,
-                "Pairing, a verbal sign-off, a deploy someone else made\u{2026}",
-            );
-            ui.add_space(space::LG);
-            let ready = !reason.trim().is_empty() && !busy;
-            ui.horizontal(|ui| {
-                if w::primary(ui, manual_verb, ready).clicked() {
-                    manual = Some(reason.trim().to_owned());
-                }
-                ui.add_space(space::XS);
-                if w::ghost(ui, "Cancel").clicked() {
-                    close = true;
-                }
-            });
-            return;
-        }
 
         // The first kind is the picker's resting label rather than one of its
         // rows, so the form always has a kind and never a "pick one" state.
@@ -2163,7 +2046,7 @@ fn prompt_panel(
 
         let ready = !typed.is_empty() && !bad && !busy;
         ui.horizontal(|ui| {
-            if w::primary(ui, attach_verb, ready).clicked() {
+            if w::primary(ui, "Attach", ready).clicked() {
                 post = Some(json!({
                     "parentType": "task",
                     "parentId": task_id,
@@ -2175,14 +2058,6 @@ fn prompt_panel(
             ui.add_space(space::XS);
             if w::ghost(ui, "Cancel").clicked() {
                 close = true;
-            }
-            // Only offered where a move is waiting: with no move behind it,
-            // "done manually" is not a thing to be.
-            if prompt.then.is_some() {
-                ui.add_space(space::SM);
-                if w::link(ui, "or mark it done manually").clicked() {
-                    prompt.reason = Some(String::new());
-                }
             }
         });
     });
@@ -2196,25 +2071,22 @@ fn prompt_panel(
         net.post(ATTACH_KEY, "/api/user/artifacts", body);
         local.attaching = true;
     }
-    if let Some(reason) = manual {
-        let then = local.prompt.as_ref().and_then(|p| p.then);
-        local.prompt = None;
-        if let Some(next) = then {
-            patch_status(net, task_id, &local.move_from, next, Some(&reason));
-            local.patching = true;
-        }
-    }
 }
 
 // ------------------------------------------------------------------ evidence
 
-/// Everything hanging off this task: the PR that closed it, the Figma it came
-/// from, the doc that explains it. One list, because the question a reader has
-/// is "where is the work", not "what kind of link is it".
+/// Everything hanging off this task, near the top where it is looked for:
+/// links as tiles grouped by kind — code, design, docs — and the files people
+/// attached, screenshots as thumbnails and docs as tiles. Files can be picked
+/// or dropped anywhere on the page; they go to the agent with the task.
+#[allow(clippy::too_many_arguments)]
 fn resources(
     ui: &mut egui::Ui,
     net: &mut crate::desktop::net::Net,
-    track: Track,
+    task_id: &str,
+    task: &Value,
+    me: &str,
+    admin: bool,
     can_write: bool,
     local: &mut Local,
 ) {
@@ -2226,98 +2098,232 @@ fn resources(
         }
         local.removing = false;
         net.invalidate(ARTIFACTS_KEY);
+        net.invalidate(TASK_KEY);
+    }
+    settle_upload(ui.ctx(), net, task_id, local);
+    if can_write {
+        take_dropped(ui.ctx(), local);
     }
 
     let rows = net.shared(ARTIFACTS_KEY);
-    let rows: Option<&Vec<Value>> = rows.as_deref().and_then(Value::as_array);
+    let mut links: Vec<&Value> = rows.as_deref().and_then(Value::as_array).map(|r| r.iter().collect()).unwrap_or_default();
+    // Code, then design, then everything else; newest first within a kind.
+    links.sort_by_key(|r| KIND_ORDER.iter().position(|k| Some(*k) == str_of(r, "kind")).unwrap_or(KIND_ORDER.len()));
+    let files: &[Value] = task.get("files").and_then(Value::as_array).map_or(&[], Vec::as_slice);
+
     let mut add = false;
-    shell::section_count_with(ui, "Resources", rows.map_or(0, Vec::len), |ui| {
-        if w::ghost(ui, "+ Add").clicked() {
-            add = true;
+    let mut pick = false;
+    shell::section_count_with(ui, "Resources", links.len() + files.len(), |ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        if can_write {
+            if w::ghost(ui, "Upload").on_hover_text("Screenshots, PDFs or .md files \u{2014} or drop them on the page").clicked() {
+                pick = true;
+            }
+            if w::ghost(ui, "+ Link").clicked() {
+                add = true;
+            }
         }
     });
     if add {
-        // The track's own evidence leads, because that is what is usually being
-        // attached; the rest follow.
-        let mut kinds = track.evidence().to_vec();
-        for k in [Kind::Pr, Kind::Commit, Kind::Figma, Kind::Doc, Kind::Link] {
-            if !kinds.contains(&k) {
-                kinds.push(k);
-            }
-        }
-        local.prompt = Some(Prompt::new(None, kinds));
+        local.prompt = Some(Prompt::new(vec![Kind::Pr, Kind::Figma, Kind::Doc, Kind::Commit, Kind::Link]));
     }
+    if pick {
+        if let Some(paths) = rfd::FileDialog::new()
+            .set_title("Attach files")
+            .add_filter("Screenshots, PDFs and docs", &["png", "jpg", "jpeg", "gif", "webp", "pdf", "md", "markdown", "txt"])
+            .pick_files()
+        {
+            queue_paths(ui.ctx(), local, &paths);
+        }
+    }
+    prompt_panel(ui, net, task_id, local);
 
     if let Some(err) = &local.resource_error {
         w::error(ui, err);
+        ui.add_space(space::SM);
+    }
+    if let Some(n) = local.uploading.as_ref().map(|_| local.uploads.len() + 1) {
+        w::caption(ui, &format!("Uploading {}\u{2026}", plural(n as i64, "file")));
         ui.add_space(space::SM);
     }
     if let Some(err) = net.error(ARTIFACTS_KEY) {
         failed(ui, "Could not load resources", err);
         return;
     }
-    let Some(rows) = rows else {
+    if rows.is_none() {
         w::loading(ui, "Loading resources");
         return;
-    };
-    if rows.is_empty() {
-        w::empty(
+    }
+    if links.is_empty() && files.is_empty() {
+        let dragging = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
+        w::caption(
             ui,
-            "No resources yet \u{2014} PRs, docs and Figma files live here.",
-            "",
+            if dragging {
+                "Drop to attach."
+            } else {
+                "Nothing yet \u{2014} link the PR, Figma or doc, or drop screenshots and .md files here for the agent."
+            },
         );
         return;
     }
 
+    // ---- links, as tiles two to a row (one when the column is narrow)
     let mut remove: Option<String> = None;
-    w::card_list(ui, |ui| {
-        ui.set_width(ui.available_width());
-        for row in rows {
-            if let Some(id) = resource_row(ui, row, can_write, local) {
-                remove = Some(id);
-            }
+    if !links.is_empty() {
+        let width = ui.available_width().min(PROSE_W + 160.0);
+        let per_row = if width > 560.0 { 2 } else { 1 };
+        let tile_w = (width - space::SM * (per_row as f32 - 1.0)) / per_row as f32;
+        for chunk in links.chunks(per_row) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                for row in chunk {
+                    if let Some(id) = link_tile(ui, row, tile_w, can_write, local) {
+                        remove = Some(id);
+                    }
+                }
+            });
+            ui.add_space(space::SM);
         }
-    });
+    }
+
+    // ---- files people attached
+    let mut drop_file: Option<String> = None;
+    if !files.is_empty() {
+        if !links.is_empty() {
+            ui.add_space(space::XS);
+        }
+        let (images, docs): (Vec<&Value>, Vec<&Value>) =
+            files.iter().partition(|f| str_of(f, "mime").is_some_and(|m| m.starts_with("image/")));
+        let may_remove = |f: &Value| can_write && (admin || str_of(f, "addedById") == Some(me));
+        if !images.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
+                for f in &images {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = space::XXS;
+                        super::triage::thumbnail(ui, net, f);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::XS;
+                            faint(ui, &file_caption(f));
+                            if may_remove(f) && w::link(ui, "Remove").clicked() {
+                                drop_file = str_of(f, "id").map(str::to_owned);
+                            }
+                        });
+                    });
+                }
+            });
+            ui.add_space(space::SM);
+        }
+        for f in &docs {
+            if let Some(id) = doc_tile(ui, net, f, may_remove(f)) {
+                drop_file = Some(id);
+            }
+            ui.add_space(space::XS);
+        }
+    }
+    super::triage::lightbox(ui.ctx(), net);
+    super::triage::open_pending(ui.ctx(), net);
+    doc_viewer(ui.ctx(), net);
+
     if let Some(id) = remove {
         local.confirm_remove = None;
         local.resource_error = None;
         net.invalidate(REMOVE_KEY);
-        net.send(
-            REMOVE_KEY,
-            reqwest::Method::DELETE,
-            &format!("/api/user/artifacts/{id}"),
-            Value::Null,
-        );
+        net.send(REMOVE_KEY, reqwest::Method::DELETE, &format!("/api/user/artifacts/{id}"), Value::Null);
+        local.removing = true;
+    }
+    if let Some(id) = drop_file {
+        local.resource_error = None;
+        net.invalidate(REMOVE_KEY);
+        net.send(REMOVE_KEY, reqwest::Method::DELETE, &format!("/api/user/files/{id}"), Value::Null);
         local.removing = true;
     }
 }
 
-/// One resource: kind, what it is, where it goes. Returns the id to remove
+/// The order links read in: code first, then design, then the rest.
+const KIND_ORDER: [&str; 5] = ["pr", "commit", "figma", "doc", "link"];
+
+/// "Added by Anmol · 2 days ago" under a thumbnail.
+fn file_caption(f: &Value) -> String {
+    let mut words = str_of(f, "addedBy").map(|n| n.split_whitespace().next().unwrap_or(n).to_owned()).unwrap_or_default();
+    if let Some(at) = str_of(f, "createdAt") {
+        if !words.is_empty() {
+            words.push_str(" \u{00B7} ");
+        }
+        words.push_str(&ago(at));
+    }
+    words
+}
+
+const TILE_H: f32 = 52.0;
+const REMOVE_W: f32 = 28.0;
+
+/// A tile's remove control: a small ×, named for screen readers and on hover.
+fn remove_x(ui: &mut egui::Ui) -> egui::Response {
+    let r = ui.add(
+        egui::Button::new(RichText::new(egui_phosphor::regular::X).size(text::SMALL).color(colour::TEXT_MUTED()))
+            .frame(false)
+            .min_size(egui::Vec2::splat(REMOVE_W - space::XS)),
+    );
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Remove"));
+    r.on_hover_text("Remove")
+}
+
+/// One link as a tile: its kind's mark in a tinted well, the name, and under
+/// it the kind, where it goes and who added it. The whole tile opens it; a
+/// commit has nowhere to go, so its tile is still. Returns the id to remove
 /// once "Remove" has been confirmed.
-///
-/// The whole row opens the link, because a title-sized hit target on a
-/// full-width row made the rest of the row look dead. A commit is a hash with
-/// nowhere to open, so its row is not clickable and its hash stays mono.
-fn resource_row(
-    ui: &mut egui::Ui,
-    row: &Value,
-    can_write: bool,
-    local: &mut Local,
-) -> Option<String> {
+fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local: &mut Local) -> Option<String> {
     let id = str_of(row, "id").unwrap_or_default().to_owned();
     let kind = str_of(row, "kind").unwrap_or("link");
     let url = str_of(row, "url").unwrap_or_default();
-    let title = str_of(row, "title")
-        .map(str::trim)
-        .filter(|t| !t.is_empty());
+    let title = str_of(row, "title").map(str::trim).filter(|t| !t.is_empty());
+    let place = if kind == "commit" {
+        link_label(url).unwrap_or_else(|| url.chars().take(7).collect())
+    } else {
+        link_label(url).unwrap_or_else(|| host_path(url).to_owned())
+    };
+    let name = title.map(str::to_owned).unwrap_or_else(|| place.clone());
+    let opens = kind != "commit" && !url.is_empty();
     let confirming = local.confirm_remove.as_deref() == Some(id.as_str());
-    let mut removed = None;
+    let removable = can_write && row["canRemove"].as_bool() == Some(true);
 
-    let mut body = |ui: &mut egui::Ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // The right edge first, so what it takes is known before the
-            // title and address are cut to fit what is left.
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(width, TILE_H),
+        if opens { egui::Sense::click() } else { egui::Sense::hover() },
+    );
+    let response = if opens { motion::operable(ui, response, radius::MD as f32) } else { response };
+    let hot = opens && (response.hovered() || response.has_focus());
+    let ink = kind_ink(kind);
+    let p = ui.painter().clone();
+    p.rect_filled(rect, radius::MD as f32, if hot { colour::SURFACE_HOVER() } else { colour::SURFACE() });
+    p.rect_stroke(
+        rect,
+        radius::MD as f32,
+        egui::Stroke::new(1.0, if hot { colour::LINE_STRONG() } else { colour::LINE() }),
+        egui::StrokeKind::Inside,
+    );
+    let well = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + space::MD + 16.0, rect.center().y),
+        egui::Vec2::splat(32.0),
+    );
+    p.rect_filled(well, radius::SM as f32, ink.gamma_multiply(0.14));
+    crate::desktop::design::glyph::evidence(&p, well.center(), 18.0, kind, ink);
+
+    // The right edge: Remove (or its confirmation) sits over the tile, so a
+    // click on it is its own and not the tile's.
+    let mut removed = None;
+    let right_w = if confirming { 150.0 } else if removable { REMOVE_W } else { 0.0 };
+    if right_w > 0.0 {
+        let slot = egui::Rect::from_min_max(
+            egui::pos2(rect.right() - right_w - space::SM, rect.top()),
+            egui::pos2(rect.right() - space::SM, rect.bottom()),
+        );
+        // A child, not a scope: it must not move the row's cursor, or the
+        // next tile in the row starts short.
+        let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(slot).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        {
+            ui.spacing_mut().item_spacing.x = space::XS;
             if confirming {
                 if w::danger(ui, "Remove", !local.removing).clicked() {
                     removed = Some(id.clone());
@@ -2325,73 +2331,218 @@ fn resource_row(
                 if w::ghost(ui, "Keep").clicked() {
                     local.confirm_remove = None;
                 }
-                faint(ui, "Remove this link?");
-            } else {
-                // Always drawn, never hover-only: a control that appears
-                // under the pointer is one the keyboard can never reach, and
-                // the project page's resources show it the same way. Only
-                // whoever added it may remove it; the server says who that is.
-                if can_write
-                    && row["canRemove"].as_bool() == Some(true)
-                    && w::ghost(ui, "Remove").clicked()
-                {
-                    local.confirm_remove = Some(id.clone());
-                }
-                if let Some(who) = super::board::added_by(row) {
-                    faint(ui, &who);
-                }
+            } else if remove_x(ui).clicked() {
+                local.confirm_remove = Some(id.clone());
             }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                c::chip(ui, kind_label(kind), kind_tone(kind), false);
-                if kind == "commit" {
-                    // "mycohort-api · 6f54d7d", not the whole address: the
-                    // raw URL ran under the right-hand side of the row.
-                    let short = link_label(url).unwrap_or_else(|| host_path(url).to_owned());
-                    let fitted = elide(ui, &short, ui.available_width());
-                    ui.label(RichText::new(fitted).size(text::SMALL).monospace().color(colour::TEXT()));
-                    if let Some(title) = title {
-                        let fitted = elide(ui, title, ui.available_width());
-                        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED()));
-                    }
-                    return;
-                }
-                let short = link_label(url);
-                let place = short.as_deref().unwrap_or_else(|| host_path(url));
-                let name = elide(ui, title.unwrap_or(place), ui.available_width());
-                ui.label(RichText::new(name).size(text::SMALL).color(colour::TEXT()));
-                // An untitled link already shows its address as its name.
-                if title.is_some() {
-                    let fitted = elide(ui, place, ui.available_width());
-                    ui.label(
-                        RichText::new(fitted)
-                            .size(text::SMALL)
-                            .color(colour::TEXT_MUTED()),
-                    );
-                }
-            });
-        });
-    };
-
-    if kind == "commit" || url.is_empty() {
-        let w = ui.available_width();
-        ui.allocate_ui_with_layout(
-            egui::vec2(w, size::ROW),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.set_min_size(egui::vec2(w, size::ROW));
-                ui.add_space(space::SM);
-                body(ui);
-            },
-        );
-    } else {
-        // Remove sits on top of the row, so a click on it lands on it and not
-        // on the row: egui gives the later widget the pointer.
-        let response = w::row(ui, body).on_hover_text(url);
-        if response.clicked() && removed.is_none() && !confirming {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
+
+    let text_left = well.right() + space::MD;
+    let text_w = (rect.right() - right_w - space::MD - text_left).max(0.0);
+    let title_g = w::truncated(
+        ui,
+        &name,
+        egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+        colour::TEXT(),
+        text_w,
+    );
+    let mut sub = kind_label(kind).to_owned();
+    if title.is_some() {
+        sub += &format!(" \u{00B7} {place}");
+    }
+    if let Some(who) = super::board::added_by(row) {
+        sub += &format!(" \u{00B7} {who}");
+    }
+    let sub_g = w::truncated(ui, &sub, egui::FontId::proportional(text::CAPTION), colour::TEXT_MUTED(), text_w);
+    let total = title_g.size().y + space::XXS + sub_g.size().y;
+    let top = rect.center().y - total / 2.0;
+    p.galley(egui::pos2(text_left, top), title_g.clone(), colour::TEXT());
+    p.galley(egui::pos2(text_left, top + title_g.size().y + space::XXS), sub_g, colour::TEXT_MUTED());
+
+    let response = response.on_hover_text(if url.is_empty() { name.as_str() } else { url });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, opens, format!("{}: {name}", kind_label(kind))));
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if opens && response.clicked() && removed.is_none() && !confirming {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
     removed
+}
+
+/// A file that is not an image — a markdown doc, a PDF — as a tile. A doc
+/// opens in the app, read as markdown; anything else opens with the Mac's
+/// own viewer. Returns the id to remove when Remove is clicked.
+fn doc_tile(ui: &mut egui::Ui, net: &mut crate::desktop::net::Net, f: &Value, may_remove: bool) -> Option<String> {
+    let id = str_of(f, "id").unwrap_or_default().to_owned();
+    let name = str_of(f, "name").unwrap_or("file");
+    let mime = str_of(f, "mime").unwrap_or_default();
+    let readable = mime.starts_with("text/");
+    let width = ui.available_width().min(PROSE_W + 160.0);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, TILE_H), egui::Sense::click());
+    let response = motion::operable(ui, response, radius::MD as f32);
+    let hot = response.hovered() || response.has_focus();
+    let p = ui.painter().clone();
+    p.rect_filled(rect, radius::MD as f32, if hot { colour::SURFACE_HOVER() } else { colour::SURFACE() });
+    p.rect_stroke(rect, radius::MD as f32, egui::Stroke::new(1.0, if hot { colour::LINE_STRONG() } else { colour::LINE() }), egui::StrokeKind::Inside);
+    let well = egui::Rect::from_center_size(egui::pos2(rect.left() + space::MD + 16.0, rect.center().y), egui::Vec2::splat(32.0));
+    p.rect_filled(well, radius::SM as f32, colour::TEXT_MUTED().gamma_multiply(0.14));
+    crate::desktop::design::glyph::evidence(&p, well.center(), 18.0, "doc", colour::TEXT_2());
+
+    let mut removed = None;
+    let right_w = if may_remove { REMOVE_W } else { 0.0 };
+    if may_remove {
+        let slot = egui::Rect::from_min_max(egui::pos2(rect.right() - right_w - space::SM, rect.top()), egui::pos2(rect.right() - space::SM, rect.bottom()));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(slot).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        if remove_x(&mut child).clicked() {
+            removed = Some(id.clone());
+        }
+    }
+    let text_left = well.right() + space::MD;
+    let text_w = (rect.right() - right_w - space::MD - text_left).max(0.0);
+    let title_g = w::truncated(ui, name, egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())), colour::TEXT(), text_w);
+    let mut sub = if mime == "text/markdown" { "Markdown".to_owned() } else if mime == "application/pdf" { "PDF".to_owned() } else { "Text".to_owned() };
+    if let Some(size) = f.get("size").and_then(Value::as_i64) {
+        sub += &format!(" \u{00B7} {}", super::triage::file_size(size));
+    }
+    let caption = file_caption(f);
+    if !caption.is_empty() {
+        sub += &format!(" \u{00B7} {caption}");
+    }
+    let sub_g = w::truncated(ui, &sub, egui::FontId::proportional(text::CAPTION), colour::TEXT_MUTED(), text_w);
+    let total = title_g.size().y + space::XXS + sub_g.size().y;
+    let top = rect.center().y - total / 2.0;
+    p.galley(egui::pos2(text_left, top), title_g.clone(), colour::TEXT());
+    p.galley(egui::pos2(text_left, top + title_g.size().y + space::XXS), sub_g, colour::TEXT_MUTED());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open {name}")));
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() && removed.is_none() && !id.is_empty() {
+        super::triage::want(net, &id);
+        let key = if readable { DOC_VIEW } else { "source:opening" };
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(key), (id.clone(), name.to_owned())));
+    }
+    removed
+}
+
+const DOC_VIEW: &str = "task:doc-view";
+
+/// A markdown or text file, read in the app.
+fn doc_viewer(ctx: &egui::Context, net: &crate::desktop::net::Net) {
+    let key = egui::Id::new(DOC_VIEW);
+    let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else {
+        return;
+    };
+    let mut close = false;
+    let modal = super::agents::dialog(ctx, DOC_VIEW, PROSE_W, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = w::ghost(ui, "Close").clicked();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(
+                        RichText::new(&name).size(text::HEADING).family(egui::FontFamily::Name(theme::SEMIBOLD.into())).color(colour::TEXT()),
+                    ).truncate());
+                });
+            });
+        });
+        ui.add_space(space::MD);
+        match net.bytes(&super::triage::file_key(&id)) {
+            Some(Ok(bytes)) => {
+                egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.65).show(ui, |ui| {
+                    super::mrkdwn::show(ui, &String::from_utf8_lossy(bytes), colour::TEXT());
+                });
+            }
+            Some(Err(e)) => w::error(ui, e),
+            None => w::loading(ui, "Loading"),
+        }
+    });
+    if close || modal.should_close() {
+        ctx.data_mut(|d| d.remove::<(String, String)>(key));
+    }
+}
+
+/// The wire type for a file, from its extension; `None` for one the server
+/// will not take.
+fn mime_of(path: &std::path::Path) -> Option<&'static str> {
+    Some(match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "md" | "markdown" => "text/markdown",
+        "txt" => "text/plain",
+        _ => return None,
+    })
+}
+
+/// Read picked or dropped files into the upload queue, refusing what the
+/// server would refuse anyway with a sentence now rather than a 415 later.
+fn queue_paths(ctx: &egui::Context, local: &mut Local, paths: &[std::path::PathBuf]) {
+    use base64::Engine;
+    for path in paths {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_owned();
+        let Some(mime) = mime_of(path) else {
+            w::toast(ctx, format!("{name} can\u{2019}t be attached \u{2014} images, PDFs and .md or .txt files only."), true);
+            continue;
+        };
+        match std::fs::read(path) {
+            Ok(bytes) if bytes.len() > 8 * 1024 * 1024 => {
+                w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
+            }
+            Ok(bytes) => local.uploads.push(json!({
+                "name": name,
+                "mime": mime,
+                "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            })),
+            Err(e) => w::toast(ctx, format!("Could not read {name}: {e}"), true),
+        }
+    }
+}
+
+/// Files dropped on the window while this task is open join the queue.
+fn take_dropped(ctx: &egui::Context, local: &mut Local) {
+    let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+    if !dropped.is_empty() {
+        queue_paths(ctx, local, &dropped);
+    }
+}
+
+const UPLOAD_KEY: &str = "task:upload";
+
+/// One upload at a time: fold in the reply, then send the next queued file.
+fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_id: &str, local: &mut Local) {
+    if let Some(name) = local.uploading.clone() {
+        if net.is_loading(UPLOAD_KEY) {
+            return;
+        }
+        match net.peek(UPLOAD_KEY) {
+            Some(Ok(_)) => w::toast(ctx, format!("Attached {name}."), false),
+            Some(Err(e)) => local.resource_error = Some(format!("{name}: {e}")),
+            None => {}
+        }
+        local.uploading = None;
+        net.invalidate(TASK_KEY);
+    }
+    if local.uploads.is_empty() {
+        return;
+    }
+    let next = local.uploads.remove(0);
+    local.uploading = str_of(&next, "name").map(str::to_owned);
+    net.invalidate(UPLOAD_KEY);
+    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), next);
+}
+
+/// One hue per kind, so a list of five resources is scannable rather than read.
+fn kind_ink(kind: &str) -> egui::Color32 {
+    match kind {
+        "pr" => colour::INFO(),
+        "commit" => colour::OK(),
+        "figma" => colour::AGENT(),
+        "doc" => colour::WARN(),
+        _ => colour::TEXT_MUTED(),
+    }
 }
 
 /// A GitHub commit or pull request named the way people say it:
@@ -2418,13 +2569,18 @@ fn host_path(url: &str) -> &str {
 
 // --------------------------------------------------------------------- notes
 
-/// The thread. Anyone may post — a note needs no write scope, because the
-/// point of it is that the person who noticed something can say so.
-fn notes(
+/// Everything that happened on the task, newest first: the team's notes and,
+/// when an agent has held it, its plans, updates, questions and reports. The
+/// note box sits on top, where the newest entry lands. Anyone may post — a
+/// note needs no write scope, because the point of it is that the person who
+/// noticed something can say so.
+fn activity(
     ui: &mut egui::Ui,
     net: &mut crate::desktop::net::Net,
     task_id: &str,
-    with_session: bool,
+    task: &Value,
+    delegate: Option<&Value>,
+    private: bool,
     local: &mut Local,
 ) {
     if local.posting_note && !net.is_loading(NOTE_KEY) {
@@ -2443,64 +2599,9 @@ fn notes(
     }
 
     let all = net.shared(NOTES_KEY);
-    let all: &[Value] = all
-        .as_deref()
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice);
-    // With an agent on the task, its updates, questions and report are the
-    // session's timeline; the thread keeps what people said to each other.
-    let rows: Vec<&Value> = all
-        .iter()
-        .filter(|n| !with_session || !str_of(n, "kind").is_some_and(session::session_kind))
-        .collect();
-    shell::section_count(ui, "Notes", rows.len());
+    let all: &[Value] = all.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    shell::section(ui, "Activity");
 
-    if let Some(err) = net.error(NOTES_KEY) {
-        failed(ui, "Could not load notes", err);
-    } else if rows.is_empty() {
-        w::caption(
-            ui,
-            "No notes yet \u{2014} questions, decisions and heads-ups for the team go here.",
-        );
-    } else {
-        ui.scope(|ui| {
-            ui.set_max_width(PROSE_W.min(ui.available_width()));
-            for (i, row) in rows.iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(space::MD);
-                }
-                // An agent's entry is signed with the agent's name and mark;
-                // a person's with theirs.
-                let agent = row.get("agent").and_then(|a| str_of(a, "name"));
-                let author = agent
-                    .or_else(|| str_of(row, "authorName"))
-                    .unwrap_or("Someone");
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::SM;
-                    if agent.is_some() {
-                        w::agent_mark(ui, AVATAR);
-                    } else {
-                        avatar::small(ui, author, AVATAR);
-                    }
-                    value(ui, author);
-                    if let Some((word, ink)) = note_kind(str_of(row, "kind").unwrap_or("note")) {
-                        ui.label(RichText::new(word).size(text::SMALL).color(ink));
-                    }
-                    if let Some(at) = str_of(row, "createdAt") {
-                        ui.label(
-                            RichText::new(ago(at))
-                                .size(text::SMALL)
-                                .color(colour::TEXT_MUTED()),
-                        );
-                    }
-                });
-                ui.add_space(space::XXS);
-                super::mrkdwn::show(ui, str_of(row, "body").unwrap_or_default(), colour::TEXT_2());
-            }
-        });
-    }
-
-    ui.add_space(space::MD);
     let mut send = false;
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
@@ -2512,36 +2613,24 @@ fn notes(
             "Leave a note for the team\u{2026} Cmd+Enter to post",
         );
         let ready = !local.note.trim().is_empty() && !local.posting_note;
-        if ready
-            && box_.has_focus()
-            && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
-        {
+        if ready && box_.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter)) {
             send = true;
         }
         if let Some(err) = &local.note_error {
             ui.add_space(space::XS);
             w::error(ui, err);
         }
-        ui.add_space(space::SM);
-        // Flush with the box's right edge, where a comment box keeps its send:
-        // a disabled button has no fill, so on the left its label floated a
-        // padding's width in from the box's edge.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            let label = if local.posting_note {
-                "Posting\u{2026}"
-            } else {
-                "Post"
-            };
-            let response = w::primary(ui, label, ready);
-            if local.note.trim().is_empty() {
-                response
-                    .clone()
-                    .on_disabled_hover_text("Write a note first.");
-            }
-            if response.clicked() {
-                send = true;
-            }
-        });
+        // Only once something is typed: an empty box with a dead button under
+        // it was half the section's height for nothing.
+        if !local.note.trim().is_empty() || local.posting_note {
+            ui.add_space(space::SM);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let label = if local.posting_note { "Posting\u{2026}" } else { "Post" };
+                if w::primary(ui, label, ready).clicked() {
+                    send = true;
+                }
+            });
+        }
     });
     if send {
         local.note_error = None;
@@ -2553,19 +2642,18 @@ fn notes(
         );
         local.posting_note = true;
     }
-}
+    ui.add_space(space::LG);
 
-/// What kind of entry a note is, when it is more than a note: the word beside
-/// its author, and its ink. Colour only where it asked something of a person.
-fn note_kind(kind: &str) -> Option<(&'static str, egui::Color32)> {
-    Some(match kind {
-        "progress" => ("progress", colour::TEXT_MUTED()),
-        "question" => ("asked", colour::WARN()),
-        "answer" => ("answered", colour::TEXT_MUTED()),
-        "submission" => ("submitted for review", colour::AGENT()),
-        "review" => ("reviewed", colour::INFO()),
-        _ => return None,
-    })
+    if let Some(err) = net.error(NOTES_KEY) {
+        failed(ui, "Could not load activity", err);
+        return;
+    }
+    let plans = net.shared(PLANS_KEY);
+    let plans: &[Value] = plans.as_deref().and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    session::feed(
+        ui,
+        &session::Feed { task_id, task, delegate, notes: all, plans, private },
+    );
 }
 
 // --------------------------------------------------------------------- shared

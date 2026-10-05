@@ -4,12 +4,11 @@ use uuid::Uuid;
 
 /// The two tracks a task can run on, chosen by its assignee's department.
 ///
-/// Engineering ends when the work is in production; design ends when it has
-/// been handed over. They share the states that mean the same thing, which is
-/// why `completed` appears in both — mid-flow for engineering, terminal for
-/// design.
+/// Both end at `shipped`, when the work is out in the world. Design adds
+/// `research` before the work is done and `handoff` after it, when the design
+/// goes to whoever builds it.
 pub const ENG_FLOW: [&str; 4] = ["open", "in_progress", "completed", "shipped"];
-pub const DESIGN_FLOW: [&str; 4] = ["open", "in_progress", "handoff", "completed"];
+pub const DESIGN_FLOW: [&str; 6] = ["open", "in_progress", "research", "completed", "handoff", "shipped"];
 
 /// Reachable from anywhere on either track, and not part of either's order.
 pub const ASIDE: [&str; 2] = ["blocked", "dropped"];
@@ -50,8 +49,8 @@ pub const BLOCKER_RESOLVED: &str = "('handoff', 'completed', 'shipped', 'dropped
 /// Every state either track can produce. For a schema or a filter menu that
 /// has no one task in hand; `statuses_for` is what a real task is checked
 /// against.
-pub const ALL_STATUSES: [&str; 8] =
-    ["triage", "open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+pub const ALL_STATUSES: [&str; 9] =
+    ["triage", "open", "in_progress", "research", "completed", "handoff", "shipped", "blocked", "dropped"];
 
 /// Every state a task on this track may hold.
 pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
@@ -75,9 +74,11 @@ pub fn next_statuses(department: Option<&str>, from: &str) -> &'static [&'static
         (false, "in_progress") => &["completed", "open", "blocked", "dropped"],
         (false, "completed") => &["shipped", "in_progress", "blocked", "dropped"],
         (false, "shipped") => &["in_progress", "blocked", "dropped"],
-        (true, "in_progress") => &["handoff", "open", "blocked", "dropped"],
-        (true, "handoff") => &["completed", "in_progress", "blocked", "dropped"],
-        (true, "completed") => &["in_progress", "blocked", "dropped"],
+        (true, "in_progress") => &["research", "completed", "open", "blocked", "dropped"],
+        (true, "research") => &["completed", "in_progress", "blocked", "dropped"],
+        (true, "completed") => &["handoff", "in_progress", "blocked", "dropped"],
+        (true, "handoff") => &["shipped", "completed", "in_progress", "blocked", "dropped"],
+        (true, "shipped") => &["in_progress", "blocked", "dropped"],
         (_, "blocked") => &["in_progress", "dropped"],
         (_, "dropped") => &["open"],
         // A state this track does not have: finished work left behind by a
@@ -100,25 +101,27 @@ pub fn evidence_for(department: Option<&str>, to: &str) -> Option<&'static [&'st
 /// about production rather than a claim about ownership.
 pub const ANYONE: [&str; 1] = ["shipped"];
 
-/// `next_statuses` and `evidence_for` as the JSON `GET /api/user/tracks`
+/// Where a person may move a task they hold by hand: any other state on its
+/// track, no order and no evidence. Triage is the exception — only an intake
+/// puts a task there. Agents and teammates still go by `next_statuses`.
+pub fn free_moves(department: Option<&str>, from: &str) -> Vec<&'static str> {
+    statuses_for(department).into_iter().filter(|s| *s != from && *s != TRIAGE).collect()
+}
+
+/// `free_moves` as the JSON `GET /api/user/tracks`
 /// returns — generated, never written out, so it cannot drift from the rule.
 pub fn tracks_table() -> serde_json::Value {
     let track = |dept: Option<&str>| -> serde_json::Map<String, serde_json::Value> {
         statuses_for(dept)
             .into_iter()
-            .map(|from| (from.to_owned(), serde_json::json!(next_statuses(dept, from))))
-            .collect()
-    };
-    let evidence = |dept: Option<&str>| -> serde_json::Map<String, serde_json::Value> {
-        ALL_STATUSES
-            .iter()
-            .filter_map(|to| evidence_for(dept, to).map(|k| (to.to_string(), serde_json::json!(k))))
+            .map(|from| (from.to_owned(), serde_json::json!(free_moves(dept, from))))
             .collect()
     };
     serde_json::json!({
         "eng": track(None),
         "design": track(Some("design")),
-        "evidence": { "eng": evidence(None), "design": evidence(Some("design")) },
+        // People move without evidence now; kept so older apps still parse.
+        "evidence": { "eng": {}, "design": {} },
         "anyone": ANYONE,
     })
 }
@@ -233,6 +236,10 @@ pub struct TaskRow {
     /// it is where the owner's Mac keeps the conversation, so only they (or
     /// an admin) can see it, let alone attach to it.
     pub agent_session: Option<serde_json::Value>,
+    /// Files people attached by hand, newest first: `[{id, name, mime, size,
+    /// width, height, addedBy, addedById, createdAt}]`. Intake's files stay
+    /// under `source.files`.
+    pub files: serde_json::Value,
 }
 
 #[derive(Debug, Default)]
@@ -348,7 +355,13 @@ pub fn task_row_select(viewer: &str) -> String {
                             FROM task_label tl JOIN label l ON l.id = tl.label_id
                            WHERE tl.task_id = t.id), '[]') AS labels,
                 CASE WHEN {private} THEN t.brief END AS brief,
-                CASE WHEN {private} THEN t.agent_session END AS agent_session
+                CASE WHEN {private} THEN t.agent_session END AS agent_session,
+                coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
+                                 'size', f.size, 'width', f.width, 'height', f.height,
+                                 'addedBy', p.name, 'addedById', f.added_by, 'createdAt', f.created_at)
+                                 ORDER BY f.created_at DESC)
+                            FROM task_file f LEFT JOIN person p ON p.id = f.added_by
+                           WHERE f.task_id = t.id AND f.added_by IS NOT NULL), '[]') AS files
            FROM task t
            LEFT JOIN phase ph ON ph.id = t.phase_id
            LEFT JOIN project pr ON pr.id = ph.project_id
@@ -359,7 +372,7 @@ pub fn task_row_select(viewer: &str) -> String {
         files = format!(
             "coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
                                 'size', f.size, 'width', f.width, 'height', f.height) ORDER BY f.created_at, f.name)
-                         FROM task_file f WHERE f.task_id = t.id AND {}), '[]')",
+                         FROM task_file f WHERE f.task_id = t.id AND f.added_by IS NULL AND {}), '[]')",
             file_visible(viewer)
         ),
         RESOLVED = BLOCKER_RESOLVED,

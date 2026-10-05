@@ -80,6 +80,29 @@ impl Scope {
     }
 }
 
+/// Board or list, and the grouping, as last chosen on this page: a file
+/// beside the credential, `board|list` then the group on the next line.
+fn view_pref(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Mine => "view-mytasks",
+        Scope::All => "view-alltasks",
+    }
+}
+
+fn saved_view(scope: Scope) -> (bool, Option<String>) {
+    let raw = crate::desktop::creds::load_pref(view_pref(scope)).unwrap_or_default();
+    let mut lines = raw.lines();
+    let board = lines.next() == Some("board");
+    let group = lines.next().map(str::trim).filter(|g| !g.is_empty()).map(str::to_owned);
+    (board, group)
+}
+
+fn save_view(scope: Scope, view: &View) {
+    let raw = format!("{}\n{}", if view.board { "board" } else { "list" }, view.group.as_deref().unwrap_or(""));
+    // ponytail: a failed write only costs remembering the choice next launch.
+    let _ = crate::desktop::creds::store_pref(view_pref(scope), &raw);
+}
+
 /// The team's tasks, for All Tasks.
 const ALL: &str = "mytasks:all";
 const ALL_ARCHIVED: &str = "mytasks:all:archived";
@@ -104,12 +127,12 @@ const MOVING: &str = "mytasks:moving";
 
 /// Status groups in the list: what is moving, what is stuck, what waits, then
 /// what is finished. The board reads left to right in life order instead.
-const LIST_ORDER: [&str; 7] =
-    ["in_progress", "blocked", "open", "handoff", "completed", "shipped", "dropped"];
-const BOARD_ORDER: [&str; 7] =
-    ["open", "in_progress", "blocked", "handoff", "completed", "shipped", "dropped"];
+const LIST_ORDER: [&str; 8] =
+    ["in_progress", "research", "blocked", "open", "completed", "handoff", "shipped", "dropped"];
+const BOARD_ORDER: [&str; 8] =
+    ["open", "in_progress", "research", "blocked", "completed", "handoff", "shipped", "dropped"];
 /// Columns the board shows even when empty, so there is somewhere to drop.
-/// Blocked, Handoff (design's alone) and Dropped appear once something is in
+/// Blocked, Research and Handoff (design's alone) and Dropped appear once something is in
 /// them; the card menu's Move to reaches them before that.
 const BOARD_ALWAYS: [&str; 4] = ["open", "in_progress", "completed", "shipped"];
 /// Folded until opened: an ending worth keeping, not worth the room.
@@ -117,10 +140,10 @@ const FOLDED_BY_DEFAULT: &str = "dropped";
 
 /// The status vocabulary, in the order it reads in the menu: both tracks' happy
 /// paths run left to right, then the two states either of them can land in.
-/// `handoff` is design-only and `shipped` engineering-only, but the menu offers
-/// every value — a personal list holds work from both tracks.
-const STATUSES: [&str; 7] =
-    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+/// `research` and `handoff` are design-only, but the menu offers every value —
+/// a personal list holds work from both tracks.
+const STATUSES: [&str; 8] =
+    ["open", "in_progress", "research", "completed", "handoff", "shipped", "blocked", "dropped"];
 
 // ---- table geometry. Fixed so every group's columns line up with every
 // ---- other's; the description takes whatever is left.
@@ -175,10 +198,15 @@ pub fn all(app: &mut App, ui: &mut egui::Ui) {
 fn page(app: &mut App, ui: &mut egui::Ui, scope: Scope) {
     let filters_id = scope.id(FILTERS);
     let mut state: State = ui.ctx().data_mut(|d| d.get_temp(filters_id)).unwrap_or_default();
-    let mut view: View = ui.ctx().data_mut(|d| d.get_temp(scope.id(VIEW))).unwrap_or_else(|| View {
-        folded: vec![FOLDED_BY_DEFAULT.to_owned()],
-        ..View::default()
+    let mut view: View = ui.ctx().data_mut(|d| d.get_temp(scope.id(VIEW))).unwrap_or_else(|| {
+        let (board, group) = saved_view(scope);
+        View {
+            board,
+            group,
+            folded: vec![FOLDED_BY_DEFAULT.to_owned()],
+        }
     });
+    let was = (view.board, view.group.clone());
 
     let viewer = Viewer::of(app);
     let net = app.net.as_mut().unwrap();
@@ -341,6 +369,9 @@ fn page(app: &mut App, ui: &mut egui::Ui, scope: Scope) {
             open_task = out.open.or(open_task);
             picked = out.picked.or(picked);
         }
+    }
+    if was != (view.board, view.group.clone()) {
+        save_view(scope, &view);
     }
     ui.ctx().data_mut(|d| d.insert_temp(scope.id(VIEW), view));
     settle_move(ui.ctx(), app.net.as_mut().unwrap(), scope);

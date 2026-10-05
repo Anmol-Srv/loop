@@ -46,6 +46,14 @@ const RUNTIME_LINES: [&str; 4] = [
     "Anything that can call an HTTP API.",
 ];
 
+/// Skills for your own Claude Code, compiled in: (name, what it teaches, SKILL.md).
+/// Install writes it to `~/.claude/skills/<name>/SKILL.md`.
+const SKILLS: [(&str, &str, &str); 1] = [(
+    "loop-agents",
+    "Teaches Claude to use Loop and to build agents wired to it like ours: mint, watcher, worker and intake.",
+    include_str!("../../../agent-kit/loop-agents/SKILL.md"),
+)];
+
 /// How often the last step asks whether the agent has said hello.
 const HELLO_POLL: Duration = Duration::from_secs(2);
 
@@ -445,6 +453,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, local: &mut Local) {
         act = grid(ui, &live);
     }
 
+    ui.add_space(space::XL);
+    skills_section(ui);
+
     if !revoked.is_empty() {
         ui.add_space(space::XL);
         face::disclosure(
@@ -640,6 +651,51 @@ fn setup_guide(ui: &mut egui::Ui, seed: &str) {
         ui.add_space(space::XS);
         guide_legend(ui, seed);
     });
+}
+
+/// Skills a person installs into their own Claude Code, one row each.
+fn skills_section(ui: &mut egui::Ui) {
+    w::caption(ui, "Skills");
+    ui.add_space(space::XS);
+    w::card_list(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for (name, about, body) in SKILLS {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(name)
+                            .size(text::SMALL)
+                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                            .color(colour::TEXT()),
+                    );
+                    ui.label(RichText::new(about).size(text::SMALL).color(colour::TEXT_MUTED()));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if w::secondary(ui, "Install for Claude Code", true).clicked() {
+                        match install_skill(name, body) {
+                            Ok(path) => w::toast(ui.ctx(), format!("Installed to {path}."), false),
+                            Err(e) => w::toast(ui.ctx(), format!("Could not install: {e}"), true),
+                        }
+                    }
+                    if w::ghost(ui, "Copy").clicked() {
+                        ui.ctx().copy_text(body.to_owned());
+                        w::toast(ui.ctx(), "Copied.", false);
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// Write a skill where Claude Code finds it at user scope, replacing any
+/// older copy.
+fn install_skill(name: &str, body: &str) -> std::io::Result<String> {
+    let home = std::env::var_os("HOME").ok_or(std::io::ErrorKind::NotFound)?;
+    let dir = std::path::PathBuf::from(home).join(".claude/skills").join(name);
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("SKILL.md");
+    std::fs::write(&path, body)?;
+    Ok(path.display().to_string())
 }
 
 /// One guide step: a bold numbered line, then up to two short muted lines.

@@ -653,12 +653,24 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
                 'files', coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
                                 'url', $2 || '/api/agent/tasks/' || s.task_id || '/files/' || f.id)
                                                    ORDER BY f.created_at, f.name)
-                                     FROM task_file f WHERE f.task_id = s.task_id), '[]'))
+                                     FROM task_file f WHERE f.task_id = s.task_id AND f.added_by IS NULL), '[]'))
            FROM task_source s WHERE s.task_id = $1 AND NOT s.appended",
     )
     .bind(task_id)
     .bind(server)
     .fetch_optional(&state.db)
+    .await?;
+
+    // Files people attached by hand — screenshots, markdown docs — each with
+    // a `url` to fetch its bytes, newest first.
+    let files: Value = sqlx::query_scalar(
+        "SELECT coalesce(json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
+                'url', $2 || '/api/agent/tasks/' || f.task_id || '/files/' || f.id) ORDER BY f.created_at DESC), '[]')
+           FROM task_file f WHERE f.task_id = $1 AND f.added_by IS NOT NULL",
+    )
+    .bind(task_id)
+    .bind(server)
+    .fetch_one(&state.db)
     .await?;
 
     // The owner's note at hand-off, and the current plan. Unmasked here for
@@ -688,6 +700,7 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
         "artifacts": artifacts,
         "related": { "blockedBy": blocked_by, "blocks": blocks },
         "source": source,
+        "files": files,
         "brief": brief,
         "plan": plan,
     }))
@@ -992,7 +1005,7 @@ pub async fn submit(
         return Err(AppError::Conflict(NO_PLAN.into()));
     }
     let finishing: &[&str] = match d.department.as_deref() {
-        Some("design") => &["handoff", "completed"],
+        Some("design") => &["completed", "handoff"],
         _ => &["completed", "shipped"],
     };
     if !finishing.contains(&target) {
@@ -2286,6 +2299,7 @@ fn sniff(mime: &str, b: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
             Some((None, None))
         }
         "application/pdf" if b.starts_with(b"%PDF") => Some((None, None)),
+        "text/markdown" | "text/plain" if std::str::from_utf8(b).is_ok() => Some((None, None)),
         "image/jpeg" if b.starts_with(&[0xFF, 0xD8, 0xFF]) => {
             // Walk the segments to the frame header (SOF0–SOF15 but DHT,
             // JPG and DAC), which holds height then width.
@@ -2303,14 +2317,9 @@ fn sniff(mime: &str, b: &[u8]) -> Option<(Option<i32>, Option<i32>)> {
     }
 }
 
-/// Attach a file that came with a message this agent filed: a screenshot, a
-/// PDF. Only on tasks it filed; the same name from the same message once.
-pub async fn intake_attach(
-    state: &AppState,
-    agent: Uuid,
-    task_id: Uuid,
-    a: Attachment,
-) -> AppResult<FileMeta> {
+/// A file's name, type, bytes and pixel size, checked: named, an allowed
+/// type, real base64, under the limit, and actually what its type says.
+pub fn decode_file(a: &Attachment) -> AppResult<(String, String, Vec<u8>, Option<i32>, Option<i32>)> {
     use base64::Engine;
     let name = a.name.trim();
     if name.is_empty() {
@@ -2319,16 +2328,18 @@ pub async fn intake_attach(
         ));
     }
     let mime = a.mime.trim().to_lowercase();
-    const TYPES: [&str; 5] = [
+    const TYPES: [&str; 7] = [
         "image/png",
         "image/jpeg",
         "image/gif",
         "image/webp",
         "application/pdf",
+        "text/markdown",
+        "text/plain",
     ];
     if !TYPES.contains(&mime.as_str()) {
         return Err(AppError::UnsupportedType(format!(
-            "{name} is {mime}; only PNG, JPEG, GIF and WebP images and PDFs can be attached. Link anything else in the task instead."
+            "{name} is {mime}; only PNG, JPEG, GIF and WebP images, PDFs and Markdown or text files can be attached. Link anything else in the task instead."
         )));
     }
     let too_big = |bytes: usize| {
@@ -2361,6 +2372,19 @@ pub async fn intake_attach(
         ))
     })?;
 
+    Ok((name.to_owned(), mime, bytes, width, height))
+}
+
+/// Attach a file that came with a message this agent filed: a screenshot, a
+/// PDF. Only on tasks it filed; the same name from the same message once.
+pub async fn intake_attach(
+    state: &AppState,
+    agent: Uuid,
+    task_id: Uuid,
+    a: Attachment,
+) -> AppResult<FileMeta> {
+    let (name, mime, bytes, width, height) = decode_file(&a)?;
+    let name = name.as_str();
     let mut tx = state.db.begin().await?;
     intaker(&mut tx, agent).await?;
     let original: Option<String> = sqlx::query_scalar(

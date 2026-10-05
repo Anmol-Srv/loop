@@ -96,12 +96,10 @@ async fn the_tracks_route_serves_the_table_set_status_enforces(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
     let table = &body["data"];
     assert_eq!(*table, acp_server::models::task::tracks_table(), "generated, not written out");
-    assert_eq!(table["eng"]["open"], json!(["in_progress", "blocked", "dropped"]));
-    assert_eq!(table["eng"]["completed"], json!(["shipped", "in_progress", "blocked", "dropped"]));
-    assert_eq!(table["design"]["in_progress"], json!(["handoff", "open", "blocked", "dropped"]));
-    assert_eq!(table["eng"]["dropped"], json!(["open"]));
-    assert_eq!(table["evidence"]["eng"]["completed"], json!(["pr", "commit"]));
-    assert_eq!(table["evidence"]["design"]["handoff"], json!(["figma"]));
+    assert_eq!(table["eng"]["open"], json!(["in_progress", "completed", "shipped", "blocked", "dropped"]));
+    assert_eq!(table["design"]["in_progress"], json!(["open", "handoff", "completed", "blocked", "dropped"]));
+    assert_eq!(table["eng"]["dropped"], json!(["open", "in_progress", "completed", "shipped", "blocked"]));
+    assert_eq!(table["evidence"]["eng"], json!({}), "people move without evidence");
     assert_eq!(table["anyone"], json!(["shipped"]));
     assert!(table["design"].get("shipped").is_none(), "design has no shipped state");
 }
@@ -128,33 +126,34 @@ async fn nobody_ships_an_open_task(pool: PgPool) {
     assert_eq!(status_of(&pool, id).await, ("shipped".into(), true));
 }
 
+/// The holder goes anywhere on the track: no order, no evidence. Only a
+/// state the track lacks, or triage, is refused.
 #[sqlx::test]
-async fn finishing_moves_only_come_from_in_progress(pool: PgPool) {
+async fn the_holder_moves_anywhere_on_the_track(pool: PgPool) {
     let (eng_t, eng) = person(&pool, "e@airtribe.live", "backend", "member").await;
     let (des_t, des) = person(&pool, "d@airtribe.live", "design", "member").await;
     let (_, ph) = phase(&pool).await;
 
-    // Even with the evidence in hand, the order is the rule.
     let e = task(&pool, ph, "open", Some(eng)).await;
-    let (status, _) = call(&pool, "PATCH", &format!("/api/user/tasks/{e}"), &eng_t,
-        json!({ "status": "completed", "manualReason": "done in the console" })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "completed only from in_progress");
+    let (status, _) =
+        call(&pool, "PATCH", &format!("/api/user/tasks/{e}"), &eng_t, json!({ "status": "completed" })).await;
+    assert_eq!(status, StatusCode::OK, "open straight to completed, no PR");
 
     let d = task(&pool, ph, "open", Some(des)).await;
-    sqlx::query("INSERT INTO artifact (parent_type, parent_id, kind, url) VALUES ('task', $1, 'figma', 'https://f')")
-        .bind(d).execute(&pool).await.unwrap();
     let (status, _) =
         call(&pool, "PATCH", &format!("/api/user/tasks/{d}"), &des_t, json!({ "status": "handoff" })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "handoff only from in_progress");
+    assert_eq!(status, StatusCode::OK, "open straight to handoff, no Figma");
 
-    // A dropped task comes back through `open`, not straight into work.
     let x = task(&pool, ph, "dropped", Some(eng)).await;
     let (status, _) =
         call(&pool, "PATCH", &format!("/api/user/tasks/{x}"), &eng_t, json!({ "status": "in_progress" })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        call(&pool, "PATCH", &format!("/api/user/tasks/{x}"), &eng_t, json!({ "status": "open" })).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "dropped straight back into work");
+
+    for to in ["handoff", "triage"] {
+        let (status, _) =
+            call(&pool, "PATCH", &format!("/api/user/tasks/{x}"), &eng_t, json!({ "status": to })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{to} is not a move an engineer makes");
+    }
 }
 
 // ---- H2: a move states what it moved from ---------------------------------

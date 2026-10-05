@@ -29,6 +29,7 @@ const CHECKOUT: &str = "11111111-0000-0000-0000-000000000002";
 const TASK_IN_PROGRESS: &str = "22222222-0000-0000-0000-000000000001";
 const TASK_SHIPPED: &str = "22222222-0000-0000-0000-000000000003";
 const TASK_HANDOFF: &str = "22222222-0000-0000-0000-000000000005";
+const TASK_AGENT: &str = "22222222-0000-0000-0000-000000000004";
 
 const SHOTS: &[Shot] = &[
     Shot { name: "home", tab: Tab::Home, project: None, task: None, signed_in: true },
@@ -41,6 +42,7 @@ const SHOTS: &[Shot] = &[
     Shot { name: "project-overdue", tab: Tab::Projects, project: Some(CHECKOUT), task: None, signed_in: true },
     Shot { name: "task", tab: Tab::Home, project: None, task: Some(TASK_IN_PROGRESS), signed_in: true },
     Shot { name: "task-shipped", tab: Tab::Home, project: None, task: Some(TASK_SHIPPED), signed_in: true },
+    Shot { name: "task-agent", tab: Tab::Home, project: None, task: Some(TASK_AGENT), signed_in: true },
     Shot { name: "task-handoff", tab: Tab::Home, project: None, task: Some(TASK_HANDOFF), signed_in: true },
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
     Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
@@ -125,7 +127,8 @@ fn render(shot: &Shot, width: f32, label: &str, url: &str, token: &str) {
     let app: RefCell<Option<App>> = RefCell::new(None);
 
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(width, HEIGHT))
+        // The agent's task runs long: drawn tall so its activity is all seen.
+        .with_size(egui::vec2(width, if shot.name == "task-agent" { HEIGHT * 2.2 } else { HEIGHT }))
         .with_pixels_per_point(2.0)
         .wgpu()
         .build_ui(|ui| {

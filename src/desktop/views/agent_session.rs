@@ -100,7 +100,6 @@ pub(super) struct Session<'a> {
     pub delegate: &'a Value,
     /// The task's notes, oldest first, as the server let this viewer see them.
     pub notes: &'a [Value],
-    pub notes_loaded: bool,
     pub evidence: &'a [Value],
     /// The viewer is the task's owner: the one who answers, reviews and
     /// instructs.
@@ -134,10 +133,8 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     let short = short_name(agent);
     let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
     let owner_first = first_name(owner);
-    // The owner's own colour, for the person nodes below (they handed it off,
-    // they answered); the agent's own id for its globe, so two agents one
-    // person owns never wear the same one.
-    let person_seed = owner_seed(s.task, owner);
+    // The agent's own id for its globe, so two agents one person owns never
+    // wear the same one.
     let agent_seed = str_of(d, "id").unwrap_or(agent);
     let presence = Presence::of(state, str_of(d, "lastSeenAt"));
     let held = !matches!(state, "done" | "stopped");
@@ -225,7 +222,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         }
     }
 
-    // ---- the owner's note at hand-off, and the plan
+    // ---- the owner's note at hand-off
     if let Some(brief) = str_of(s.task, "brief").filter(|_| s.private) {
         ui.add_space(space::MD);
         ui.scope(|ui| {
@@ -234,102 +231,39 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             super::mrkdwn::show(ui, brief, colour::TEXT_2());
         });
     }
-    plan_section(ui, s, st, short, &mut ask);
 
-    // ---- what it has said
-    let entries: Vec<&Value> = s
+    // ---- what waits on the owner, pinned: a plan to approve, a question to
+    // answer, a report to review. Everything else is in Activity, newest first.
+    plan_section(ui, s, st, short, &mut ask);
+    let visible: Vec<&Value> = s
         .notes
         .iter()
         .filter(|n| str_of(n, "kind").is_some_and(session_kind))
         .filter(|n| s.private || !str_of(n, "kind").is_some_and(private_kind))
         .collect();
-    let latest_submission = entries.iter().rposition(|n| str_of(n, "kind") == Some("submission"));
-    let latest_question = entries.iter().rposition(|n| str_of(n, "kind") == Some("question"));
-
-    ui.add_space(space::LG);
-    if !s.notes_loaded {
-        for wdt in [0.6, 0.45] {
-            face::skeleton(ui, PROSE_W * wdt, text::BODY);
-            ui.add_space(space::SM);
-        }
-    } else {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        // Every gap is drawn by hand below, so a run of minor lines can sit
-        // tight while a report or a question still gets room to breathe.
-        let mut day = String::new();
-        let mut drawn = false;
-        let mut prev_minor = false;
-
-        if let Some(at) = str_of(d, "delegatedAt") {
-            mark_day(ui, Some(at), &mut day, &mut drawn, &mut prev_minor);
-            ui.add_space(timeline_gap(drawn, prev_minor, true));
-            minor_line(ui, Node::Person(&person_seed), owner, &format!("handed this to {short}"), Some(at));
-            drawn = true;
-            prev_minor = true;
-        }
-        for (i, n) in entries.iter().enumerate() {
-            let kind = str_of(n, "kind").unwrap_or("progress");
-            let at = str_of(n, "createdAt");
-            let body = str_of(n, "body").unwrap_or_default();
-            let by_agent = n.get("agent").is_some_and(Value::is_object);
-            // The short name: the full one sits once, in the header above.
-            let author = if by_agent { short } else { str_of(n, "authorName").unwrap_or(owner) };
-            let private = private_kind(kind);
-            let body_id = egui::Id::new(("session:body", s.task_id, str_of(n, "id").unwrap_or_default(), i));
-
-            mark_day(ui, at, &mut day, &mut drawn, &mut prev_minor);
-
-            if Some(i) == latest_submission {
-                ui.add_space(timeline_gap(drawn, prev_minor, false));
-                report(ui, s, st, n, short, owner_first, state, &mut ask);
-                drawn = true;
-                prev_minor = false;
-                continue;
-            }
-            match kind {
-                "progress" => {
-                    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
-                    let rest = if flat.is_empty() { "posted an update".to_owned() } else { flat };
-                    ui.add_space(timeline_gap(drawn, prev_minor, true));
-                    minor_line(ui, Node::Agent(agent_seed), author, &rest, at);
-                    prev_minor = true;
-                }
-                "review" => {
-                    let (mark, verb) = if approved(&entries, i, state) {
-                        (Mark::Approved, "approved")
-                    } else {
-                        (Mark::Changes, "asked for changes")
-                    };
-                    ui.add_space(timeline_gap(drawn, prev_minor, true));
-                    minor_line(ui, Node::Mark(mark), author, verb, at);
-                    prev_minor = true;
-                }
-                _ => {
-                    // question, answer, instruction, and an earlier
-                    // (superseded) submission: something with real content,
-                    // worth its own block.
-                    let (node, label) = match kind {
-                        "question" => (Node::Agent(agent_seed), "Question"),
-                        "submission" => (Node::Agent(agent_seed), "Report"),
-                        _ => (Node::Person(&person_seed), "Note"),
-                    };
-                    let open_question = Some(i) == latest_question && state == "needs_input" && s.mine;
-                    ui.add_space(timeline_gap(drawn, prev_minor, false));
-                    substantive(ui, node, author, label, at, private, body_id, body, |ui| {
-                        if open_question {
+    let last_of = |kind: &str| visible.iter().rev().find(|n| str_of(n, "kind") == Some(kind)).copied();
+    if state == "needs_input" {
+        if let Some(q) = last_of("question") {
+            ui.add_space(space::MD);
+            pinned_card(ui, colour::WARN(), |ui| {
+                let at = str_of(q, "createdAt");
+                let body_id = egui::Id::new(("session:pinned", s.task_id, str_of(q, "id").unwrap_or_default()));
+                substantive(ui, Node::Agent(agent_seed), short, "asks", at, private_kind("question") && s.private, body_id,
+                    str_of(q, "body").unwrap_or_default(), |ui| {
+                        if s.mine {
                             ui.add_space(space::SM);
                             if let Some(a) = answer_box(ui, st, short, s.busy) {
                                 ask = Some(a);
                             }
                         }
                     });
-                    prev_minor = false;
-                }
-            }
-            drawn = true;
+            });
         }
-        if entries.is_empty() && str_of(d, "delegatedAt").is_none() {
-            w::caption(ui, &format!("Nothing from {short} yet \u{2014} its updates, questions and report land here."));
+    }
+    if state == "in_review" {
+        if let Some(sub) = last_of("submission") {
+            ui.add_space(space::MD);
+            report(ui, s, st, sub, short, owner_first, state, &mut ask);
         }
     }
 
@@ -378,6 +312,10 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
         return;
     };
     let decision = str_of(current, "decision");
+    // Decided plans live in Activity; only one that waits is pinned here.
+    if decision.is_some() {
+        return;
+    }
 
     ui.add_space(space::MD);
     egui::Frame::new()
@@ -487,6 +425,210 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
         });
 }
 
+/// A card for something waiting on the owner, edged in the colour of what it
+/// asks.
+fn pinned_card(ui: &mut egui::Ui, edge: egui::Color32, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, edge.gamma_multiply(0.5)))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+}
+
+// ----------------------------------------------------------------- activity
+
+/// Everything that happened on a task, newest first, in one list: the hand-off,
+/// each plan and its decision, the agent's updates, questions and reports, the
+/// owner's answers and instructions, and the team's notes. Read-only — what
+/// needs acting on is pinned in the agent panel above.
+pub(super) struct Feed<'a> {
+    pub task_id: &'a str,
+    pub task: &'a Value,
+    /// The current delegation, if any: its hand-off and agent name.
+    pub delegate: Option<&'a Value>,
+    /// Every note the viewer may see, oldest first, as the server sends them.
+    pub notes: &'a [Value],
+    /// Plan revisions, newest first; empty for anyone but the owner and admins.
+    pub plans: &'a [Value],
+    /// The viewer may read the private parts.
+    pub private: bool,
+}
+
+enum Item<'a> {
+    Handoff(&'a str),
+    Plan(&'a Value),
+    Decision(&'a Value),
+    Note(&'a Value),
+}
+
+fn parse(at: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(at).map_or(0, |t| t.timestamp_micros())
+}
+
+pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
+    let agent = f.delegate.and_then(|d| str_of(d, "name")).unwrap_or("The agent");
+    let short = short_name(agent);
+    let agent_seed = f.delegate.and_then(|d| str_of(d, "id")).unwrap_or(agent);
+    let state = f.delegate.and_then(|d| str_of(d, "state")).unwrap_or("");
+    let owner = f
+        .delegate
+        .and_then(|d| str_of(d, "ownerName"))
+        .or_else(|| str_of(f.task, "assigneeName"))
+        .unwrap_or("Someone");
+    let owner_seed = owner.to_owned();
+
+    let notes: Vec<&Value> = f
+        .notes
+        .iter()
+        .filter(|n| f.private || !str_of(n, "kind").is_some_and(private_kind))
+        .collect();
+    // A review approved the work when nothing was submitted after it and the
+    // session ended — the note carries no decision of its own.
+    let last_submission = notes.iter().rposition(|n| str_of(n, "kind") == Some("submission"));
+    let last_review = notes.iter().rposition(|n| str_of(n, "kind") == Some("review"));
+
+    let mut items: Vec<(i64, Item)> = Vec::new();
+    if let Some(at) = f.delegate.and_then(|d| str_of(d, "delegatedAt")) {
+        items.push((parse(at), Item::Handoff(at)));
+    }
+    for p in f.plans {
+        if let Some(at) = str_of(p, "createdAt") {
+            items.push((parse(at), Item::Plan(p)));
+        }
+        if let Some(at) = str_of(p, "decidedAt") {
+            items.push((parse(at), Item::Decision(p)));
+        }
+    }
+    for n in &notes {
+        items.push((str_of(n, "createdAt").map_or(0, parse), Item::Note(n)));
+    }
+    // Newest first; equal times keep the server's order reversed.
+    items.reverse();
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+
+    if items.is_empty() {
+        w::caption(ui, "Nothing yet \u{2014} notes, an agent\u{2019}s updates, plans and questions land here, newest first.");
+        return;
+    }
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut day = String::new();
+    let mut drawn = false;
+    let mut prev_minor = false;
+    for (i, (_, item)) in items.iter().enumerate() {
+        match item {
+            Item::Handoff(at) => {
+                mark_day(ui, Some(at), &mut day, &mut drawn, &mut prev_minor);
+                ui.add_space(timeline_gap(drawn, prev_minor, true));
+                minor_line(ui, Node::Person(&owner_seed), owner, &format!("handed this to {short}"), Some(at));
+                prev_minor = true;
+            }
+            Item::Decision(p) => {
+                let at = str_of(p, "decidedAt");
+                mark_day(ui, at, &mut day, &mut drawn, &mut prev_minor);
+                ui.add_space(timeline_gap(drawn, prev_minor, true));
+                let (mark, rest) = match str_of(p, "decision") {
+                    Some("approved") => (Mark::Approved, "approved the plan".to_owned()),
+                    _ => (
+                        Mark::Changes,
+                        match str_of(p, "changesNote") {
+                            Some(note) => format!("asked for changes to the plan: {note}"),
+                            None => "asked for changes to the plan".to_owned(),
+                        },
+                    ),
+                };
+                minor_line(ui, Node::Mark(mark), owner, &rest, at);
+                prev_minor = true;
+            }
+            Item::Plan(p) => {
+                let at = str_of(p, "createdAt");
+                mark_day(ui, at, &mut day, &mut drawn, &mut prev_minor);
+                ui.add_space(timeline_gap(drawn, prev_minor, false));
+                let id = str_of(p, "id").unwrap_or_default();
+                entry(ui, Node::Agent(agent_seed), short, "sent a plan", at, true, |ui| {
+                    let (label, tone) = match str_of(p, "decision") {
+                        Some("approved") => ("Approved", c::Tone::Ok),
+                        Some(_) => ("Changes requested", c::Tone::Running),
+                        None => ("Waiting for review", c::Tone::Running),
+                    };
+                    c::chip(ui, label, tone, true);
+                    super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT());
+                    let open_id = egui::Id::new(("feed:plan", f.task_id, id));
+                    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                    face::disclosure(ui, open_id.with("d"), "Full plan", None, &mut open);
+                    ui.data_mut(|d| d.insert_temp(open_id, open));
+                    if open {
+                        super::mrkdwn::show(ui, str_of(p, "plan").unwrap_or_default(), colour::TEXT_2());
+                    }
+                });
+                prev_minor = false;
+            }
+            Item::Note(n) => {
+                let kind = str_of(n, "kind").unwrap_or("note");
+                let at = str_of(n, "createdAt");
+                let body = str_of(n, "body").unwrap_or_default();
+                let note_agent = n.get("agent").filter(|a| a.is_object());
+                let author = match note_agent {
+                    Some(a) => short_name(str_of(a, "name").unwrap_or(agent)),
+                    None => str_of(n, "authorName").unwrap_or("Someone"),
+                };
+                let seed_owned;
+                let node = match note_agent {
+                    Some(a) => Node::Agent(str_of(a, "id").unwrap_or(agent_seed)),
+                    None => {
+                        seed_owned = author.to_owned();
+                        Node::Person(&seed_owned)
+                    }
+                };
+                let pos = notes.iter().position(|m| std::ptr::eq(*m, *n));
+                mark_day(ui, at, &mut day, &mut drawn, &mut prev_minor);
+                match kind {
+                    "progress" => {
+                        let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let rest = if flat.is_empty() { "posted an update".to_owned() } else { flat };
+                        ui.add_space(timeline_gap(drawn, prev_minor, true));
+                        minor_line(ui, node, author, &rest, at);
+                        prev_minor = true;
+                    }
+                    "review" => {
+                        let approved = state == "done" && pos == last_review && last_submission.is_none_or(|s| Some(s) < pos);
+                        let (mark, verb) = if approved {
+                            (Mark::Approved, "approved the work")
+                        } else {
+                            (Mark::Changes, "asked for changes")
+                        };
+                        ui.add_space(timeline_gap(drawn, prev_minor, true));
+                        minor_line(ui, Node::Mark(mark), author, verb, at);
+                        prev_minor = true;
+                    }
+                    _ => {
+                        let label = match kind {
+                            "question" => "asked",
+                            "answer" => "answered",
+                            "instruction" => "told the agent",
+                            "submission" => "submitted for review",
+                            _ => "noted",
+                        };
+                        let node = match kind {
+                            "submission" => Node::Mark(Mark::Submitted),
+                            _ => node,
+                        };
+                        ui.add_space(timeline_gap(drawn, prev_minor, false));
+                        let body_id = egui::Id::new(("feed:body", f.task_id, str_of(n, "id").unwrap_or_default(), i));
+                        substantive(ui, node, author, label, at, private_kind(kind), body_id, body, |_| {});
+                        prev_minor = false;
+                    }
+                }
+            }
+        }
+        drawn = true;
+    }
+}
+
 // ------------------------------------------------------------------- attach
 
 /// The owner's way back into the agent's Claude Code session on their own
@@ -577,13 +719,6 @@ fn first_name(name: &str) -> &str {
 
 /// The owner's avatar seed: the same one their person disc uses, so an agent
 /// wears exactly its owner's colour.
-fn owner_seed(task: &Value, owner: &str) -> String {
-    task.get("delegate")
-        .and_then(|d| str_of(d, "ownerEmail"))
-        .or_else(|| str_of(task, "assigneeEmail"))
-        .unwrap_or(owner)
-        .to_owned()
-}
 
 /// The four stages, which one it is at, and whether it finished. Times come
 /// from the notes that marked each one.
@@ -651,11 +786,6 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
     });
 }
 
-/// A review is an approval when it ended the session: nothing was submitted
-/// after it and the session is done. The note carries no decision field.
-fn approved(entries: &[&Value], i: usize, state: &str) -> bool {
-    state == "done" && !entries[i + 1..].iter().any(|n| str_of(n, "kind") == Some("submission"))
-}
 
 // ----------------------------------------------------------------- timeline
 

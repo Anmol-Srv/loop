@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.9.0
+version: 1.10.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -102,8 +102,9 @@ the same call unchanged.
    the tasks this one waits on and the tasks waiting on it, with their PRs,
    commits and Figma links — and `brief`, your owner's own note on this
    hand-off, if they left one. Most of what you need to start is already there.
-   If `source.files` lists any (a screenshot or PDF filed with the task),
-   download each one before you plan: `curl --oauth2-bearer "$AIRTRIBE_TOKEN"
+   If `files` (screenshots and markdown docs your owner attached) or
+   `source.files` (what came with a filed message) lists any, download each
+   one before you plan: `curl --oauth2-bearer "$AIRTRIBE_TOKEN"
    -o /tmp/<name> "<its url>"`, then `Read` it — an image only tells you
    what's wrong once you've actually looked at it.
 3. Look around read-only as needed — the code, related tasks, the repo's own
@@ -145,7 +146,7 @@ absent, meaning your owner has set up no folder for this either.
 
 The task's **track** in `task_context` tells you how it finishes: engineering
 (open → in progress → completed → shipped) or design (open → in progress →
-handoff → completed).
+research → completed → handoff → shipped).
 
 **Design or UI to build from a design.** Find the `figma` artifacts on the task
 and on related tasks. Before building, pull the frames: use Figma tools if you
@@ -219,13 +220,13 @@ the answer doesn't affect.
 
 1. Attach the evidence first. Engineering: a `pr` or `commit` is required to
    submit as completed (or give a `manualReason` when the work genuinely had no
-   code change). Design: a `figma` link is required to submit as handoff.
+   code change). Design: a `figma` link is required to submit as handoff (from `completed`).
    A `manualReason` is never a stand-in for evidence you couldn't produce: if
    you wrote code but can't push it or open a PR (no credentials, no access),
    ask your owner (`task_ask`) and wait — don't submit around it. A commit that
    exists only on your machine is not evidence anyone can check.
 2. `task_submit` with the `target` status (engineering: `completed`, or
-   `shipped` if it's live; design: `handoff`, or `completed`) and a `summary`
+   `shipped` if it's live; design: `completed`, or `handoff` once completed) and a `summary`
    a reviewer can check in two minutes: what you did, how you verified it,
    anything left out or risky.
 3. Your owner approves, or requests changes — you'll get an event either way.

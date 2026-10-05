@@ -378,11 +378,11 @@ const MAX_TEXTURE: u32 = 4096;
 const LIGHTBOX: &str = "source:lightbox";
 const OPENING: &str = "source:opening";
 
-fn file_key(id: &str) -> String {
+pub(super) fn file_key(id: &str) -> String {
     format!("file:{id}")
 }
 
-fn want(net: &mut Net, id: &str) {
+pub(super) fn want(net: &mut Net, id: &str) {
     net.get_bytes_once(&file_key(id), &format!("/api/user/files/{id}"));
 }
 
@@ -423,7 +423,7 @@ fn texture(
 }
 
 /// "120 KB", "2.4 MB".
-fn file_size(bytes: i64) -> String {
+pub(super) fn file_size(bytes: i64) -> String {
     match bytes {
         b if b < 1024 => format!("{b} B"),
         b if b < 1024 * 1024 => format!("{} KB", b / 1024),
@@ -454,7 +454,7 @@ fn attachments(ui: &mut egui::Ui, net: &mut Net, files: &[Value]) {
     }
 }
 
-fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
+pub(super) fn thumbnail(ui: &mut egui::Ui, net: &mut Net, f: &Value) {
     let (Some(id), name) = (str_of(f, "id"), str_of(f, "name").unwrap_or("image")) else {
         return;
     };
@@ -602,7 +602,7 @@ fn file_chip(ui: &mut egui::Ui, net: &mut Net, f: &Value) -> egui::Response {
 
 /// A file chip clicked: once its bytes land, write them where the Mac can
 /// open them and hand the file over.
-fn open_pending(ctx: &egui::Context, net: &Net) {
+pub(super) fn open_pending(ctx: &egui::Context, net: &Net) {
     let key = egui::Id::new(OPENING);
     let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else {
         return;
@@ -631,7 +631,7 @@ fn open_pending(ctx: &egui::Context, net: &Net) {
 
 /// The full image over the page, with a close button; Escape or a click
 /// outside closes it too.
-fn lightbox(ctx: &egui::Context, net: &Net) {
+pub(super) fn lightbox(ctx: &egui::Context, net: &Net) {
     let key = egui::Id::new(LIGHTBOX);
     let Some((id, name)) = ctx.data(|d| d.get_temp::<(String, String)>(key)) else {
         return;

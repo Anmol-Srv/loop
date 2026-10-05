@@ -84,8 +84,8 @@ const ATTENTION_MAX: usize = 6;
 /// The status vocabulary, in the order it reads in the filter menu: the two
 /// tracks' happy paths first, then the two states either track can land in.
 /// `status_label` turns each one into words.
-const STATUSES: [&str; 7] =
-    ["open", "in_progress", "handoff", "completed", "shipped", "blocked", "dropped"];
+const STATUSES: [&str; 8] =
+    ["open", "in_progress", "research", "completed", "handoff", "shipped", "blocked", "dropped"];
 
 /// The statuses at which a task stops holding up the tasks that wait on it.
 /// Mirrors the server's `BLOCKER_RESOLVED`: a design handoff unblocks the
@@ -94,7 +94,7 @@ const BLOCKER_RESOLVED: [&str; 4] = ["handoff", "completed", "shipped", "dropped
 
 /// The donut's slices, finished-first so the ring fills clockwise from the
 /// outcome you want. `dropped` is absent because the whole page excludes it.
-const DONUT: [&str; 6] = ["shipped", "completed", "in_progress", "handoff", "blocked", "open"];
+const DONUT: [&str; 7] = ["shipped", "handoff", "completed", "research", "in_progress", "blocked", "open"];
 
 /// Table geometry. Fixed so the columns line up with the header and with each
 /// other; the task column takes whatever is left. Alignment is declared here
@@ -605,7 +605,7 @@ fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) 
 
 /// The ring's numbers: a count per `DONUT` slice, the whole, and the share done.
 struct StatusFigures {
-    counts: [usize; 6],
+    counts: [usize; DONUT.len()],
     total: usize,
     pct: usize,
 }
@@ -614,7 +614,7 @@ fn status_figures(rows: &[&Value]) -> StatusFigures {
     // Dropped work is off the board, so it is off the ring and out of the
     // denominator too — otherwise the percentage measures the wrong pile.
     let live: Vec<&&Value> = rows.iter().filter(|t| bucket(t) != "dropped").collect();
-    let mut counts = [0; 6];
+    let mut counts = [0; DONUT.len()];
     for t in &live {
         if let Some(i) = DONUT.iter().position(|s| *s == bucket(t)) {
             counts[i] += 1;
@@ -648,8 +648,8 @@ fn status_card(ui: &mut egui::Ui, min_body: f32, f: &StatusFigures) -> f32 {
 
 /// Sentence-cased status names, positionally matched to `DONUT`. Built once
 /// rather than capitalising in the render loop.
-const LABELS: [&str; 6] =
-    ["Shipped", "Completed", "In progress", "Handoff", "Blocked", "Open"];
+const LABELS: [&str; DONUT.len()] =
+    ["Shipped", "Handoff", "Completed", "Research", "In progress", "Blocked", "Open"];
 
 /// Progress per department, from the server's per-project rollup — the one
 /// number on this page that covers every task, not just the ones on screen.

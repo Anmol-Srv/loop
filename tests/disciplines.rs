@@ -188,10 +188,10 @@ async fn a_blocker_cycle_is_refused(pool: PgPool) {
     assert!(still.is_empty(), "a refused cycle writes nothing");
 }
 
-/// The evidence gate and the two tracks, which are the rules a person meets
-/// every time they finish something.
+/// The two tracks, which are the rules a person meets every time they finish
+/// something. A person needs no evidence to finish; agents still do.
 #[sqlx::test]
-async fn finishing_work_needs_evidence_or_a_reason(pool: PgPool) {
+async fn a_person_finishes_on_their_word_within_the_track(pool: PgPool) {
     let (token, engineer) = person(&pool, "anmol@airtribe.live", "backend").await;
     let (design_token, designer) = person(&pool, "evana@airtribe.live", "design").await;
     let phase_id = phase(&pool).await;
@@ -226,17 +226,9 @@ async fn finishing_work_needs_evidence_or_a_reason(pool: PgPool) {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    // Completing engineering work needs something to point at.
+    // Completing needs nothing to point at.
     let response = move_to(token.clone(), eng, serde_json::json!({ "status": "completed" })).await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "no PR, no reason, no completion");
-
-    let response = move_to(
-        token.clone(),
-        eng,
-        serde_json::json!({ "status": "completed", "manualReason": "done in the console" }),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK, "the manual reason is the escape hatch");
+    assert_eq!(response.status(), StatusCode::OK, "no PR, no reason, still completed");
 
     // `done_at` is stamped at the track's terminal state and nowhere before.
     let done_at: Option<chrono::DateTime<chrono::Utc>> =
@@ -251,14 +243,7 @@ async fn finishing_work_needs_evidence_or_a_reason(pool: PgPool) {
             .bind(eng).fetch_one(&pool).await.unwrap();
     assert!(done_at.is_some(), "shipped is where engineering ends");
 
-    // Design's handoff needs a Figma link, and its terminal is `completed`.
-    let response = move_to(design_token.clone(), des, serde_json::json!({ "status": "handoff" })).await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "no Figma, no handoff");
-
-    sqlx::query(
-        "INSERT INTO artifact (parent_type, parent_id, kind, url) VALUES ('task', $1, 'figma', 'https://figma.com/f/x')",
-    )
-    .bind(des).execute(&pool).await.unwrap();
+    // Design hands off without a Figma link, and its terminal is `completed`.
     let response = move_to(design_token.clone(), des, serde_json::json!({ "status": "handoff" })).await;
     assert_eq!(response.status(), StatusCode::OK);
 

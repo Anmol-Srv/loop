@@ -108,7 +108,30 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/accept", post(accept))
         .route("/api/user/tasks/{id}/dismiss", post(dismiss))
         .route("/api/user/tracks", get(tracks))
-        .route("/api/user/files/{id}", get(file))
+        .route(
+            "/api/user/tasks/{id}/files",
+            post(upload).layer(axum::extract::DefaultBodyLimit::max(crate::routes::agent::UPLOAD_BODY)),
+        )
+        .route("/api/user/files/{id}", get(file).delete(remove_file))
+}
+
+/// Attach a screenshot or markdown doc to a task: `{name, mime, dataBase64}`.
+async fn upload(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    Json(b): Json<controllers::agent::Attachment>,
+) -> AppResult<ApiResponse<controllers::agent::FileMeta>> {
+    Ok(ApiResponse::ok(controllers::task::upload_file(&state, &caller.actor, id, b).await?))
+}
+
+async fn remove_file(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+) -> AppResult<ApiResponse<serde_json::Value>> {
+    controllers::task::remove_file(&state, &caller.actor, id).await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "removed": id })))
 }
 
 /// The transition table, so a client offers only the moves the server takes.

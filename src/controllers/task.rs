@@ -8,7 +8,7 @@ use crate::models::change::{propose, record, Actor, Op, Outcome, TargetType};
 use crate::controllers::note;
 use crate::controllers::project::{only, writer, HeldIn};
 use crate::models::task::{
-    can_manage, evidence_for, next_statuses, settle, task_row_select, terminal_of, Task,
+    can_manage, evidence_for, next_statuses, free_moves, settle, task_row_select, terminal_of, Task,
     TaskFilter, TaskRow, task_columns_t, ANYONE, CATEGORIES, HELD, LIVE, TASK_COLUMNS, TRIAGE,
 };
 
@@ -126,7 +126,7 @@ pub async fn set_status(
     }
 
     let mut tx = state.db.begin().await?;
-    let task = transition(&mut tx, actor, id, status, manual_reason, expected).await?;
+    let task = move_task(&mut tx, actor, id, status, manual_reason, expected, true).await?;
     tx.commit().await?;
     Ok(Outcome::Applied { entity: task })
 }
@@ -141,6 +141,21 @@ pub async fn transition(
     status: String,
     manual_reason: Option<String>,
     expected: Option<String>,
+) -> AppResult<Task> {
+    move_task(tx, actor, id, status, manual_reason, expected, false).await
+}
+
+/// `free`: a person moving a task by hand. They may put it in any state its
+/// track has, skipping the transition table and the evidence gate; agents and
+/// submissions still go through `transition`, which checks both.
+async fn move_task(
+    tx: &mut PgTransaction<'_>,
+    actor: &Actor,
+    id: Uuid,
+    status: String,
+    manual_reason: Option<String>,
+    expected: Option<String>,
+    free: bool,
 ) -> AppResult<Task> {
     let patch = json!({ "status": status, "manual_reason": manual_reason });
 
@@ -196,8 +211,22 @@ pub async fn transition(
     // it went out may say so — but only from `completed`, which the table
     // enforces. Checked here, not in the route, so the CLI and a replayed
     // proposal obey the same rule.
-    let reason = check_move(department, &current, &status, &attached, manual_reason)?;
     let mine = actor.person_id.is_some() && assignee == actor.person_id;
+    // The holder (or an admin) moving by hand goes anywhere on the track; a
+    // teammate's ship still comes only from `completed`, through the table.
+    let reason = if free && (admin || mine) {
+        let to = free_moves(department, &current);
+        if !to.contains(&status.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "a {} task in {current} goes to one of {}",
+                department.unwrap_or("unassigned"),
+                to.join(", ")
+            )));
+        }
+        manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty())
+    } else {
+        check_move(department, &current, &status, &attached, manual_reason)?
+    };
     if !admin && !mine && !ANYONE.contains(&status.as_str()) {
         return Err(AppError::Forbidden(
             "only the person this task is assigned to can move it".into(),
@@ -343,6 +372,66 @@ pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound("task not found".into()))
+}
+
+/// Attach a file to a task by hand — a screenshot for the agent, a markdown
+/// doc. Anyone who may write and can see the task.
+pub async fn upload_file(
+    state: &AppState,
+    actor: &Actor,
+    task_id: Uuid,
+    a: crate::controllers::agent::Attachment,
+) -> AppResult<crate::controllers::agent::FileMeta> {
+    let person = actor
+        .person_id
+        .filter(|_| actor.can_apply)
+        .ok_or_else(|| AppError::Forbidden("attaching a file needs a person's session with write".into()))?;
+    get(state, task_id, Some(person)).await?;
+    let (name, mime, bytes, width, height) = crate::controllers::agent::decode_file(&a)?;
+    // Its own key per upload, so two screenshots both called image.png sit
+    // side by side instead of the second being refused.
+    let key = format!("upload:{}", Uuid::new_v4());
+    Ok(sqlx::query_as(
+        "INSERT INTO task_file (task_id, source_key, name, mime, size, bytes, width, height, added_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, name, mime, size, width, height",
+    )
+    .bind(task_id)
+    .bind(key)
+    .bind(&name)
+    .bind(&mime)
+    .bind(bytes.len() as i32)
+    .bind(&bytes)
+    .bind(width)
+    .bind(height)
+    .bind(person)
+    .fetch_one(&state.db)
+    .await?)
+}
+
+/// Remove a file someone attached by hand: whoever added it, or an admin.
+/// Intake's files belong to the message they came with and stay.
+pub async fn remove_file(state: &AppState, actor: &Actor, id: Uuid) -> AppResult<()> {
+    writer(actor)?;
+    let row: Option<(Option<Uuid>, bool)> = sqlx::query_as(
+        "SELECT f.added_by, EXISTS (SELECT 1 FROM person WHERE id = $2 AND role = 'admin')
+           FROM task_file f WHERE f.id = $1",
+    )
+    .bind(id)
+    .bind(actor.person_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((added_by, admin)) = row else {
+        return Err(AppError::NotFound("That file is no longer here.".into()));
+    };
+    if added_by.is_none() {
+        return Err(AppError::Forbidden("This file came with the message the task was filed from; it stays.".into()));
+    }
+    if !admin && added_by != actor.person_id {
+        return Err(AppError::Forbidden("Only whoever attached this file, or an admin, can remove it.".into()));
+    }
+    sqlx::query("DELETE FROM task_file WHERE id = $1").bind(id).execute(&state.db).await?;
+    Ok(())
 }
 
 /// A file that came with a filed message: its type, name and bytes, for

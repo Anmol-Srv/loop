@@ -424,6 +424,7 @@ pub fn status_colour(status: &str) -> Color32 {
         "shipped" => colour::OK(),
         "completed" | "done" => colour::INFO(),
         "handoff" => colour::AGENT(),
+        "research" => colour::INFO(),
         // Amber, to match the chip. It was the accent blue, which put two
         // near-identical blues side by side in the donut (in progress and
         // completed) and made the row dot disagree with its own status chip.
@@ -444,6 +445,7 @@ pub fn status_label(status: &str) -> &str {
         "open" => "Open",
         "triage" => "Triage",
         "in_progress" => "In progress",
+        "research" => "Research",
         "handoff" => "Handoff",
         "completed" => "Completed",
         "shipped" => "Shipped",

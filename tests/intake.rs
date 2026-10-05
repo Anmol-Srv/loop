@@ -345,19 +345,9 @@ async fn triage_is_accepted_or_dismissed_and_nothing_else(pool: PgPool) {
     let b = file(&pool, &w, "m2").await;
     let (ida, idb) = (a["id"].as_str().unwrap(), b["id"].as_str().unwrap());
 
-    // Only accept and dismiss leave triage.
-    let (status, v) = send(
-        &pool,
-        "PATCH",
-        &format!("/api/user/tasks/{ida}"),
-        &w.owner,
-        json!({ "status": "in_progress" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    // The owner may move it out of triage to any state; nothing moves into it.
     let tracks = ok(&pool, "GET", "/api/user/tracks", &w.owner, Value::Null).await;
-    assert_eq!(tracks["eng"]["triage"], json!(["open", "dropped"]));
-    assert_eq!(tracks["design"]["triage"], json!(["open", "dropped"]));
+    assert_eq!(tracks["eng"]["triage"], json!(["open", "in_progress", "completed", "shipped", "blocked", "dropped"]));
     assert!(
         tracks["eng"]
             .as_object()
