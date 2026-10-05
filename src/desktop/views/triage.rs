@@ -225,7 +225,7 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
                     Some(k) => format!("Open in {}", kind_word(k)),
                 };
                 if w::link(ui, &label).on_hover_text(url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    super::mrkdwn::open(ui.ctx(), url);
                 }
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -624,7 +624,7 @@ pub(super) fn open_pending(ctx: &egui::Context, net: &Net) {
         Ok(path)
     });
     match written {
-        Ok(path) => ctx.open_url(egui::OpenUrl::new_tab(format!("file://{}", path.display()))),
+        Ok(path) => super::mrkdwn::open(ctx, &path.display().to_string()),
         Err(e) => w::toast(ctx, format!("Could not open {name}: {e}"), true),
     }
 }

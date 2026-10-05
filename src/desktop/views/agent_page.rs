@@ -17,7 +17,7 @@ use chrono::{DateTime, NaiveDate};
 use egui::{pos2, vec2, RichText};
 use serde_json::Value;
 
-use super::agent_session::{entry, prose, short_name, Mark, Node};
+use super::agent_session::{entry, short_name, Mark, Node};
 use super::agents::{
     has, role_chips, role_items, runtime_label, setup_checks, state_tone, state_words,
     status_words, Opened, Role,
@@ -904,7 +904,7 @@ fn activity(
                 open = str_of(r, "taskId").map(str::to_owned);
             }
             if shows_text {
-                prose(ui, &one_line(text_body, 280), colour::TEXT_2());
+                super::mrkdwn::show(ui, &one_line(text_body, 280), colour::TEXT_2());
             }
         }));
         ui.add_space(space::MD);

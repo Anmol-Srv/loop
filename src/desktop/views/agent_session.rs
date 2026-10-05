@@ -1011,15 +1011,6 @@ fn substantive(
     });
 }
 
-pub(super) fn prose(ui: &mut egui::Ui, body: &str, ink: egui::Color32) {
-    for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
-        if i > 0 {
-            ui.add_space(space::XS);
-        }
-        ui.label(RichText::new(para).size(text::BODY).color(ink));
-    }
-}
-
 /// Cmd+Enter in a focused box. Read off the key event itself, which carries
 /// its modifiers, rather than the frame's modifier state.
 fn submit_key(ui: &egui::Ui, field: &egui::Response) -> bool {
@@ -1213,7 +1204,7 @@ fn evidence_chip(ui: &mut egui::Ui, row: &Value) {
     }
     let response = response.on_hover_text(url);
     if response.clicked() && kind != "commit" && !url.is_empty() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        super::mrkdwn::open(ui.ctx(), url);
     }
 }
 

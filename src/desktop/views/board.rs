@@ -1174,7 +1174,7 @@ fn resource_row(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if r.on_hover_text(url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    super::mrkdwn::open(ui.ctx(), url);
                 }
                 if !title.is_empty() {
                     ui.add(
@@ -1416,7 +1416,7 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if link.on_hover_text(url).clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(web));
+                        super::mrkdwn::open(ui.ctx(), &web);
                     }
                 } else {
                     link.on_hover_text(url);
@@ -1587,12 +1587,7 @@ fn description(ui: &mut egui::Ui, body: &str) {
     }
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
-            if i > 0 {
-                ui.add_space(space::MD);
-            }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
-        }
+        super::mrkdwn::show(ui, body, colour::TEXT_2());
     });
 }
 

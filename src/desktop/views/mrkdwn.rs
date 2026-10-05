@@ -42,6 +42,7 @@ pub enum Block {
     /// A `>` line.
     Quote(Vec<Span>),
     Code(String),
+    Gap,
 }
 
 fn unescape(s: &str) -> String {
@@ -52,8 +53,16 @@ fn unescape(s: &str) -> String {
 pub fn parse(src: &str) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut lines = src.lines().peekable();
+    let mut gap = false;
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            gap |= !out.is_empty();
+            continue;
+        }
+        if std::mem::take(&mut gap) {
+            out.push(Block::Gap);
+        }
         if let Some(rest) = trimmed.strip_prefix("```") {
             // Everything to the closing fence, which may share a line with code.
             let mut code: Vec<String> = Vec::new();
@@ -80,9 +89,6 @@ pub fn parse(src: &str) -> Vec<Block> {
         }
         if let Some(q) = trimmed.strip_prefix("&gt;").or_else(|| trimmed.strip_prefix('>')) {
             out.push(Block::Quote(inline(q.trim_start())));
-            continue;
-        }
-        if trimmed.is_empty() {
             continue;
         }
         let spans = inline(line.trim_end());
@@ -131,6 +137,14 @@ fn spans(s: &str, style: Style, out: &mut Vec<Span>) {
         let (at, c) = chars[i];
         let prev = i.checked_sub(1).map(|p| chars[p].1);
         let next = chars.get(i + 1).map(|n| n.1);
+        if prev.is_none_or(|p| p.is_whitespace() || p == '(') {
+            if let Some((len, target)) = link_at(&s[at..]) {
+                flush(&mut plain, out);
+                out.push(Span { text: unescape(&s[at..at + len]), style, link: Some(unescape(&target)) });
+                i = chars.partition_point(|(b, _)| *b < at + len);
+                continue;
+            }
+        }
         match c {
             '<' => {
                 if let Some(end) = s[at..].find('>') {
@@ -168,20 +182,135 @@ fn spans(s: &str, style: Style, out: &mut Vec<Span>) {
                     continue;
                 }
             }
-            'h' if prev.is_none_or(char::is_whitespace) && (s[at..].starts_with("https://") || s[at..].starts_with("http://")) => {
-                let len = s[at..].find(char::is_whitespace).unwrap_or(s.len() - at);
-                let url = s[at..at + len].trim_end_matches(['.', ',', ')', '!', '?', ';', ':']);
-                flush(&mut plain, out);
-                out.push(Span { text: url.to_owned(), style, link: Some(unescape(url)) });
-                i = chars.partition_point(|(b, _)| *b < at + url.len());
-                continue;
-            }
             _ => {}
         }
         plain.push(c);
         i += 1;
     }
     flush(&mut plain, out);
+}
+
+const PATH_ROOTS: [&str; 7] = ["~/", "/Users/", "/Volumes/", "/tmp/", "/private/", "/Applications/", "/opt/"];
+const BARE_SCHEMES: [&str; 4] = ["mailto:", "tel:", "sms:", "facetime:"];
+
+fn link_at(s: &str) -> Option<(usize, String)> {
+    let word = &s[..s.find(char::is_whitespace).unwrap_or(s.len())];
+    let word = word.trim_end_matches(['.', ',', ')', '!', '?', ';', ':', '"', '\'']);
+    let target = if let Some((scheme, rest)) = word.split_once("://") {
+        if !is_scheme(scheme) || rest.is_empty() {
+            return None;
+        }
+        word.to_owned()
+    } else if BARE_SCHEMES.iter().any(|p| word.strip_prefix(p).is_some_and(|rest| !rest.is_empty())) {
+        word.to_owned()
+    } else if word.strip_prefix("www.").is_some_and(|rest| rest.contains('.')) {
+        format!("https://{word}")
+    } else if PATH_ROOTS.iter().any(|r| word.len() > r.len() && word.starts_with(r)) {
+        word.to_owned()
+    } else if is_email(word) {
+        format!("mailto:{word}")
+    } else {
+        return None;
+    };
+    Some((word.len(), target))
+}
+
+fn is_scheme(s: &str) -> bool {
+    s.len() >= 2
+        && s.starts_with(|c: char| c.is_ascii_alphabetic())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+fn is_email(word: &str) -> bool {
+    let Some((user, host)) = word.split_once('@') else { return false };
+    let tld = host.rsplit('.').next().unwrap_or_default();
+    !user.is_empty()
+        && user.chars().all(|c| c.is_ascii_alphanumeric() || "._%+-".contains(c))
+        && host.contains('.')
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
+        && tld.len() >= 2
+        && tld.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+#[cfg(target_os = "macos")]
+const OPENER: &str = "open";
+#[cfg(not(target_os = "macos"))]
+const OPENER: &str = "xdg-open";
+
+pub fn open(ctx: &egui::Context, target: &str) {
+    if target.starts_with("http://") || target.starts_with("https://") {
+        ctx.open_url(egui::OpenUrl::new_tab(target));
+        return;
+    }
+    let args: Vec<String> = match local_path(target) {
+        Some(path) if !path.exists() => {
+            w::toast(ctx, format!("{} isn\u{2019}t on this Mac.", path.display()), true);
+            return;
+        }
+        Some(path) if launches(&path) => vec!["-R".to_owned(), path.display().to_string()],
+        Some(path) => vec![path.display().to_string()],
+        None => vec![target.to_owned()],
+    };
+    let ctx = ctx.clone();
+    let target = target.to_owned();
+    std::thread::spawn(move || {
+        let opened = std::process::Command::new(OPENER).args(&args).status().is_ok_and(|s| s.success());
+        if !opened {
+            w::toast(&ctx, format!("Nothing on this Mac opens {target}."), true);
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn local_path(target: &str) -> Option<std::path::PathBuf> {
+    let raw = match target.strip_prefix("file://") {
+        Some(rest) => percent_decode(rest.strip_prefix("localhost").unwrap_or(rest)),
+        None if target.starts_with('/') || target.starts_with("~/") => target.to_owned(),
+        None => return None,
+    };
+    match raw.strip_prefix("~/") {
+        Some(rest) => std::env::home_dir().map(|home| home.join(rest)),
+        None => Some(raw.into()),
+    }
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%').then(|| s.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
+}
+
+const RUNS: [&str; 21] = [
+    "app", "command", "tool", "terminal", "sh", "bash", "zsh", "py", "rb", "pl", "scpt", "applescript", "workflow",
+    "action", "pkg", "mpkg", "dmg", "jar", "webloc", "inetloc", "fileloc",
+];
+
+fn launches(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if ext.is_some_and(|e| RUNS.contains(&e.as_str())) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.is_file() && path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    false
 }
 
 /// One `<…>`: a link, a mention, a channel or a special.
@@ -219,6 +348,7 @@ pub fn plain(src: &str) -> String {
         .map(|b| match b {
             Block::Para(s) | Block::Bullet(s) | Block::Quote(s) => s.into_iter().map(|s| s.text).collect(),
             Block::Code(c) => c,
+            Block::Gap => String::new(),
         })
         .collect::<Vec<String>>()
         .join(" ")
@@ -293,7 +423,7 @@ fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         response.clone().on_hover_text_at_pointer(url.clone());
         if response.clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            open(ui.ctx(), &url);
         }
     }
 }
@@ -334,7 +464,7 @@ fn slack_chip(ui: &mut egui::Ui, url: &str, channel: Option<&str>) {
     };
     let r = w::icon_button(ui, egui_phosphor::regular::SLACK_LOGO, &label, w::Emphasis::Secondary, true).on_hover_text(url);
     if r.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        open(ui.ctx(), url);
     }
 }
 
@@ -406,6 +536,7 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
         ui.spacing_mut().item_spacing.y = space::XS;
         for block in parse(src) {
             match block {
+                Block::Gap => ui.add_space(space::SM),
                 Block::Para(s) => body_lines(ui, &s, ink),
                 Block::Quote(s) => {
                     ui.horizontal_top(|ui| {
@@ -480,16 +611,62 @@ mod tests {
     }
 
     #[test]
+    fn links_of_every_kind() {
+        let n = Style::default();
+        let link = |src: &str| -> Vec<(String, Option<String>)> {
+            inline(src).into_iter().map(|s| (s.text, s.link)).collect()
+        };
+        for (src, target) in [
+            ("figma://file/aR7x", "figma://file/aR7x"),
+            ("slack://channel?team=T1&id=C2", "slack://channel?team=T1&id=C2"),
+            ("vscode://file/Users/a/x.rs:12", "vscode://file/Users/a/x.rs:12"),
+            ("file:///Users/a/spec%20v2.pdf", "file:///Users/a/spec%20v2.pdf"),
+            ("~/Desktop/spec.pdf", "~/Desktop/spec.pdf"),
+            ("/Users/a/notes.md", "/Users/a/notes.md"),
+            ("mailto:dhaval@airtribe.live", "mailto:dhaval@airtribe.live"),
+            ("tel:+919800000000", "tel:+919800000000"),
+            ("dhaval@airtribe.live", "mailto:dhaval@airtribe.live"),
+            ("www.notion.so/airtribe/Spec", "https://www.notion.so/airtribe/Spec"),
+        ] {
+            assert_eq!(link(&format!("see {src}.")), vec![
+                ("see ".to_owned(), None),
+                (src.to_owned(), Some(target.to_owned())),
+                (".".to_owned(), None),
+            ], "{src}");
+        }
+        assert_eq!(texts(&inline("(https://x.test/a)")), vec![("(", n, None), ("https://x.test/a", n, Some("https://x.test/a")), (")", n, None)]);
+        for prose in ["GET /cart/totals", "std::fs::read", "localhost:8091", "a@b", "x/~/y", "www.", "http://"] {
+            assert!(inline(prose).iter().all(|s| s.link.is_none()), "{prose}");
+        }
+    }
+
+    #[test]
+    fn local_targets_resolve_and_scripts_are_revealed_not_run() {
+        assert_eq!(local_path("file:///Users/a/spec%20v2.pdf"), Some("/Users/a/spec v2.pdf".into()));
+        assert_eq!(local_path("file://localhost/tmp/x"), Some("/tmp/x".into()));
+        assert_eq!(local_path("/Users/a/b"), Some("/Users/a/b".into()));
+        assert!(local_path("~/Desktop").is_some_and(|p| p.ends_with("Desktop") && p.is_absolute()));
+        assert_eq!(local_path("figma://file/x"), None);
+        assert_eq!(local_path("mailto:a@b.co"), None);
+        for runs in ["/Applications/Calculator.app", "/tmp/install.command", "/tmp/setup.sh", "/tmp/Installer.PKG"] {
+            assert!(launches(std::path::Path::new(runs)), "{runs}");
+        }
+        assert!(!launches(std::path::Path::new("/tmp/spec.pdf")));
+    }
+
+    #[test]
     fn blocks_keep_breaks_bullets_and_fences() {
         let src = "First line\nsecond line\n\nNew para\n\u{2022} one\n- two\n```\nlet x = 1;\n```\n&gt; quoted";
         let blocks = parse(src);
-        assert_eq!(blocks.len(), 6, "{blocks:?}");
+        assert_eq!(blocks.len(), 7, "{blocks:?}");
         assert!(matches!(&blocks[0], Block::Para(s) if s.iter().map(|s| s.text.as_str()).collect::<String>() == "First line\nsecond line"));
-        assert!(matches!(&blocks[1], Block::Para(s) if s[0].text == "New para"));
-        assert!(matches!(&blocks[2], Block::Bullet(s) if s[0].text == "one"));
-        assert!(matches!(&blocks[3], Block::Bullet(s) if s[0].text == "two"));
-        assert_eq!(blocks[4], Block::Code("let x = 1;".into()));
-        assert!(matches!(&blocks[5], Block::Quote(s) if s[0].text == "quoted"));
+        assert_eq!(blocks[1], Block::Gap, "a blank line is a paragraph break, not a line break");
+        assert!(matches!(&blocks[2], Block::Para(s) if s[0].text == "New para"));
+        assert!(matches!(&blocks[3], Block::Bullet(s) if s[0].text == "one"));
+        assert!(matches!(&blocks[4], Block::Bullet(s) if s[0].text == "two"));
+        assert_eq!(blocks[5], Block::Code("let x = 1;".into()));
+        assert!(matches!(&blocks[6], Block::Quote(s) if s[0].text == "quoted"));
+        assert!(!parse("\n\nlead\n\n").contains(&Block::Gap), "no gap before the first block or after the last");
         assert_eq!(parse("```one line```"), vec![Block::Code("one line".into())]);
         assert_eq!(plain("*Checkout* fails for <@U1|Priya>"), "Checkout fails for @Priya");
     }

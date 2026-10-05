@@ -889,17 +889,7 @@ fn description(ui: &mut egui::Ui, task: &Value) {
     }
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        for (i, para) in body
-            .split("\n\n")
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .enumerate()
-        {
-            if i > 0 {
-                ui.add_space(space::MD);
-            }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
-        }
+        super::mrkdwn::show(ui, body, colour::TEXT_2());
     });
 }
 
@@ -2094,7 +2084,7 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if opens && response.clicked() && removed.is_none() && !confirming {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        super::mrkdwn::open(ui.ctx(), url);
     }
     removed
 }
