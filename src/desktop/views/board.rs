@@ -194,7 +194,7 @@ impl DateSlot {
     }
 }
 
-/// The open "+ Add" form under Resources.
+/// The open "+ Add link" form under Resources.
 #[derive(Default)]
 struct Attach {
     /// `viz::select`'s slot. `None` is the resting kind, the first of `KINDS`.
@@ -378,12 +378,11 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut requests: Vec<Request> = Vec::new();
     let repo_busy = net.is_loading(&keys.repo);
 
-    if shell::back(ui, "Projects").clicked() {
-        back = true;
-    }
-
     let fallback = Value::Null;
     let head = detail.as_deref().or(flow.as_deref()).unwrap_or(&fallback);
+    if shell::crumbs(ui, "Projects", str_at(head, "name")) {
+        back = true;
+    }
 
     // A label made from the rail: it exists now, so it joins the set.
     if let Some(label) = net.data(&keys.new_label).cloned() {
@@ -773,32 +772,28 @@ fn headline(
     }
 
     let mut edit = false;
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut pick = None;
-            viz::more(ui, |ui| pick = project_items(ui, head, can_write, false));
-            if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked()
-            {
-                edit = true;
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let title = ui.add(
-                    egui::Label::new(
-                        RichText::new(name)
-                            .size(text::TITLE)
-                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT()),
-                    )
-                    .truncate()
-                    .sense(egui::Sense::click()),
-                );
-                viz::context_menu(&title, |ui| pick = project_items(ui, head, can_write, false));
-            });
-            if let Some(Pick::Act(act)) = pick {
-                *ask = Some(project_ask(head, act));
-            }
-        });
+    let mut pick = None;
+    shell::toolbar_trailing(ui, |ui| {
+        viz::more(ui, |ui| pick = project_items(ui, head, can_write, false));
+        if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked() {
+            edit = true;
+        }
     });
+    let title = ui.add(
+        egui::Label::new(
+            RichText::new(name)
+                .size(text::TITLE)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT()),
+        )
+        .wrap()
+        .sense(egui::Sense::click()),
+    );
+    shell::title_seen(ui, title.rect);
+    viz::context_menu(&title, |ui| pick = project_items(ui, head, can_write, false));
+    if let Some(Pick::Act(act)) = pick {
+        *ask = Some(project_ask(head, act));
+    }
     if edit {
         let description = str_at(head, "description");
         page.editing = Some(Draft {
@@ -809,7 +804,7 @@ fn headline(
             updated_at: Some(str_at(head, "updatedAt").to_owned()).filter(|a| !a.is_empty()),
         });
     }
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
     description(ui, str_at(head, "description"));
 }
 
@@ -1048,7 +1043,7 @@ fn resources(
 ) {
     let mut add = false;
     shell::section_count_with(ui, "Resources", rows.map_or(0, <[Value]>::len), |ui| {
-        if can_write && page.attach.is_none() && w::ghost(ui, "+ Add").clicked() {
+        if can_write && page.attach.is_none() && w::ghost(ui, "+ Add link").clicked() {
             add = true;
         }
     });

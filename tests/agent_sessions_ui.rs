@@ -462,7 +462,12 @@ fn what_waits_on_you_sits_under_the_title_and_complete_waits_for_the_review() {
     let app = RefCell::new(None);
     let p = task_page(&app, &f);
     let answer = p.harness.get_by_label("Send answer").rect();
-    let description = p.harness.get_all_by_label("Description").next().unwrap().rect();
+    let description = p
+        .harness
+        .get_all_by_label("Backend-engineering leads on the weighted-rubric path get their role bucket from Jev.")
+        .next()
+        .unwrap()
+        .rect();
     assert!(answer.top() < description.top(), "the question is pinned above the description");
     assert!(!p.has("Complete"), "the agent holds it; its review is how it finishes");
     drop(p);
@@ -784,4 +789,38 @@ fn renders() {
         p.harness.get_by_label("Done").click();
         p.steps(2);
     }
+}
+
+#[test]
+fn the_toolbar_keeps_the_actions_and_takes_the_title_once_it_scrolls_away() {
+    let f = task_fixtures("needs_input", true);
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Home, Some(TASK), (1440.0, 640.0), false, false);
+    let title = "Rate leads by role bucket";
+    let bar = p.button("Home").rect();
+    let in_bar = |p: &Page<'_>| {
+        p.harness.query_all_by_label(title).any(|n| {
+            let y = n.rect().center().y;
+            y > bar.top() && y < bar.bottom()
+        })
+    };
+    assert!(!in_bar(&p), "the page's own title is on screen, so the bar does not repeat it");
+    let status = p.harness.get_all_by_label_contains("Add labels").next().unwrap().rect();
+    assert!(status.left() > p.button("Take back").rect().right(), "the properties sit in their own pane");
+
+    let body = p.harness.get_by_label("Send answer").rect().center();
+    p.harness.event(egui::Event::PointerMoved(body));
+    for _ in 0..6 {
+        p.harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        });
+        p.steps(2);
+    }
+    p.steps(20);
+    let take_back = p.button("Take back").rect();
+    assert!(take_back.center().y > bar.top() && take_back.center().y < bar.bottom(), "the actions stay put");
+    assert!(in_bar(&p), "scrolled past it, the bar names the task");
 }

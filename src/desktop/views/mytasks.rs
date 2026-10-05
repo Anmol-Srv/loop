@@ -330,14 +330,10 @@ fn page(app: &mut App, ui: &mut egui::Ui, scope: Scope) {
     filter_bar(ui, scope, &mut state, &projects, owners, &mut view);
     ui.ctx().data_mut(|d| d.insert_temp(filters_id, state.clone()));
 
-    // The count heads the groups: how many of how many survive the filters.
-    let count = if shown.len() < rows.len() {
-        format!("{} of {} tasks", shown.len(), rows.len())
-    } else {
-        plural(rows.len(), "task")
-    };
-    w::caption(ui, &count);
-    ui.add_space(space::XS);
+    if shown.len() < rows.len() {
+        w::caption(ui, &format!("{} of {} tasks", shown.len(), rows.len()));
+        ui.add_space(space::XS);
+    }
 
     if rows.is_empty() {
         let detail = match scope {

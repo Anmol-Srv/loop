@@ -256,9 +256,6 @@ struct Local {
     /// The labels just picked, shown until the save lands and the task is
     /// read again.
     labels: Option<Vec<String>>,
-    /// The header's agent pill was clicked: jump to the Agent session
-    /// section on this frame, once the body starts drawing it.
-    jump_to_session: bool,
 }
 
 impl Local {
@@ -285,7 +282,6 @@ impl Local {
             archiving: false,
             deciding: false,
             labels: None,
-            jump_to_session: false,
         }
     }
 }
@@ -347,42 +343,27 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         net.get_once(AGENTS_KEY, "/api/user/agents");
     }
 
-    // A breadcrumb, not an id: "22222222" told nobody anything, the project
-    // name tells you where you are and is the likeliest place to go next.
-    let mut leave = false;
+    let title = task.as_ref().and_then(|t| str_of(t, "title")).unwrap_or_default().to_owned();
+    let back = match app.tab {
+        Tab::Projects if app.project.is_some() => task
+            .as_ref()
+            .filter(|t| str_of(t, "projectId") == app.project.as_deref())
+            .and_then(|t| str_of(t, "projectName"))
+            .unwrap_or("Project")
+            .to_owned(),
+        Tab::Home => "Home".to_owned(),
+        Tab::MyTasks => "My Tasks".to_owned(),
+        Tab::AllTasks => "All Tasks".to_owned(),
+        Tab::Triage => "Triage".to_owned(),
+        Tab::Projects => "Projects".to_owned(),
+        Tab::Agents => "Agents".to_owned(),
+        Tab::Settings => "Back".to_owned(),
+    };
+    if shell::crumbs(ui, &back, &title) {
+        app.task = None;
+        return;
+    }
     let mut open_project: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        if shell::back(ui, "Back").clicked() {
-            leave = true;
-        }
-        let project = task.as_ref().and_then(|t| {
-            Some((
-                str_of(t, "projectName").filter(|n| !n.is_empty())?,
-                str_of(t, "projectId")?,
-            ))
-        });
-        if let Some((name, id)) = project {
-            faint(ui, "\u{00B7}");
-            if w::link(ui, name).clicked() {
-                open_project = Some(id.to_owned());
-            }
-        } else if task.is_some() {
-            faint(ui, "\u{00B7}");
-            faint(ui, "No project");
-        }
-    });
-    if leave {
-        app.task = None;
-        return;
-    }
-    if let Some(project_id) = open_project {
-        app.task = None;
-        app.project = Some(project_id);
-        app.tab = Tab::Projects;
-        return;
-    }
-    ui.add_space(space::XS);
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     let Some(task) = task else {
@@ -543,7 +524,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             shell::Part::Header => {
                 editing = headline(
                     ui, net, task_id, &task, &status, track, &moves, can_act, can_write,
-                    &handoff, &viewer, delegate, local,
+                    &handoff, &viewer, local,
                 );
                 if let Some(s) = &panel {
                     if let Some(ask) = session::pinned(ui, s, &mut local.session) {
@@ -560,10 +541,6 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 resources(ui, net, task_id, &task, &me, admin, can_write, local);
 
                 if let Some(s) = &panel {
-                    // The header's agent pill asked to jump here.
-                    if std::mem::take(&mut local.jump_to_session) {
-                        ui.scroll_to_cursor(Some(egui::Align::TOP));
-                    }
                     if let Some(ask) = session::show(ui, net, s, &mut local.session) {
                         agent_action(net, task_id, ask, local);
                     }
@@ -693,7 +670,6 @@ fn headline(
     can_write: bool,
     handoff: &Handoff,
     viewer: &Viewer,
-    delegate: Option<&Value>,
     local: &mut Local,
 ) -> bool {
     let busy = local.patching
@@ -777,36 +753,28 @@ fn headline(
     } else {
         let mut edit = false;
         let mut pick: Option<Pick> = None;
-        // Its own row, right-aligned: with the title able to wrap to
-        // whatever it needs, these can no longer share a line with it and
-        // squeeze it into what is left over.
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
-                if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
-                    pick = super::triage::page_actions(ui, task);
+        shell::toolbar_trailing(ui, |ui| {
+            viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
+            if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
+                pick = super::triage::page_actions(ui, task);
+            }
+            if let Some((copy, next)) = action {
+                if w::primary(ui, copy, !busy).clicked() {
+                    go = Some(next);
                 }
-                if let Some((copy, next)) = action {
-                    if w::primary(ui, copy, !busy).clicked() {
-                        go = Some(next);
-                    }
+            }
+            if status != "triage" {
+                if let Some(p) = handoff_control(ui, handoff, busy) {
+                    pick = Some(p);
                 }
-                // Not before it is accepted: triage is a yes or a no first.
-                if status != "triage" {
-                    if let Some(p) = handoff_control(ui, handoff, busy) {
-                        pick = Some(p);
-                    }
-                }
-                if can_write && w::ghost(ui, "Edit").clicked() {
-                    edit = true;
-                }
-                if busy {
-                    ui.add(egui::Spinner::new().size(text::BODY));
-                }
-            });
+            }
+            if can_write && w::ghost(ui, "Edit").clicked() {
+                edit = true;
+            }
+            if busy {
+                ui.add(egui::Spinner::new().size(text::BODY));
+            }
         });
-        ui.add_space(space::SM);
 
         // ---- the title, wrapped in full rather than cut off: a prose
         // measure keeps a long one readable instead of a single edge-to-edge
@@ -836,24 +804,11 @@ fn headline(
                     .wrap()
                     .sense(egui::Sense::click()),
                 );
+                shell::title_seen(ui, title.rect);
                 viz::context_menu(&title, |ui| pick = task_items(ui, task, viewer, false));
             });
         });
         local.pick = pick;
-
-        // ---- its PRs, and — delegated — who is on it and how that is going
-        let artifacts = net.shared(ARTIFACTS_KEY);
-        let artifacts: &[Value] = artifacts
-            .as_deref()
-            .and_then(Value::as_array)
-            .map_or(&[], Vec::as_slice);
-        pr_chips(ui, artifacts);
-        if let Some(d) = delegate {
-            ui.add_space(space::SM);
-            if agent_pill(ui, task_id, d, handoff.mine, task).clicked() {
-                local.jump_to_session = true;
-            }
-        }
 
         if edit {
             let title = str_of(task, "title").unwrap_or_default().to_owned();
@@ -922,141 +877,10 @@ fn headline(
     editing
 }
 
-/// The task's PRs, as compact chips under the title — a click opens each in
-/// the browser, and the full URL is the hover text since the label already
-/// says which repo and number. Everything else stays in Resources.
-fn pr_chips(ui: &mut egui::Ui, artifacts: &[Value]) {
-    let prs: Vec<&Value> = artifacts
-        .iter()
-        .filter(|a| str_of(a, "kind") == Some("pr"))
-        .collect();
-    if prs.is_empty() {
-        return;
-    }
-    ui.add_space(space::XS);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        for pr in prs {
-            pr_chip(ui, pr);
-        }
-    });
-}
-
-/// One PR chip: the GitHub mark, "repo #1531", and — once the artifact's
-/// metadata carries one (nothing fetches it; this only ever reads what is
-/// already there) — a small dot for its open, merged or closed state.
-fn pr_chip(ui: &mut egui::Ui, artifact: &Value) -> egui::Response {
-    let url = str_of(artifact, "url").unwrap_or_default();
-    let label = link_label(url)
-        .or_else(|| str_of(artifact, "title").map(str::to_owned))
-        .unwrap_or_else(|| host_path(url).to_owned());
-    let dot = artifact
-        .get("metadata")
-        .and_then(|m| m.get("state"))
-        .and_then(Value::as_str)
-        .and_then(|s| match s {
-            "open" => Some(colour::OK()),
-            "merged" => Some(colour::AGENT()),
-            "closed" => Some(colour::DANGER()),
-            _ => None,
-        });
-
-    let fg = colour::INFO();
-    let font = egui::FontId::proportional(text::SMALL);
-    let icon = ui
-        .painter()
-        .layout_no_wrap(egui_phosphor::regular::GIT_PULL_REQUEST.to_owned(), font.clone(), fg);
-    let name = ui.painter().layout_no_wrap(label.clone(), font, fg);
-    let pad_x = space::SM;
-    let gap = space::XXS;
-    let dot_w = if dot.is_some() { space::SM } else { 0.0 };
-    let height = 20.0;
-    let width = icon.size().x + gap + name.size().x + dot_w + pad_x * 2.0;
-
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    let response = motion::operable(ui, response, radius::SM as f32);
-    let hovered = response.hovered() || response.has_focus();
-    let fill = motion::hover_fill(
-        ui,
-        response.id.with("fill"),
-        hovered,
-        colour::INFO_BG(),
-        colour::INFO_BG().lerp_to_gamma(fg, 0.35),
-    );
-
-    let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, fill);
-    let mut x = rect.left() + pad_x;
-    p.galley(egui::pos2(x, rect.center().y - icon.size().y / 2.0), icon.clone(), fg);
-    x += icon.size().x + gap;
-    p.galley(egui::pos2(x, rect.center().y - name.size().y / 2.0), name, fg);
-    if let Some(c) = dot {
-        p.circle_filled(egui::pos2(rect.right() - pad_x - 2.5, rect.center().y), 2.5, c);
-    }
-
-    if hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if response.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-    }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &label));
-    response.on_hover_text(url)
-}
-
-/// The header's agent pill: the delegate's globe, its name, and the same
-/// state a viewer already reads elsewhere — clicking it jumps to the Agent
-/// session section below.
-fn agent_pill(ui: &mut egui::Ui, task_id: &str, d: &Value, mine: bool, task: &Value) -> egui::Response {
-    let name = str_of(d, "name").unwrap_or("Agent");
-    let short = session::short_name(name);
-    let state = str_of(d, "state").unwrap_or("handed_off");
-    // The agent's own id, not its owner's, so its globe is its own colour.
-    let seed = str_of(d, "id").unwrap_or(name);
-    let presence = Presence::of(state, str_of(d, "lastSeenAt"));
-    let owner_first = str_of(task, "assigneeName")
-        .and_then(|n| n.split_whitespace().next())
-        .unwrap_or("its owner");
-    let (label, tone) = pill_state(state, mine, owner_first);
-
-    let group = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        face::avatar_still(ui, seed, face::SM, presence, name);
-        ui.label(RichText::new(short).size(text::SMALL).color(colour::TEXT()));
-        c::chip(ui, &label, tone, true);
-    });
-    let id = egui::Id::new(("task:agent-pill", task_id));
-    let response = ui.interact(group.response.rect, id, egui::Sense::click());
-    let response = motion::operable(ui, response, radius::SM as f32);
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let hint = format!("Open the Agent session with {short}");
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &hint));
-    response.on_hover_text(hint)
-}
-
-/// The pill's words: the same tinted chip the rail's "Agent state" row
-/// already shows everyone, except plan review — "Plan review" alone does not
-/// say whose, so the owner reads "your" and everyone else the owner's name,
-/// the same split `agent_session::now_line` already draws elsewhere.
-fn pill_state(state: &str, mine: bool, owner_first: &str) -> (String, c::Tone) {
-    if state == "plan_review" {
-        let words = if mine {
-            "Waiting for your plan review".to_owned()
-        } else {
-            format!("Waiting for {owner_first}\u{2019}s plan review")
-        };
-        return (words, state_tone(state));
-    }
-    (state_words(state).to_owned(), state_tone(state))
-}
-
 /// The task's own words, at a prose measure. Paragraphs split on a blank line,
 /// because that is how whoever filed it typed them.
 fn description(ui: &mut egui::Ui, task: &Value) {
-    shell::section(ui, "Description");
+    ui.add_space(space::MD);
     let body = str_of(task, "body").unwrap_or("").trim();
     if body.is_empty() {
         w::caption(ui, "No description");
@@ -2017,10 +1841,10 @@ fn resources(
     shell::section_count_with(ui, "Resources", links.len() + files.len(), |ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         if can_write {
-            if w::ghost(ui, "Upload").on_hover_text("Screenshots, PDFs or .md files \u{2014} or drop them on the page").clicked() {
+            if w::ghost(ui, "Upload file").on_hover_text("Screenshots, PDFs or .md files \u{2014} or drop them on the page").clicked() {
                 pick = true;
             }
-            if w::ghost(ui, "+ Link").clicked() {
+            if w::ghost(ui, "+ Add link").clicked() {
                 add = true;
             }
         }

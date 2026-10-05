@@ -1423,7 +1423,7 @@ pub(super) const ACTIVE_KEY: &str = "agents:active";
 /// Home's "Agents at work": one compact row per agent holding a task. Absent
 /// when there are none — and when the server does not have the endpoint yet,
 /// rather than an error on the dashboard. Returns a task to open.
-pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
+pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net, me: &str) -> Option<String> {
     net.get_once(ACTIVE_KEY, "/api/user/agents/active");
     let rows = net.shared(ACTIVE_KEY)?;
     let rows = rows.as_array().filter(|r| !r.is_empty())?;
@@ -1433,7 +1433,7 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         for row in rows {
-            if active_row(ui, row) {
+            if active_row(ui, row, me) {
                 open = row.get("task").and_then(|t| str_of(t, "id")).map(str::to_owned);
             }
         }
@@ -1441,7 +1441,7 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
     open
 }
 
-fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
+fn active_row(ui: &mut egui::Ui, row: &Value, me: &str) -> bool {
     let empty = Value::Null;
     let agent = row.get("agent").unwrap_or(&empty);
     let owner = row.get("owner").unwrap_or(&empty);
@@ -1483,6 +1483,7 @@ fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
         fixed(ui, rest, |ui| {
             let (words, ink) = match (state, now) {
                 ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED()),
+                ("needs_input", _) if !me.is_empty() && str_of(owner, "id") == Some(me) => ("Waiting on you".to_owned(), colour::ASK()),
                 ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::ASK()),
                 ("plan_review", _) => ("Plan review".to_owned(), colour::ASK()),
                 ("in_review", _) => ("In review".to_owned(), colour::ASK()),

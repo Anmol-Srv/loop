@@ -323,8 +323,8 @@ fn my_tasks_leads_with_one_line_to_triage() {
     assert!(p.has("3 to triage"), "one line, not the group");
     assert!(!p.has(BUG_TITLE), "the filings live on the Triage tab");
     // Triage is not in the list below, which keeps the rest.
-    assert!(p.has("2 tasks"));
     assert!(p.has("Rate leads by role bucket"));
+    assert!(p.has("Payment sheet sync retries"));
     p.harness.get_by_label("3 to triage").click();
     p.steps(3);
     assert!(tab(&p) == Tab::Triage);

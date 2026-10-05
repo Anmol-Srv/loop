@@ -125,8 +125,8 @@ const COLS: [Col; 8] = [
 const COL_SIGNAL: f32 = 84.0;
 const ATTENTION_COLS: [Col; 3] = [
     Col::left("", COL_SIGNAL),
-    Col::fill("What", 140.0),
-    Col::fill("Why", 180.0),
+    Col::fill("", 140.0),
+    Col::fill("", 180.0),
 ];
 
 /// What the table is filtered to. Every field is "no filter" when unset, so
@@ -182,16 +182,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     };
     let rows = t.rows();
 
-    let mut subtitle = format!(
-        "{} across {}",
-        plural(d.live, "task"),
-        plural(d.project_count, "project")
-    );
-    let dropped = d.all.len() - d.live;
-    if dropped > 0 {
-        subtitle += &format!(" · {dropped} dropped, not counted");
-    }
-    shell::page_title(ui, "Overview", &subtitle, |_| {});
+    shell::page_title(ui, "Home", "", |_| {});
 
     if let Some(err) = &error {
         if w::error_retry(ui, err) {
@@ -227,7 +218,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     );
 
     // ---- whose agents are holding what, right now
-    if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap()) {
+    if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap(), &my_person_id) {
         go = Some(Target::Task(id));
     }
 
@@ -315,7 +306,6 @@ struct Derived {
     all: Vec<Row>,
     /// How many of `all` are not dropped.
     live: usize,
-    project_count: usize,
     alerts: Vec<Alert>,
     status: StatusFigures,
     departments: Vec<(String, i64, i64)>,
@@ -393,7 +383,6 @@ fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
 
     Derived {
         live: live.len(),
-        project_count: projects.len(),
         alerts: attention(&home, &projects, &live, &by_id),
         status: status_figures(&live),
         departments: department_rollup(&projects),

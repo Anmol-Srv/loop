@@ -383,6 +383,7 @@ pub mod radius {
 /// Fixed heights, so columns align down a page and across screens.
 pub mod size {
     pub const ROW: f32 = 30.0;
+    pub const TOOLBAR: f32 = 52.0;
     pub const CONTROL: f32 = 28.0;
     pub const SIDEBAR_W: f32 = 232.0;
     /// Avatar diameters. Two callers independently reached for `24.0` during

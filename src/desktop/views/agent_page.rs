@@ -45,9 +45,6 @@ pub(super) enum CardAsk {
     Revoke,
 }
 
-/// Below this the rail's facts fold into a line under the header. The
-/// shell's own rail breakpoint.
-const NARROW: f32 = 760.0;
 const TABS: [&str; 4] = ["Activity", "Tasks", "Runs", "Logs"];
 /// The chart's bars, and how tall the tallest day stands.
 const CHART_H: f32 = 64.0;
@@ -94,7 +91,8 @@ pub(super) fn show(
     } else {
         "All agents"
     };
-    if shell::back(ui, back_label).clicked() {
+    let name = str_of(&agent, "name").unwrap_or("Agent").to_owned();
+    if shell::crumbs(ui, back_label, &name) {
         ask = Some(Ask::Back);
     }
     if let Some(err) = net.error(&key).filter(|_| overview.is_none()) {
@@ -107,13 +105,12 @@ pub(super) fn show(
         return ask;
     }
 
-    let name = str_of(&agent, "name").unwrap_or("Agent").to_owned();
     let short = short_name(&name).to_owned();
     let tab = &mut opened.tab;
     let mut from_rail = None;
     // Narrow, the rail's facts would stand a screen tall between the header
     // and the figures; they fold into one wrapped line instead.
-    if ui.available_width() < NARROW {
+    if !shell::side_fits() {
         if let Some(a) = header(ui, &agent, owned, &name, &short) {
             ask = Some(a);
         }
@@ -182,7 +179,6 @@ fn header(
     let agent_seed = str_of(a, "id").unwrap_or(name);
     let mut ask = None;
 
-    ui.add_space(space::SM);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::LG;
         match status {
@@ -198,7 +194,7 @@ fn header(
         };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if owned {
-                viz::more(ui, |ui| {
+                shell::toolbar_trailing(ui, |ui| viz::more(ui, |ui| {
                     if status == "waiting" && viz::menu_item(ui, "Continue setup", false, None) {
                         ask = Some(Ask::Card(name.to_owned(), CardAsk::Continue));
                     }
@@ -219,11 +215,11 @@ fn header(
                             ask = Some(Ask::Card(name.to_owned(), CardAsk::Revoke));
                         }
                     }
-                });
+                }));
             }
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = space::XXS;
-                ui.add(
+                let title = ui.add(
                     egui::Label::new(
                         RichText::new(name)
                             .size(text::TITLE)
@@ -232,6 +228,7 @@ fn header(
                     )
                     .truncate(),
                 );
+                shell::title_seen(ui, title.rect);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::XS;
                     w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());

@@ -308,13 +308,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             sort_projects(&mut rows, &flows);
             rows
         });
-        ui.label(
-            RichText::new(count_line(shown.len(), list.len()))
-                .size(text::SMALL)
-                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED()),
-        );
-        ui.add_space(space::SM);
+        if shown.len() < list.len() {
+            ui.label(
+                RichText::new(format!("{} of {} projects", shown.len(), list.len()))
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                    .color(colour::TEXT_MUTED()),
+            );
+            ui.add_space(space::SM);
+        }
     }
     if let Some(err) = error {
         w::error(ui, &err);
@@ -351,17 +353,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     if let Some(id) = open {
         app.project = Some(id);
-    }
-}
-
-/// "5 projects", or "2 of 5 projects" once a filter is hiding some. Over the
-/// table rather than in the toolbar, where it ran into the last filter at 820.
-fn count_line(shown: usize, total: usize) -> String {
-    let noun = if total == 1 { "project" } else { "projects" };
-    if shown == total {
-        format!("{total} {noun}")
-    } else {
-        format!("{shown} of {total} {noun}")
     }
 }
 
