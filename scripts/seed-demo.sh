@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Loads the control plane with a realistic slice: two projects, three people
+# Loads the control plane with a realistic slice: two projects, four people
 # in different departments, blocked work, an agent mid-flight, and an agent
 # waiting on a human. Safe to re-run — it truncates first.
 set -euo pipefail
@@ -11,7 +11,11 @@ BASE=${ACP_URL:-http://localhost:${PORT:-8080}}
 export PGOPTIONS='-c client_min_messages=warning'
 PSQL="psql -q ${DATABASE_URL:-postgres://localhost:5432/acp_dev}"
 
-$PSQL -qc "TRUNCATE artifact, change, run_log_line, task, phase, project, job, setup_code, credential, person CASCADE;"
+# Fail before wiping anything if the server or the admin binary is not ready.
+cargo build -q --bin acp-admin
+curl -fsS "$BASE/health/ready" >/dev/null || { echo "no server at $BASE; start it with: cargo run --bin acp-server" >&2; exit 1; }
+
+$PSQL -qc "TRUNCATE artifact, change, run_log_line, task, phase, project, job, setup_code, credential, person, label CASCADE;"
 
 adm() { ./target/debug/acp-admin "$@"; }
 adm bootstrap-admin anmol@airtribe.live Anmol >/dev/null 2>&1 || true
@@ -29,8 +33,7 @@ PASSWORD=12345678
 for who in anmol pratik evana chinmay; do adm set-password "$who@airtribe.live" "$PASSWORD" >/dev/null; done
 
 H=$(adm session anmol@airtribe.live | sed -n 2p)
-C=$(adm session chinmay@airtribe.live | sed -n 2p)
-A=$(adm mint hermes --owner chinmay@airtribe.live --runtime hermes | sed -n 's/^Token: \([0-9a-f]*\).*/\1/p')
+A=$(adm mint hermes --owner anmol@airtribe.live --runtime hermes | sed -n 's/^Token: \([0-9a-f]*\).*/\1/p')
 AGENT=$($PSQL -tAc "SELECT id FROM agent WHERE handle='hermes'")
 
 api() {
@@ -42,7 +45,10 @@ ent() { python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["entity"]
 # A project comes with an empty first phase; seed that one rather than leave it.
 phase() { # project-id  name  position
   if [ "$3" = 0 ]; then
-    $PSQL -tAc "UPDATE phase SET name='$2' WHERE project_id='$1' AND position=0 RETURNING id" | head -1
+    local id
+    id=$($PSQL -tAc "UPDATE phase SET name='$2' WHERE project_id='$1' AND position=0 RETURNING id" | head -1)
+    [ -n "$id" ] || { echo "project $1 has no phase at position 0" >&2; return 1; }
+    echo "$id"
   else
     api POST "/api/user/projects/$1/phases" "$H" "{\"name\":\"$2\",\"position\":$3}" | ent
   fi
@@ -73,19 +79,19 @@ ANMOL=anmol@airtribe.live PRATIK=pratik@airtribe.live EVANA=evana@airtribe.live 
 task 0 "Schema and migrations"      "$ANMOL"   shipped >/dev/null
 task 0 "The change write path"      "$ANMOL"   shipped >/dev/null
 task 1 "Scoped bearer tokens"       "$ANMOL"   shipped >/dev/null
-task 1 "The acp CLI"                "$CHINMAY" shipped >/dev/null
+task 1 "The acp CLI"                "$ANMOL"   shipped >/dev/null
 task 2 "Proposals must not mutate"  "$ANMOL"   shipped >/dev/null
 T_MCP=$(task 2 "Scope-filtered MCP tools" "$ANMOL"   shipped)
 task 3 "Claim-lease distribution"   "$ANMOL"   shipped >/dev/null
 task 3 "Run logs"                   "$ANMOL"   completed >/dev/null
 
 T_TOKENS=$(task 4 "Design tokens and theme"   "$PRATIK"  handoff)
-T_HOME=$(task  4 "Home page"                  "$CHINMAY" in_progress)
+task 4 "Home page"                  "$CHINMAY" in_progress >/dev/null
 T_TRACK=$(task 4 "Project tracker"            ""         open)
 T_EMPTY=$(task 4 "Empty state illustrations"  "$EVANA"   research)
 T_IDS=$(task   4 "Task by id endpoint"        "$ANMOL"   open)
-T_RATE=$(task  4 "Rate limit the MCP surface" ""         open)
-T_LIVE=$(task  4 "Task detail live log"       "$CHINMAY" open)
+T_RATE=$(task  4 "Rate limit the MCP surface" "$ANMOL"   open)
+task 4 "Task detail live log"       "$CHINMAY" open >/dev/null
 
 # the tracker waits on the empty states — the flow the board must show
 api PATCH "/api/user/tasks/$T_TRACK/blockers" "$H" "{\"blockedBy\":[\"$T_EMPTY\"]}" >/dev/null
@@ -110,19 +116,19 @@ C_PAY=$(mk "$D2" "Payment picker"  "$CHINMAY" open)
 api PATCH "/api/user/tasks/$C_PAY/blockers" "$H" "{\"blockedBy\":[\"$C_API\"]}" >/dev/null
 
 # ---- agents: one mid-flight, one waiting on a human
-handoff() { api POST "/api/user/tasks/$1/handoff" "$C" "{\"agentId\":\"$AGENT\",\"brief\":\"$2\"}" >/dev/null; }
+handoff() { api POST "/api/user/tasks/$1/handoff" "$H" "{\"agentId\":\"$AGENT\",\"brief\":\"$2\"}" >/dev/null; }
 agent() { api POST "/api/agent/tasks/$1/$2" "$A" "$3" >/dev/null; }
 api POST /api/agent/hello "$A" '{"runtime":"hermes"}' >/dev/null
 
-handoff "$T_LIVE" "Stream the run log into the task page as it arrives."
-agent "$T_LIVE" ack '{}'
-agent "$T_LIVE" update '{"body":"Starting on the live log.","status":"in_progress"}'
-agent "$T_LIVE" log '{"lines":["reading src/desktop/views","wiring the cursor","cargo build: clean"]}'
-agent "$T_LIVE" now '{"text":"wiring the log cursor"}'
+handoff "$T_IDS" "Serve a single task by id so the task page stops fetching every task."
+agent "$T_IDS" ack '{}'
+agent "$T_IDS" update '{"body":"Starting on the endpoint.","status":"in_progress"}'
+agent "$T_IDS" log '{"lines":["reading src/routes/user/task.rs","adding the handler","cargo test: clean"]}'
+agent "$T_IDS" now '{"text":"writing the route test"}'
 
-handoff "$T_HOME" "Build the home page from the mock in docs/design-mocks."
-agent "$T_HOME" ack '{}'
-agent "$T_HOME" ask '{"body":"The mock shows two empty states for the inbox. Which one ships?"}'
+handoff "$T_RATE" "Rate limit the MCP surface before agents outside the office connect."
+agent "$T_RATE" ack '{}'
+agent "$T_RATE" ask '{"body":"Should the limit be per agent token or per owner?"}'
 
 echo
 echo "seeded."

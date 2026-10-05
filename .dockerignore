@@ -5,3 +5,4 @@ scripts/
 tests/
 .env
 *.md
+.dev-home/
