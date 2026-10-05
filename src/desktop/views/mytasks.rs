@@ -487,9 +487,9 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, scope: Scope, me: &st
         super::home::agent_marker(ui, t);
         // Blocked rides behind the title rather than replacing the status:
         // the status is still true, the blocker is why it is not moving.
-        if blocked(t) {
+        if blocked(t) && status != "blocked" {
             ui.add_space(space::XS);
-            c::chip(ui, "Blocked", c::Tone::Blocked, false);
+            c::blocked(ui);
         }
     });
 
@@ -503,7 +503,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, scope: Scope, me: &st
 
     row.at(2 + o, |ui| {
         if let Some(p) = t.get("priority").and_then(Value::as_i64) {
-            c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+            c::priority(ui, p);
         }
     });
 
@@ -519,10 +519,10 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, scope: Scope, me: &st
                 .and_then(|d| super::home::agent_status(d, mine));
             match agent {
                 Some((label, tone)) => {
-                    c::chip(ui, &label, tone, true).on_hover_text(status_label(status));
+                    c::state(ui, &label, tone).on_hover_text(status_label(status));
                 }
                 None => {
-                    c::chip(ui, status_label(status), c::status_tone(status), true);
+                    c::state(ui, status_label(status), c::status_tone(status));
                 }
             }
         }
@@ -900,10 +900,10 @@ fn card(ui: &mut egui::Ui, scope: Scope, t: &Value, viewer: &Viewer, can_move: b
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::XS;
                     if let Some(p) = t.get("priority").and_then(Value::as_i64) {
-                        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+                        c::priority(ui, p);
                     }
                     if blocked(t) {
-                        c::chip(ui, "Blocked", c::Tone::Blocked, false);
+                        c::blocked(ui);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
@@ -1046,16 +1046,6 @@ fn owner_cell(ui: &mut egui::Ui, t: &Value) {
         _ => {
             ui.label(egui::RichText::new("Unassigned").size(text::SMALL).color(colour::TEXT_FAINT()));
         }
-    }
-}
-
-/// P0 shouts and P4 whispers, in the same chip vocabulary as status.
-fn priority_tone(p: i64) -> c::Tone {
-    match p {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
     }
 }
 

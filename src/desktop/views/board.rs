@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use super::menus::{project_items, task_items, Pick, Viewer};
 use super::projects::{
-    health, label_badge, label_picker, owned, parse_date, priority_tone, relative_day, Health,
+    health, label_badge, label_picker, owned, parse_date, relative_day, Health,
     DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
 };
 use crate::desktop::design::table::{self, Col};
@@ -826,7 +826,7 @@ fn rail(
     let priority = num_at(head, "priority").clamp(0, 4);
     shell::property(ui, "Priority", |ui| {
         if !can_write {
-            c::chip(ui, &format!("P{priority}"), priority_tone(priority), false);
+            c::priority(ui, priority);
             return;
         }
         let current = PRIORITIES[priority as usize];
@@ -1553,7 +1553,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         // waits on someone else is not in progress, and the chip beside its
         // title is what says so.
         if blocked {
-            c::chip(ui, "blocked", c::Tone::Blocked, false);
+            c::blocked(ui);
         }
     });
 
@@ -1575,14 +1575,14 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
 
     row.at(3, |ui| {
         let p = num_at(t, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        c::priority(ui, p);
     });
 
     row.at(4, |ui| {
         if archived(t) {
             archived_chip(ui);
         } else {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
+            c::state(ui, status_label(status), c::status_tone(status));
         }
     });
 

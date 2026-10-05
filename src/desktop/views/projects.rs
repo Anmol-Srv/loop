@@ -517,14 +517,14 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
 
     row.at(4, |ui| {
         let priority = num_at(p, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{priority}"), priority_tone(priority), false);
+        c::priority(ui, priority);
     });
 
     row.at(5, |ui| {
         if archived(p) {
             archived_chip(ui);
         } else {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
+            c::state(ui, status_label(status), c::status_tone(status));
         }
     });
 
@@ -543,18 +543,6 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     }
 
     row.muted(7, &age(p));
-}
-
-/// How loud a priority is allowed to be. Same vocabulary as the task tables —
-/// P0 and P1 get colour, below normal the pill recedes — because a project's
-/// priority and a task's priority are the same scale and must not read as two.
-pub(super) fn priority_tone(priority: i64) -> c::Tone {
-    match priority {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
 }
 
 /// A label colour as a badge draws it: `(hue, ink)`. The server's seven names

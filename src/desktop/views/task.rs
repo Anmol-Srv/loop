@@ -1121,7 +1121,7 @@ fn rail(
         if !r.can_write || r.busy {
             match priority {
                 Some(p) => {
-                    c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+                    c::priority(ui, p);
                 }
                 None => faint(ui, "\u{2014}"),
             }
@@ -1426,17 +1426,6 @@ fn rail(
 /// The assignee menu's "nobody" row, and the project menu's "No project". Not
 /// a uuid, so it cannot collide with one.
 const UNASSIGN: &str = "none";
-
-/// P0 shouts and P4 whispers, in the same chip vocabulary as status — the rail
-/// should read as one column of tokens, not two competing systems.
-fn priority_tone(p: i64) -> c::Tone {
-    match p {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
-}
 
 fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
     ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT()))

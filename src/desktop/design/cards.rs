@@ -73,7 +73,43 @@ pub fn status_tone(status: &str) -> Tone {
 /// A tinted chip. `dot` prepends a filled circle in the text colour, which is
 /// how a status reads as a status rather than a label.
 pub fn chip(ui: &mut Ui, label: &str, tone: Tone, dot: bool) -> Response {
-    let (fill, stroke, fg) = tone.colours();
+    paint_chip(ui, label, tone.colours(), dot)
+}
+
+pub fn priority(ui: &mut Ui, p: i64) -> Response {
+    let ink = match p {
+        0 => colour::DANGER(),
+        1 => colour::WARN(),
+        2 => colour::TEXT_MUTED(),
+        _ => colour::TEXT_FAINT(),
+    };
+    paint_chip(ui, &format!("P{p}"), (Color32::TRANSPARENT, colour::LINE(), ink), false)
+}
+
+pub fn state(ui: &mut Ui, label: &str, tone: Tone) -> Response {
+    const DOT_W: f32 = 10.0;
+    let (_, _, ink) = tone.colours();
+    let words = if matches!(tone, Tone::Blocked | Tone::Ask) { ink } else { colour::TEXT_2() };
+    let room = (ui.available_width() - DOT_W).max(0.0);
+    let galley = super::widgets::truncated(ui, label, egui::FontId::proportional(text::SMALL), words, room);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(DOT_W + galley.size().x, 18.0), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+    let p = ui.painter();
+    p.circle_filled(egui::pos2(rect.left() + 3.0, rect.center().y), 3.0, ink);
+    p.galley(egui::pos2(rect.left() + DOT_W, rect.center().y - galley.size().y / 2.0), galley, words);
+    response
+}
+
+pub fn discipline(ui: &mut Ui, discipline: &str) -> Response {
+    let (_, _, ink) = discipline_tone(discipline).colours();
+    ui.add(egui::Label::new(RichText::new(discipline).size(text::SMALL).color(ink)).truncate().selectable(false))
+}
+
+pub fn blocked(ui: &mut Ui) -> Response {
+    ui.add(egui::Label::new(RichText::new("Blocked").size(text::SMALL).color(colour::DANGER())).selectable(false))
+}
+
+fn paint_chip(ui: &mut Ui, label: &str, (fill, stroke, fg): (Color32, Color32, Color32), dot: bool) -> Response {
     let font = egui::FontId::proportional(text::CAPTION);
     let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), fg);
 
