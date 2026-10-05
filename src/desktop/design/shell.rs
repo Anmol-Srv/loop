@@ -475,10 +475,10 @@ pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
         .frame(
             egui::Frame::new()
                 .fill(colour::CANVAS())
-                .inner_margin(egui::Margin::symmetric(space::XXL as i8, pad::PAGE.1 as i8)),
+                .inner_margin(egui::Margin::symmetric(0, pad::PAGE.1 as i8)),
         )
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical().content_margin(egui::Margin::symmetric(space::XXL as i8, 0)).show(ui, |ui| {
                 // Cap the measure and centre it: past ~1080px the cards just
                 // stretch, and a task title 1400px wide is unreadable.
                 let avail = ui.available_width();

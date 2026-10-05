@@ -213,34 +213,29 @@ fn macos_settings() -> Option<System> {
     None
 }
 
-const BAR: f32 = 0.35;
-const BAR_HELD: f32 = 0.6;
-const TRACK: f32 = 0.06;
+const BAR_RESTING: f32 = 0.2;
+const BAR_SCROLLING: f32 = 0.32;
+const BAR_HELD: f32 = 0.5;
+const TRACK: f32 = 0.04;
 const BAR_SHOWN_SECS: f64 = 0.8;
 const BAR_FADE_SECS: f64 = 0.25;
 
 fn scroll_style(ctx: &egui::Context, legacy: bool, instant: bool) -> egui::style::ScrollStyle {
     let mut s = egui::style::ScrollStyle::floating();
     s.foreground_color = true;
+    s.bar_width = space::SM;
+    s.floating_width = space::XS;
+    s.floating_allocated_width = 0.0;
     s.bar_inner_margin = space::XXS;
-    s.bar_outer_margin = 0.0;
-    s.interact_handle_opacity = BAR_HELD;
+    s.bar_outer_margin = space::XXS;
+    s.dormant_background_opacity = 0.0;
+    s.active_background_opacity = 0.0;
     s.interact_background_opacity = TRACK;
-    if legacy {
-        s.floating_width = s.bar_width;
-        s.floating_allocated_width = s.bar_width;
-        s.dormant_handle_opacity = BAR;
-        s.active_handle_opacity = BAR;
-        s.dormant_background_opacity = TRACK;
-        s.active_background_opacity = TRACK;
-    } else {
-        s.floating_width = space::XS;
-        s.floating_allocated_width = 0.0;
-        s.dormant_handle_opacity = 0.0;
-        s.active_handle_opacity = BAR * just_scrolled(ctx, instant);
-        s.dormant_background_opacity = 0.0;
-        s.active_background_opacity = 0.0;
-    }
+    s.interact_handle_opacity = BAR_HELD;
+    let scrolling = BAR_SCROLLING * just_scrolled(ctx, instant);
+    let resting = if legacy { BAR_RESTING } else { 0.0 };
+    s.dormant_handle_opacity = resting;
+    s.active_handle_opacity = resting.max(scrolling);
     s
 }
 
