@@ -162,6 +162,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+        design::widgets::secure_input(ui.ctx());
     }
 }
 
