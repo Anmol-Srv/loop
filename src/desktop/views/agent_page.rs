@@ -296,8 +296,8 @@ fn now_line(
                     Some(n) if working => n.to_owned(),
                     _ => state_words(state).to_owned(),
                 };
-                let ink = if matches!(state, "needs_input" | "plan_review") {
-                    colour::WARN()
+                let ink = if matches!(state, "needs_input" | "plan_review" | "in_review") {
+                    colour::ASK()
                 } else {
                     colour::TEXT_2()
                 };

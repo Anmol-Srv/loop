@@ -452,8 +452,8 @@ fn attention(
     for (item, filed) in list(home, "needsAttention").into_iter().map(|i| (i, false)).chain(triage) {
         let kind = if filed { Some("triage") } else { str_at(item, "kind") };
         let (signal, tone, verb) = match kind {
-            Some("question") => ("Question", c::Tone::Running, "asks"),
-            Some("review") => ("Review", c::Tone::Agent, "submitted"),
+            Some("question") => ("Question", c::Tone::Ask, "asks"),
+            Some("review") => ("Review", c::Tone::Ask, "submitted"),
             Some("triage") => ("Triage", c::Tone::Info, "filed"),
             _ => continue,
         };
@@ -1019,7 +1019,7 @@ pub(super) fn agent_status(d: &Value, mine: bool) -> Option<(String, c::Tone)> {
                     .unwrap_or("the owner")
                     .to_owned()
             };
-            (format!("Waiting on {who}"), c::Tone::Running)
+            (format!("Waiting on {who}"), c::Tone::Ask)
         }
         "done" => ("Agent done".to_owned(), c::Tone::Quiet),
         other => (super::agents::state_words(other).to_owned(), c::Tone::Neutral),

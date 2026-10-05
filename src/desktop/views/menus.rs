@@ -341,6 +341,14 @@ struct Ask {
     act: Act,
 }
 
+#[derive(Clone)]
+struct Handoff {
+    task: String,
+    agent_id: String,
+    agent_name: String,
+    brief: String,
+}
+
 /// The task actions a menu starts, from any row or the task page: the one
 /// waiting on a yes, and the one sent.
 #[derive(Default)]
@@ -348,6 +356,8 @@ pub struct Tasks {
     ask: Option<Ask>,
     /// A dismiss waiting on its (optional) reason: id, title, what is typed.
     dismiss: Option<(String, String, String)>,
+    handoff: Option<Handoff>,
+    take_back: Option<(String, String, String)>,
     /// The task a triage decision is out for, so its row can say so.
     pub(super) deciding: Option<String>,
     /// What to say when the reply lands, and the task's id if it deletes it.
@@ -380,13 +390,18 @@ impl Tasks {
                 net.post(KEY, &format!("{path}/restore"), json!({}));
                 "Restored.".to_owned()
             }
-            Pick::Handoff(agent, name) => {
-                net.post(KEY, &format!("{path}/handoff"), json!({ "agentId": agent }));
-                format!("Handed off to {name}.")
+            Pick::Handoff(agent_id, agent_name) => {
+                self.handoff = Some(Handoff { task: id, agent_id, agent_name, brief: String::new() });
+                return;
             }
             Pick::TakeBack => {
-                net.post(KEY, &format!("{path}/takeback"), json!({}));
-                "Taken back \u{2014} the agent no longer has this task.".to_owned()
+                let agent = t
+                    .get("delegate")
+                    .map(|d| str_at(d, "name"))
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("The agent");
+                self.take_back = Some((id, str_at(t, "title").to_owned(), agent.to_owned()));
+                return;
             }
             Pick::Dismiss => {
                 self.dismiss = Some((id, str_at(t, "title").to_owned(), String::new()));
@@ -483,6 +498,8 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
     }
 
     dismiss_dialog(ctx, net, s);
+    handoff_dialog(ctx, net, s);
+    take_back_dialog(ctx, net, s);
     let Some(a) = s.ask.clone() else { return gone };
     let (mut go, mut close) = (false, false);
     let delete = a.act == Act::Delete;
@@ -565,5 +582,81 @@ fn dismiss_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
         s.dismiss = None;
     } else if close || modal.should_close() {
         s.dismiss = None;
+    }
+}
+
+/// "Explain the task (optional)", agent already chosen: Cancel or Hand off,
+/// Cmd+Enter to submit.
+fn handoff_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
+    let busy = s.sent.is_some();
+    let Some(h) = s.handoff.as_mut() else {
+        return;
+    };
+    let (mut go, mut close) = (false, false);
+    let modal = super::agents::dialog(ctx, "task:handoff", super::agents::DIALOG_W, |ui| {
+        super::agents::heading(ui, &format!("Hand off to {}", h.agent_name));
+        ui.add_space(space::MD);
+        let field = w::field_multiline(
+            ui,
+            "Explain the task (optional)",
+            &mut h.brief,
+            4,
+            "Anything the task doesn't say \u{2014} context, constraints, what done looks like.",
+        );
+        if field.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
+            go = true;
+        }
+        ui.add_space(space::SM);
+        w::caption(ui, &format!("{} will send a plan for your approval before it builds.", h.agent_name));
+        ui.add_space(space::LG);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            go |= w::primary(ui, "Hand off", !busy).clicked();
+            close = w::ghost(ui, "Cancel").clicked();
+        });
+    });
+    if go && !busy {
+        let h = s.handoff.take().expect("checked above");
+        let brief = h.brief.trim();
+        net.invalidate(KEY);
+        net.post(
+            KEY,
+            &format!("/api/user/tasks/{}/handoff", h.task),
+            json!({ "agentId": h.agent_id, "brief": (!brief.is_empty()).then_some(brief) }),
+        );
+        s.sent = Some((format!("Handed off to {}.", h.agent_name), None));
+    } else if close || modal.should_close() {
+        s.handoff = None;
+    }
+}
+
+fn take_back_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
+    let Some((id, title, agent)) = s.take_back.clone() else {
+        return;
+    };
+    let (mut go, mut close) = (false, false);
+    let modal = super::agents::dialog(ctx, "task:takeback", super::agents::DIALOG_W * 0.8, |ui| {
+        super::agents::heading(ui, &format!("Take \u{201c}{title}\u{201d} back from {agent}?"));
+        ui.add_space(space::XS);
+        w::muted(
+            ui,
+            &format!(
+                "{agent} stops and loses access to the task. Its updates stay in Activity; your hand-off note and plan approval are cleared."
+            ),
+        );
+        ui.add_space(space::XL);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            go = w::primary(ui, "Take back", s.sent.is_none()).clicked();
+            close = w::ghost(ui, "Cancel").clicked();
+        });
+    });
+    if go {
+        s.take_back = None;
+        net.invalidate(KEY);
+        net.post(KEY, &format!("/api/user/tasks/{id}/takeback"), json!({}));
+        s.sent = Some(("Taken back \u{2014} the agent no longer has this task.".to_owned(), None));
+    } else if close || modal.should_close() {
+        s.take_back = None;
     }
 }

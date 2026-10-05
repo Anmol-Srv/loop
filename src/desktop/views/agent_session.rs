@@ -188,8 +188,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     // ---- where it is
     let (steps, current, complete) = stages(state, s, owner_first);
     let tone = match state {
-        "needs_input" | "plan_review" => colour::WARN(),
-        "in_review" => colour::AGENT(),
+        "needs_input" | "plan_review" | "in_review" => colour::ASK(),
         _ => colour::INFO(),
     };
     face::stepper(ui, &steps, current, complete, tone);
@@ -232,9 +231,41 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         });
     }
 
-    // ---- what waits on the owner, pinned: a plan to approve, a question to
-    // answer, a report to review. Everything else is in Activity, newest first.
-    plan_section(ui, s, st, short, &mut ask);
+    if !s.private {
+        plan_section(ui, s, st, short, &mut ask);
+    }
+
+    // ---- a private line to the agent
+    if s.mine && held {
+        ui.add_space(space::LG);
+        if let Some(a) = composer(ui, st, short, s.busy) {
+            ask = Some(a);
+        }
+    }
+
+    // ---- the step log
+    if s.private {
+        ui.add_space(space::MD);
+        logs(ui, net, s.task_id, matches!(state, "working" | "acknowledged"), st);
+    }
+    ask
+}
+
+/// What waits on the owner, pinned: a plan to approve, a question to answer,
+/// a report to review. Everything else is in Activity, newest first.
+pub(super) fn pinned(ui: &mut egui::Ui, s: &Session, st: &mut State) -> Option<Ask> {
+    let d = s.delegate;
+    let state = str_of(d, "state").unwrap_or("handed_off");
+    let agent = str_of(d, "name").unwrap_or("The agent");
+    let short = short_name(agent);
+    let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
+    let owner_first = first_name(owner);
+    let agent_seed = str_of(d, "id").unwrap_or(agent);
+    let mut ask = None;
+
+    if s.private {
+        plan_section(ui, s, st, short, &mut ask);
+    }
     let visible: Vec<&Value> = s
         .notes
         .iter()
@@ -245,7 +276,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     if state == "needs_input" {
         if let Some(q) = last_of("question") {
             ui.add_space(space::MD);
-            pinned_card(ui, colour::WARN(), |ui| {
+            pinned_card(ui, colour::ASK(), |ui| {
                 let at = str_of(q, "createdAt");
                 let body_id = egui::Id::new(("session:pinned", s.task_id, str_of(q, "id").unwrap_or_default()));
                 substantive(ui, Node::Agent(agent_seed), short, "asks", at, private_kind("question") && s.private, body_id,
@@ -265,20 +296,6 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             ui.add_space(space::MD);
             report(ui, s, st, sub, short, owner_first, state, &mut ask);
         }
-    }
-
-    // ---- a private line to the agent
-    if s.mine && held {
-        ui.add_space(space::LG);
-        if let Some(a) = composer(ui, st, short, s.busy) {
-            ask = Some(a);
-        }
-    }
-
-    // ---- the step log
-    if s.private {
-        ui.add_space(space::MD);
-        logs(ui, net, s.task_id, matches!(state, "working" | "acknowledged"), st);
     }
     ask
 }
@@ -318,111 +335,105 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
     }
 
     ui.add_space(space::MD);
-    egui::Frame::new()
-        .fill(colour::SURFACE())
-        .stroke(egui::Stroke::new(1.0, colour::LINE()))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = space::SM;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new("Plan")
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                let (label, tone) = match decision {
-                    Some("approved") => ("Approved", c::Tone::Ok),
-                    Some("changes_requested") => ("Changes requested", c::Tone::Running),
-                    _ => ("Waiting for your review", c::Tone::Running),
-                };
-                c::chip(ui, label, tone, true);
-                if let Some(at) = str_of(current, "createdAt") {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                    });
-                }
-            });
-            ui.scope(|ui| {
-                ui.set_max_width(PROSE_W.min(ui.available_width()));
-                super::mrkdwn::show(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
-                if decision == Some("changes_requested") {
-                    if let Some(note) = str_of(current, "changesNote") {
-                        ui.add_space(space::XS);
-                        w::muted(ui, &format!("You asked: {note}"));
-                    }
-                }
-            });
-
-            let plan_id = egui::Id::new(("session:plan", s.task_id));
-            face::disclosure(ui, plan_id, "Full plan", None, &mut st.plan_open);
-            if st.plan_open {
-                ui.scope(|ui| {
-                    ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2());
+    pinned_card(ui, colour::ASK(), |ui| {
+        ui.spacing_mut().item_spacing.y = space::SM;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            ui.label(
+                RichText::new("Plan")
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT()),
+            );
+            let (label, tone) = match decision {
+                Some("approved") => ("Approved", c::Tone::Ok),
+                Some("changes_requested") => ("Changes requested", c::Tone::Running),
+                _ => ("Waiting for your review", c::Tone::Ask),
+            };
+            c::chip(ui, label, tone, true);
+            if let Some(at) = str_of(current, "createdAt") {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                 });
             }
-            let earlier = &s.plans[1..];
-            if !earlier.is_empty() {
-                let history_id = egui::Id::new(("session:plan:history", s.task_id));
-                face::disclosure(ui, history_id, "Earlier plans", Some(earlier.len()), &mut st.plan_history_open);
-                if st.plan_history_open {
-                    for p in earlier {
-                        ui.add_space(space::XS);
-                        ui.scope(|ui| {
-                            ui.set_max_width(PROSE_W.min(ui.available_width()));
-                            super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
-                        });
-                    }
+        });
+        ui.scope(|ui| {
+            ui.set_max_width(PROSE_W.min(ui.available_width()));
+            super::mrkdwn::show(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
+            if decision == Some("changes_requested") {
+                if let Some(note) = str_of(current, "changesNote") {
+                    ui.add_space(space::XS);
+                    w::muted(ui, &format!("You asked: {note}"));
                 }
             }
+        });
 
-            if decision.is_some() {
-                return;
+        let plan_id = egui::Id::new(("session:plan", s.task_id));
+        face::disclosure(ui, plan_id, "Full plan", None, &mut st.plan_open);
+        if st.plan_open {
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2());
+            });
+        }
+        let earlier = &s.plans[1..];
+        if !earlier.is_empty() {
+            let history_id = egui::Id::new(("session:plan:history", s.task_id));
+            face::disclosure(ui, history_id, "Earlier plans", Some(earlier.len()), &mut st.plan_history_open);
+            if st.plan_history_open {
+                for p in earlier {
+                    ui.add_space(space::XS);
+                    ui.scope(|ui| {
+                        ui.set_max_width(PROSE_W.min(ui.available_width()));
+                        super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
+                    });
+                }
             }
-            ui.add_space(space::XS);
-            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+        }
+
+        if decision.is_some() {
+            return;
+        }
+        ui.add_space(space::XS);
+        let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+        if st.plan_changes_open {
+            let field = w::field_multiline(
+                ui,
+                "",
+                &mut st.plan_changes,
+                2,
+                &format!("What should {short} change?  Cmd+Enter to send"),
+            );
+            let ready = !st.plan_changes.trim().is_empty() && !s.busy;
+            if ready && submit_key(ui, &field) {
+                *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
             if st.plan_changes_open {
-                let field = w::field_multiline(
-                    ui,
-                    "",
-                    &mut st.plan_changes,
-                    2,
-                    &format!("What should {short} change?  Cmd+Enter to send"),
-                );
                 let ready = !st.plan_changes.trim().is_empty() && !s.busy;
-                if ready && submit_key(ui, &field) {
+                let r = w::primary(ui, "Send back", ready);
+                if st.plan_changes.trim().is_empty() {
+                    r.clone().on_disabled_hover_text("Say what needs to change first.");
+                }
+                if r.clicked() {
                     *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                if st.plan_changes_open {
-                    let ready = !st.plan_changes.trim().is_empty() && !s.busy;
-                    let r = w::primary(ui, "Send back", ready);
-                    if st.plan_changes.trim().is_empty() {
-                        r.clone().on_disabled_hover_text("Say what needs to change first.");
-                    }
-                    if r.clicked() {
-                        *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
-                    }
-                    if w::ghost(ui, "Cancel").clicked() {
-                        st.plan_changes_open = false;
-                    }
-                } else {
-                    if w::primary(ui, "Approve plan", !s.busy).clicked() {
-                        *ask = Some(Ask::ApprovePlan);
-                    }
-                    if w::secondary(ui, "Ask for changes", !s.busy).clicked() {
-                        st.plan_changes_open = true;
-                    }
+                if w::ghost(ui, "Cancel").clicked() {
+                    st.plan_changes_open = false;
                 }
-            });
+            } else {
+                if w::primary(ui, "Approve plan", !s.busy).clicked() {
+                    *ask = Some(Ask::ApprovePlan);
+                }
+                if w::secondary(ui, "Ask for changes", !s.busy).clicked() {
+                    st.plan_changes_open = true;
+                }
+            }
         });
+    });
 }
 
 /// A card for something waiting on the owner, edged in the colour of what it
@@ -444,7 +455,7 @@ fn pinned_card(ui: &mut egui::Ui, edge: egui::Color32, add: impl FnOnce(&mut egu
 /// Everything that happened on a task, newest first, in one list: the hand-off,
 /// each plan and its decision, the agent's updates, questions and reports, the
 /// owner's answers and instructions, and the team's notes. Read-only — what
-/// needs acting on is pinned in the agent panel above.
+/// needs acting on is pinned under the page's header.
 pub(super) struct Feed<'a> {
     pub task_id: &'a str,
     pub task: &'a Value,
@@ -553,7 +564,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                     let (label, tone) = match str_of(p, "decision") {
                         Some("approved") => ("Approved", c::Tone::Ok),
                         Some(_) => ("Changes requested", c::Tone::Running),
-                        None => ("Waiting for review", c::Tone::Running),
+                        None => ("Waiting for review", c::Tone::Ask),
                     };
                     c::chip(ui, label, tone, true);
                     super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT());
@@ -781,7 +792,7 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
             "stopped" => format!("Taken back from {short}"),
             other => state_words(other).to_owned(),
         };
-        let ink = if matches!(state, "needs_input" | "plan_review") { colour::WARN() } else { colour::TEXT_MUTED() };
+        let ink = if matches!(state, "needs_input" | "plan_review" | "in_review") { colour::ASK() } else { colour::TEXT_MUTED() };
         ui.label(RichText::new(words).size(text::SMALL).color(ink));
     });
 }
@@ -867,7 +878,7 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
         Node::Mark(mark) => {
             let (ink, fill) = match mark {
                 Mark::Progress => (colour::TEXT_MUTED(), colour::SURFACE()),
-                Mark::Question => (colour::WARN(), colour::WARN_BG()),
+                Mark::Question => (colour::ASK(), colour::ASK_BG()),
                 Mark::Submitted => (colour::AGENT(), colour::AGENT_BG()),
                 Mark::Approved => (colour::OK(), colour::OK_BG()),
                 Mark::Changes => (colour::WARN(), colour::WARN_BG()),
@@ -1127,66 +1138,60 @@ fn report(
         let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(NODE), egui::Sense::hover());
         paint_node(ui, r, &Node::Mark(Mark::Submitted));
         // A frame takes its parent's layout; the card reads top to bottom.
-        ui.vertical(|ui| egui::Frame::new()
-            .fill(colour::SURFACE())
-            .stroke(egui::Stroke::new(1.0, colour::LINE()))
-            .corner_radius(radius::LG)
-            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = space::SM;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::XS;
-                    ui.label(
-                        RichText::new("Report")
-                            .size(text::SMALL)
-                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT()),
-                    );
-                    ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED()));
-                    if let Some(at) = str_of(note, "createdAt") {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                    }
-                });
-                ui.scope(|ui| {
-                    ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    let body_id = egui::Id::new(("session:body", s.task_id, str_of(note, "id").unwrap_or_default()));
-                    clamped_body(ui, body_id, str_of(note, "body").unwrap_or_default(), colour::TEXT());
-                });
+        ui.vertical(|ui| pinned_card(ui, colour::ASK(), |ui| {
+            ui.spacing_mut().item_spacing.y = space::SM;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                ui.label(
+                    RichText::new("Report")
+                        .size(text::SMALL)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT()),
+                );
+                ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED()));
+                if let Some(at) = str_of(note, "createdAt") {
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                }
+            });
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                let body_id = egui::Id::new(("session:body", s.task_id, str_of(note, "id").unwrap_or_default()));
+                clamped_body(ui, body_id, str_of(note, "body").unwrap_or_default(), colour::TEXT());
+            });
 
-                let evidence: Vec<&Value> =
-                    s.evidence.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect();
-                ui.add_space(space::XS);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
-                    if evidence.is_empty() {
-                        ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT()));
-                    }
-                    for row in &evidence {
-                        evidence_chip(ui, row);
-                    }
-                });
-                let target = str_of(s.task, "reviewTarget").unwrap_or("completed");
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::SM;
-                    w::muted(ui, if state == "in_review" { "Approving moves it to" } else { "Asked to move it to" });
-                    c::chip(ui, status_label(target), c::status_tone(target), true);
-                });
+            let evidence: Vec<&Value> =
+                s.evidence.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect();
+            ui.add_space(space::XS);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
+                if evidence.is_empty() {
+                    ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT()));
+                }
+                for row in &evidence {
+                    evidence_chip(ui, row);
+                }
+            });
+            let target = str_of(s.task, "reviewTarget").unwrap_or("completed");
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                w::muted(ui, if state == "in_review" { "Approving moves it to" } else { "Asked to move it to" });
+                c::chip(ui, status_label(target), c::status_tone(target), true);
+            });
 
-                if state != "in_review" {
-                    return;
-                }
-                if !s.mine {
-                    w::caption(ui, &format!("Waiting on {owner_first}\u{2019}s review."));
-                    return;
-                }
-                ui.add_space(space::XS);
-                let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-                ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
-                if let Some(a) = review_controls(ui, st, short, s.busy) {
-                    *ask = Some(a);
-                }
-            }));
+            if state != "in_review" {
+                return;
+            }
+            if !s.mine {
+                w::caption(ui, &format!("Waiting on {owner_first}\u{2019}s review."));
+                return;
+            }
+            ui.add_space(space::XS);
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+            if let Some(a) = review_controls(ui, st, short, s.busy) {
+                *ask = Some(a);
+            }
+        }));
     });
 }
 
@@ -1478,9 +1483,9 @@ fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
         fixed(ui, rest, |ui| {
             let (words, ink) = match (state, now) {
                 ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED()),
-                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::WARN()),
-                ("plan_review", _) => ("Plan review".to_owned(), colour::WARN()),
-                ("in_review", _) => ("In review".to_owned(), colour::AGENT()),
+                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::ASK()),
+                ("plan_review", _) => ("Plan review".to_owned(), colour::ASK()),
+                ("in_review", _) => ("In review".to_owned(), colour::ASK()),
                 ("acknowledged", None) => ("Picked up".to_owned(), colour::TEXT_MUTED()),
                 _ => (state_words(state).to_owned(), colour::TEXT_MUTED()),
             };

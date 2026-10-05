@@ -219,6 +219,15 @@ impl Page<'_> {
     fn disabled(&self, label: &str) -> bool {
         self.harness.get_by_label(label).accesskit_node().is_disabled()
     }
+    fn loading(&self, key: &str) -> bool {
+        self.app.borrow().as_ref().unwrap().net.as_ref().unwrap().is_loading(key)
+    }
+    fn button<'s>(&'s self, label: &'s str) -> egui_kittest::Node<'s> {
+        self.harness
+            .query_all(egui_kittest::kittest::by().role(egui::accesskit::Role::Button).label(label))
+            .last()
+            .unwrap_or_else(|| panic!("no {label} button"))
+    }
     /// The shortest wake-up any frame asked for, over `frames` frames with no
     /// input: what an eframe loop would draw at when the window sits idle.
     fn fastest_wake(&mut self, frames: usize) -> Duration {
@@ -445,6 +454,83 @@ fn report_card_reviews() {
     assert!(p.has("Report"));
     assert!(!p.has("Approve"));
     assert!(p.has("Waiting on Anmol\u{2019}s review."));
+}
+
+#[test]
+fn what_waits_on_you_sits_under_the_title_and_complete_waits_for_the_review() {
+    let f = task_fixtures("needs_input", true);
+    let app = RefCell::new(None);
+    let p = task_page(&app, &f);
+    let answer = p.harness.get_by_label("Send answer").rect();
+    let description = p.harness.get_all_by_label("Description").next().unwrap().rect();
+    assert!(answer.top() < description.top(), "the question is pinned above the description");
+    assert!(!p.has("Complete"), "the agent holds it; its review is how it finishes");
+    drop(p);
+
+    let f = task_fixtures("stopped", true);
+    let app = RefCell::new(None);
+    let p = task_page(&app, &f);
+    assert!(p.has("Complete"), "taken back, the move is the owner's again");
+}
+
+#[test]
+fn hand_off_from_the_menu_asks_for_the_brief_first() {
+    let f = task_fixtures("stopped", true);
+    let app = RefCell::new(None);
+    let mut p = task_page(&app, &f);
+    p.harness.get_all_by_label("More actions").next().unwrap().click();
+    p.steps(3);
+    p.button("Hand off to").hover();
+    p.steps(4);
+    p.button("Claude Code").click();
+    p.steps(3);
+    assert!(p.has("Hand off to Claude Code"), "a dialog, not a send");
+    assert!(!p.loading("tasks:action"));
+    p.type_into("Anything the task doesn", "Start with the payload.");
+    p.button("Hand off").click();
+    p.steps(1);
+    assert!(p.loading("tasks:action"), "sent from the dialog");
+    p.seed("tasks:action", json!({}));
+    p.steps(3);
+    assert!(p.has("Handed off to Claude Code."));
+}
+
+#[test]
+fn take_back_asks_first() {
+    let f = task_fixtures("working", true);
+    let app = RefCell::new(None);
+    let mut p = task_page(&app, &f);
+    let ask = "Take \u{201c}Rate leads by role bucket\u{201d} back from Hermes (Anmol's Mac)?";
+    p.button("Take back").click();
+    p.steps(3);
+    assert!(p.has(ask));
+    assert!(!p.loading("tasks:action"), "one click sends nothing");
+    p.button("Cancel").click();
+    p.steps(3);
+    assert!(!p.has(ask));
+
+    p.button("Take back").click();
+    p.steps(3);
+    p.button("Take back").click();
+    p.steps(1);
+    assert!(p.loading("tasks:action"), "the dialog's Take back sends it");
+}
+
+#[test]
+fn my_tasks_carries_the_waiting_count() {
+    let mut f = home_fixtures(active());
+    f.retain(|(k, _)| *k != "sidebar:counts");
+    f.push(("sidebar:counts", json!({"myOpen": 4, "activeProjects": 2, "waiting": 2})));
+    let app = RefCell::new(None);
+    let p = page(&app, &f, Tab::Home, None, (1440.0, 900.0), false, false);
+    let nav = p.harness.get_by_label("My Tasks");
+    assert_eq!(nav.accesskit_node().numeric_value(), Some(2.0));
+    drop(p);
+
+    let f = home_fixtures(active());
+    let app = RefCell::new(None);
+    let p = page(&app, &f, Tab::Home, None, (1440.0, 900.0), false, false);
+    assert_eq!(p.harness.get_by_label("My Tasks").accesskit_node().numeric_value(), None);
 }
 
 #[test]

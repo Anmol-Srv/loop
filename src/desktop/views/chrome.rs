@@ -40,6 +40,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mine_open = count("myOpen");
     let projects_active = count("activeProjects");
     let triage = count("triage").max(0) as usize;
+    let waiting = count("waiting").max(0) as usize;
 
     let me = net.data("__me");
     let field = |k: &str| {
@@ -64,7 +65,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut items = vec![
         (shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)), Tab::Home),
         (
-            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks)).count(mine_open.to_string()),
+            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks))
+                .count(mine_open.to_string())
+                .badge(waiting),
             Tab::MyTasks,
         ),
         (shell::NavItem::new(icon::LIST_BULLETS, "All Tasks", sel(Tab::AllTasks)), Tab::AllTasks),

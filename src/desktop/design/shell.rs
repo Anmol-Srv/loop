@@ -342,6 +342,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
     response.widget_info(|| {
         let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Button, true, item.label);
         info.selected = Some(item.selected);
+        info.value = (item.badge > 0).then_some(item.badge as f64);
         info
     });
     let response = super::motion::operable(ui, response, radius::SM as f32);

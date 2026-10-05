@@ -351,6 +351,22 @@ async fn ack_update_ask_note_attach_act_as_the_assignee(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn the_sidebar_counts_what_waits_on_the_owner(pool: PgPool) {
+    let (owner, t, token, _) = working(&pool, "backend", "in_progress").await;
+    let waiting = |c: Value| c["waiting"].as_i64();
+    let counts = send(&pool, "GET", "/api/user/counts", &owner, Value::Null).await.data();
+    assert_eq!(waiting(counts), Some(0));
+
+    send(&pool, "POST", &format!("/api/agent/tasks/{t}/ask"), &token, json!({ "body": "Stripe or Razorpay?" })).await;
+    let counts = send(&pool, "GET", "/api/user/counts", &owner, Value::Null).await.data();
+    assert_eq!(waiting(counts), Some(1), "the question waits on its owner");
+
+    send(&pool, "POST", &format!("/api/user/tasks/{t}/answer"), &owner, json!({ "body": "Razorpay" })).await;
+    let counts = send(&pool, "GET", "/api/user/counts", &owner, Value::Null).await.data();
+    assert_eq!(waiting(counts), Some(0), "answered, nothing waits");
+}
+
+#[sqlx::test]
 async fn submit_checks_the_move_and_its_evidence_now(pool: PgPool) {
     let (owner, t, token, _) = working(&pool, "backend", "in_progress").await;
     let submit = |target: &'static str, reason: Option<&'static str>| {

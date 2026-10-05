@@ -23,6 +23,7 @@ pub enum Tone {
     Blocked,
     Agent,
     Info,
+    Ask,
 }
 
 impl Tone {
@@ -36,6 +37,7 @@ impl Tone {
             Tone::Blocked => (colour::DANGER_BG(), Color32::TRANSPARENT, colour::DANGER()),
             Tone::Agent => (colour::AGENT_BG(), Color32::TRANSPARENT, colour::AGENT()),
             Tone::Info => (colour::INFO_BG(), Color32::TRANSPARENT, colour::INFO()),
+            Tone::Ask => (colour::ASK_BG(), Color32::TRANSPARENT, colour::ASK()),
         }
     }
 }
