@@ -126,5 +126,5 @@ agent "$T_HOME" ask '{"body":"The mock shows two empty states for the inbox. Whi
 
 echo
 echo "seeded."
-echo "  sign in as   chinmay@airtribe.live / $PASSWORD   (anmol, pratik and evana work too)"
+echo "  sign in as   anmol@airtribe.live / $PASSWORD   (chinmay, pratik and evana work too)"
 echo "  agent        $A"

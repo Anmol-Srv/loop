@@ -93,7 +93,7 @@ two agent tasks, and gives everyone the local password `12345678`:
 scripts/seed-demo.sh              # reads PORT and DATABASE_URL from .env
 ```
 
-Then sign in to the app as `chinmay@airtribe.live` (or `anmol@`, `pratik@`,
+Then sign in to the app as `anmol@airtribe.live` (or `chinmay@`, `pratik@`,
 `evana@`) with `12345678`.
 
 To start from an empty database instead, bootstrap yourself as the first admin.
