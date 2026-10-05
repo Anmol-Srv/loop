@@ -1392,13 +1392,20 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
                     ui.spacing_mut().item_spacing.y = space::XXS;
                     for (seq, line) in &st.lines {
                         ui.horizontal_top(|ui| {
-                            ui.label(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()));
+                            ui.add(
+                                egui::Label::new(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()))
+                                    .selectable(false),
+                            );
                             ui.add_space(space::SM);
                             // Wrapped to what is left of the row: a long step
                             // (a path, a command) ran off the window.
-                            ui.add(egui::Label::new(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT())).wrap());
+                            shell::selectable(
+                                ui,
+                                egui::Label::new(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT())).wrap(),
+                            );
                         });
                     }
+                    shell::edge_scroll(ui);
                 });
         });
 }

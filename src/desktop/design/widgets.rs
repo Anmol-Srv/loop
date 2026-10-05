@@ -62,10 +62,20 @@ pub fn caption(ui: &mut Ui, s: &str) {
 /// screen but people still need to copy them.
 pub fn id(ui: &mut Ui, value: &str) -> Response {
     let short = value.get(..8).unwrap_or(value);
-    ui.add(egui::Label::new(
-        RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT()),
-    ))
-    .on_hover_text(value)
+    let response = ui.add(
+        egui::Label::new(RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT()))
+            .selectable(false)
+            .sense(Sense::click()),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Copy ID {value}")));
+    let response = super::motion::operable_sm(ui, response)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("{value}\nClick to copy"));
+    if response.clicked() {
+        ui.ctx().copy_text(value.to_owned());
+        toast(ui.ctx(), "ID copied.", false);
+    }
+    response
 }
 
 // ---------------------------------------------------------------- status

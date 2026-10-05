@@ -494,8 +494,71 @@ pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
                 } else {
                     body(ui);
                 }
+                edge_scroll(ui);
             });
         });
+}
+
+const EDGE_SCROLL_GAIN: f32 = 10.0;
+const EDGE_SCROLL_MIN: f32 = 120.0;
+const EDGE_SCROLL_MAX: f32 = 3000.0;
+
+pub fn edge_scroll(ui: &Ui) {
+    let ctx = ui.ctx();
+    if !drag_selecting(ctx) {
+        return;
+    }
+    let Some(pointer) = ctx.input(|i| i.pointer.latest_pos()) else { return };
+    let view = ui.clip_rect();
+    let past = if pointer.y < view.top() {
+        pointer.y - view.top()
+    } else if pointer.y > view.bottom() {
+        pointer.y - view.bottom()
+    } else {
+        0.0
+    };
+    let wheel = if view.contains(pointer) {
+        ctx.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta.y))
+    } else {
+        0.0
+    };
+    let edge = if past == 0.0 {
+        0.0
+    } else {
+        let speed = (past.abs() * EDGE_SCROLL_GAIN).clamp(EDGE_SCROLL_MIN, EDGE_SCROLL_MAX);
+        -past.signum() * speed * ctx.input(|i| i.stable_dt)
+    };
+    if edge + wheel != 0.0 {
+        ui.scroll_with_delta_animation(egui::vec2(0.0, edge + wheel), egui::style::ScrollAnimation::none());
+    }
+}
+
+fn drag_selecting(ctx: &egui::Context) -> bool {
+    let Some(dragged) = ctx.dragged_id() else { return false };
+    let labels = ctx
+        .plugin_opt::<egui::text_selection::LabelSelectionState>()
+        .is_some_and(|p| p.lock().has_selection());
+    labels || (ctx.text_edit_focused() && ctx.memory(|m| m.focused()) == Some(dragged))
+}
+
+pub fn selectable(ui: &mut Ui, label: egui::Label) -> (egui::Pos2, std::sync::Arc<egui::Galley>, Response) {
+    let (pos, galley, response) = label.selectable(true).layout_in_ui(ui);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text()));
+    let view = ui.clip_rect();
+    let unreached = ui.ctx().pointer_interact_pos().is_some_and(|p| {
+        (p.y > view.bottom() && response.rect.top() > p.y) || (p.y < view.top() && response.rect.bottom() < p.y)
+    });
+    if !unreached {
+        egui::text_selection::LabelSelectionState::label_text_selection(
+            ui,
+            &response,
+            pos,
+            galley.clone(),
+            ui.visuals().text_color(),
+            egui::Stroke::NONE,
+        );
+    }
+    (pos, galley, response)
 }
 
 /// The top of a page: title, optional subtitle, optional trailing control.

@@ -15,7 +15,7 @@
 use egui::text::{LayoutJob, TextFormat};
 use egui::{FontFamily, FontId, RichText, Sense, Stroke};
 
-use crate::desktop::design::{colour, radius, space, text, theme, widgets as w};
+use crate::desktop::design::{colour, radius, shell, space, text, theme, widgets as w};
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Style {
@@ -282,8 +282,7 @@ fn job(spans: &[Span], ink: egui::Color32, wrap: f32) -> (LayoutJob, Vec<(std::o
 fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
     let (job, links) = job(spans, ink, ui.available_width());
     let sense = if links.is_empty() { Sense::hover() } else { Sense::click() };
-    let (pos, galley, response) = egui::Label::new(job).sense(sense).selectable(false).layout_in_ui(ui);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text()));
+    let (pos, galley, response) = shell::selectable(ui, egui::Label::new(job).sense(sense));
     let under = |p: egui::Pos2| {
         let at = galley.cursor_from_pos(p - pos).index.0;
         // A char index into the text; the ranges are byte offsets.
@@ -297,7 +296,6 @@ fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
     }
-    ui.painter().galley(pos, galley, ink);
 }
 
 // -------------------------------------------------------------- slack links
@@ -432,7 +430,10 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
                         .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2()));
+                            shell::selectable(
+                                ui,
+                                egui::Label::new(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2())),
+                            );
                         });
                 }
             }

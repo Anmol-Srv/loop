@@ -2451,6 +2451,7 @@ fn doc_viewer(ctx: &egui::Context, net: &crate::desktop::net::Net) {
             Some(Ok(bytes)) => {
                 egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.65).show(ui, |ui| {
                     super::mrkdwn::show(ui, &String::from_utf8_lossy(bytes), colour::TEXT());
+                    shell::edge_scroll(ui);
                 });
             }
             Some(Err(e)) => w::error(ui, e),
