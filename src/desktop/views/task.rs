@@ -242,10 +242,10 @@ struct Local {
     /// the title where the move notices live.
     resource_error: Option<String>,
     /// Files picked or dropped, waiting to go up one at a time.
-    uploads: Vec<Value>,
+    uploads: Vec<Held>,
     swallow_paste: bool,
-    /// The name of the file going up now.
-    uploading: Option<String>,
+    /// The file going up now.
+    uploading: Option<Held>,
     /// The agent action in flight — its past tense, for the notice.
     agent_busy: Option<String>,
     /// A pick from the title's menu, acted on once the page is drawn.
@@ -1866,8 +1866,12 @@ fn resources(
         w::error(ui, err);
         ui.add_space(space::SM);
     }
-    if let Some(n) = local.uploading.as_ref().map(|_| local.uploads.len() + 1) {
-        w::caption(ui, &format!("Uploading {}\u{2026}", plural(n as i64, "file")));
+    let held: Vec<&Held> = local.uploading.iter().chain(&local.uploads).collect();
+    let going_up: Vec<(String, egui::TextureHandle)> =
+        held.iter().filter_map(|h| Some((h.name.clone(), h.preview.clone()?))).collect();
+    let unseen = held.len() - going_up.len();
+    if unseen > 0 {
+        w::caption(ui, &format!("Uploading {}\u{2026}", plural(unseen as i64, "file")));
         ui.add_space(space::SM);
     }
     if let Some(err) = net.error(ARTIFACTS_KEY) {
@@ -1878,7 +1882,7 @@ fn resources(
         w::loading(ui, "Loading resources");
         return;
     }
-    if links.is_empty() && files.is_empty() {
+    if links.is_empty() && files.is_empty() && going_up.is_empty() {
         let dragging = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         w::caption(
             ui,
@@ -1892,34 +1896,18 @@ fn resources(
     }
 
     // ---- links, as tiles two to a row (one when the column is narrow)
-    let mut remove: Option<String> = None;
-    if !links.is_empty() {
-        let width = ui.available_width().min(PROSE_W + 160.0);
-        let per_row = if width > 560.0 { 2 } else { 1 };
-        let tile_w = (width - space::SM * (per_row as f32 - 1.0)) / per_row as f32;
-        for chunk in links.chunks(per_row) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                for row in chunk {
-                    if let Some(id) = link_tile(ui, row, tile_w, can_write, local) {
-                        remove = Some(id);
-                    }
-                }
-            });
-            ui.add_space(space::SM);
-        }
-    }
+    let remove = link_tiles(ui, &links, can_write, &mut local.confirm_remove, local.removing);
 
     // ---- files people attached
     let mut drop_file: Option<String> = None;
-    if !files.is_empty() {
+    if !files.is_empty() || !going_up.is_empty() {
         if !links.is_empty() {
             ui.add_space(space::XS);
         }
         let (images, docs): (Vec<&Value>, Vec<&Value>) =
             files.iter().partition(|f| str_of(f, "mime").is_some_and(|m| m.starts_with("image/")));
         let may_remove = |f: &Value| can_write && (admin || str_of(f, "addedById") == Some(me));
-        if !images.is_empty() {
+        if !images.is_empty() || !going_up.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
                 for f in &images {
@@ -1933,6 +1921,14 @@ fn resources(
                                 drop_file = str_of(f, "id").map(str::to_owned);
                             }
                         });
+                    });
+                }
+                for (name, tex) in &going_up {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = space::XXS;
+                        ui.multiply_opacity(0.55);
+                        preview(ui, tex, super::triage::THUMB, name);
+                        faint(ui, "Uploading\u{2026}");
                     });
                 }
             });
@@ -1997,7 +1993,32 @@ pub(super) fn remove_x(ui: &mut egui::Ui) -> egui::Response {
 /// it the kind, where it goes and who added it. The whole tile opens it; a
 /// commit has nowhere to go, so its tile is still. Returns the id to remove
 /// once "Remove" has been confirmed.
-fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local: &mut Local) -> Option<String> {
+pub(super) fn link_tiles(
+    ui: &mut egui::Ui,
+    links: &[&Value],
+    can_write: bool,
+    confirm: &mut Option<String>,
+    busy: bool,
+) -> Option<String> {
+    let mut remove = None;
+    let width = ui.available_width().min(PROSE_W + 160.0);
+    let per_row = if width > 560.0 { 2 } else { 1 };
+    let tile_w = (width - space::SM * (per_row as f32 - 1.0)) / per_row as f32;
+    for chunk in links.chunks(per_row) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            for row in chunk {
+                if let Some(id) = link_tile(ui, row, tile_w, can_write, confirm, busy) {
+                    remove = Some(id);
+                }
+            }
+        });
+        ui.add_space(space::SM);
+    }
+    remove
+}
+
+fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, confirm: &mut Option<String>, busy: bool) -> Option<String> {
     let id = str_of(row, "id").unwrap_or_default().to_owned();
     let kind = str_of(row, "kind").unwrap_or("link");
     let url = str_of(row, "url").unwrap_or_default();
@@ -2009,7 +2030,7 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
     };
     let name = title.map(str::to_owned).unwrap_or_else(|| place.clone());
     let opens = kind != "commit" && !url.is_empty();
-    let confirming = local.confirm_remove.as_deref() == Some(id.as_str());
+    let confirming = confirm.as_deref() == Some(id.as_str());
     let removable = can_write && row["canRemove"].as_bool() == Some(true);
 
     let (rect, response) = ui.allocate_exact_size(
@@ -2049,14 +2070,14 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
         {
             ui.spacing_mut().item_spacing.x = space::XS;
             if confirming {
-                if w::danger(ui, "Remove", !local.removing).clicked() {
+                if w::danger(ui, "Remove", !busy).clicked() {
                     removed = Some(id.clone());
                 }
                 if w::ghost(ui, "Keep").clicked() {
-                    local.confirm_remove = None;
+                    *confirm = None;
                 }
             } else if remove_x(ui).clicked() {
-                local.confirm_remove = Some(id.clone());
+                *confirm = Some(id.clone());
             }
         }
     }
@@ -2204,7 +2225,7 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
 
 /// Read picked or dropped files into the upload queue, refusing what the
 /// server would refuse anyway with a sentence now rather than a 415 later.
-pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -> Vec<Value> {
+pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -> Vec<Held> {
     let mut out = Vec::new();
     for path in paths {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_owned();
@@ -2213,27 +2234,57 @@ pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -
             continue;
         };
         match std::fs::read(path) {
-            Ok(bytes) => out.extend(upload_body(ctx, name, mime, &bytes)),
+            Ok(bytes) => out.extend(upload_body(ctx, name, mime, &bytes, None)),
             Err(e) => w::toast(ctx, format!("Could not read {name}: {e}"), true),
         }
     }
     out
 }
 
-fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8]) -> Option<Value> {
+pub(super) struct Held {
+    pub(super) name: String,
+    pub(super) body: Value,
+    pub(super) preview: Option<egui::TextureHandle>,
+}
+
+fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8], preview: Option<egui::TextureHandle>) -> Option<Held> {
     use base64::Engine;
     if bytes.len() > 8 * 1024 * 1024 {
         w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
         return None;
     }
-    Some(json!({
+    let preview = preview.or_else(|| {
+        let decoded = mime.starts_with("image/").then(|| image::load_from_memory(bytes).ok()).flatten()?;
+        Some(thumb(ctx, &name, decoded))
+    });
+    let body = json!({
         "name": name,
         "mime": mime,
         "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
-    }))
+    });
+    Some(Held { name, body, preview })
 }
 
-pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Value> {
+const PREVIEW_PX: u32 = 480;
+
+fn thumb(ctx: &egui::Context, name: &str, img: image::DynamicImage) -> egui::TextureHandle {
+    let img = if img.width().max(img.height()) > PREVIEW_PX { img.thumbnail(PREVIEW_PX, PREVIEW_PX) } else { img };
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    ctx.load_texture(format!("held:{name}"), egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()), egui::TextureOptions::LINEAR)
+}
+
+pub(super) fn preview(ui: &mut egui::Ui, tex: &egui::TextureHandle, max: egui::Vec2, name: &str) -> egui::Response {
+    let natural = tex.size_vec2();
+    let shown = (natural * (max.x / natural.x).min(max.y / natural.y).min(1.0)).max(egui::Vec2::splat(space::XXL));
+    let (rect, response) = ui.allocate_exact_size(shown, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, name));
+    egui::Image::new((tex.id(), shown)).corner_radius(radius::MD).paint_at(ui, rect);
+    ui.painter().rect_stroke(rect, radius::MD as f32, egui::Stroke::new(1.0, colour::LINE_SOFT()), egui::StrokeKind::Inside);
+    response.on_hover_text(name)
+}
+
+pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Held> {
     let pasted_text = |e: &egui::Event| matches!(e, egui::Event::Paste(_));
     if std::mem::take(swallow) {
         ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
@@ -2249,7 +2300,10 @@ pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Value
     } else if let Ok(image) = clip.get_image() {
         let name = format!("Pasted image {}.png", chrono::Local::now().format("%H.%M.%S"));
         match png(&image) {
-            Ok(bytes) => upload_body(ctx, name, "image/png", &bytes).into_iter().collect(),
+            Ok((bytes, rgba)) => {
+                let shown = thumb(ctx, &name, image::DynamicImage::ImageRgba8(rgba));
+                upload_body(ctx, name, "image/png", &bytes, Some(shown)).into_iter().collect()
+            }
             Err(e) => {
                 w::toast(ctx, format!("Could not paste the image: {e}"), true);
                 Vec::new()
@@ -2263,15 +2317,15 @@ pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Value
     found
 }
 
-fn png(image: &arboard::ImageData<'_>) -> Result<Vec<u8>, String> {
+fn png(image: &arboard::ImageData<'_>) -> Result<(Vec<u8>, image::RgbaImage), String> {
     let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.to_vec())
         .ok_or("the clipboard image is malformed")?;
     let mut out = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    Ok(out.into_inner())
+    Ok((out.into_inner(), rgba))
 }
 
-pub(super) fn dropped_files(ctx: &egui::Context) -> Vec<Value> {
+pub(super) fn dropped_files(ctx: &egui::Context) -> Vec<Held> {
     let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
     ctx.input_mut(|i| i.raw.dropped_files.clear());
     upload_bodies(ctx, &dropped)
@@ -2281,7 +2335,7 @@ const UPLOAD_KEY: &str = "task:upload";
 
 /// One upload at a time: fold in the reply, then send the next queued file.
 fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_id: &str, local: &mut Local) {
-    if let Some(name) = local.uploading.clone() {
+    if let Some(name) = local.uploading.as_ref().map(|h| h.name.clone()) {
         if net.is_loading(UPLOAD_KEY) {
             return;
         }
@@ -2296,10 +2350,11 @@ fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_i
     if local.uploads.is_empty() {
         return;
     }
-    let next = local.uploads.remove(0);
-    local.uploading = str_of(&next, "name").map(str::to_owned);
+    let mut next = local.uploads.remove(0);
+    let body = std::mem::take(&mut next.body);
+    local.uploading = Some(next);
     net.invalidate(UPLOAD_KEY);
-    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), next);
+    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), body);
 }
 
 /// One hue per kind, so a list of five resources is scannable rather than read.
@@ -2542,7 +2597,7 @@ mod link_label_tests {
     #[test]
     fn a_clipboard_image_becomes_a_png() {
         let image = arboard::ImageData { width: 2, height: 1, bytes: vec![255, 0, 0, 255, 0, 0, 255, 255].into() };
-        let decoded = image::load_from_memory(&png(&image).unwrap()).unwrap().to_rgba8();
+        let decoded = image::load_from_memory(&png(&image).unwrap().0).unwrap().to_rgba8();
         assert_eq!((decoded.width(), decoded.height()), (2, 1));
         assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
         let short = arboard::ImageData { width: 4, height: 4, bytes: vec![0; 3].into() };

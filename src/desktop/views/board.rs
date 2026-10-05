@@ -214,20 +214,6 @@ const KINDS: [(&str, &str, &str); 4] = [
     ("link", "Link", "https://\u{2026}"),
 ];
 
-fn kind_label(kind: &str) -> &'static str {
-    KINDS.iter().find(|(k, _, _)| *k == kind).map_or("Link", |(_, l, _)| l)
-}
-
-/// Same hue per kind as the task page, so a PR reads as a PR on both.
-fn kind_tone(kind: &str) -> c::Tone {
-    match kind {
-        "pr" => c::Tone::Info,
-        "commit" => c::Tone::Ok,
-        "figma" => c::Tone::Agent,
-        _ => c::Tone::Quiet,
-    }
-}
-
 /// The task table's three slices. Open work is the default: it is what someone
 /// opening a project is there to chase.
 const TABS: [&str; 3] = ["Open work", "Finished", "All"];
@@ -923,30 +909,30 @@ fn rail(
     // One row per person holding work here, busiest first. A stack of
     // overlapping faces made the initials collide into one smear; a name and
     // what they still have open is what the row is for.
-    let mut people: Vec<(&str, usize)> = Vec::new();
+    let mut people: Vec<(&str, &str, usize)> = Vec::new();
     for t in tasks {
         let who = str_at(t, "assigneeName");
         if who.is_empty() {
             continue;
         }
         let open = usize::from(!is_finished(t));
-        match people.iter_mut().find(|(n, _)| *n == who) {
-            Some((_, n)) => *n += open,
-            None => people.push((who, open)),
+        match people.iter_mut().find(|(n, _, _)| *n == who) {
+            Some((_, _, n)) => *n += open,
+            None => people.push((who, email_or(t, who), open)),
         }
     }
-    people.sort_by(|a, b| b.1.cmp(&a.1));
+    people.sort_by(|a, b| b.2.cmp(&a.2));
     shell::property(ui, "People", |ui| {
         if people.is_empty() {
             faint(ui, "Nobody yet");
             return;
         }
         ui.vertical(|ui| {
-            for (who, open) in &people {
+            for (who, seed, open) in &people {
                 ui.horizontal(|ui| {
                     ui.set_min_height(size::CONTROL);
                     ui.spacing_mut().item_spacing.x = space::XS;
-                    avatar::small(ui, who, size::AVATAR_SM);
+                    avatar::small(ui, seed, size::AVATAR_SM);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let note = if *open == 0 { "all done".to_owned() } else { format!("{open} open") };
                         faint(ui, &note);
@@ -1099,96 +1085,10 @@ fn resources(
         return;
     }
 
-    w::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(space::SM);
-            }
-            resource_row(ui, row, page, can_write, requests);
-        }
-    });
-}
-
-fn resource_row(
-    ui: &mut egui::Ui,
-    row: &Value,
-    page: &mut Page,
-    can_write: bool,
-    requests: &mut Vec<Request>,
-) {
-    let id = str_at(row, "id");
-    let kind = str_at(row, "kind");
-    let url = str_at(row, "url");
-    let title = str_at(row, "title").trim();
-    let where_ = host_path(url);
-    let confirming = page.removing.as_deref() == Some(id);
-
-    ui.horizontal(|ui| {
-        ui.set_min_height(size::CONTROL);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = space::XS;
-            // Only whoever added it may remove it; the server says who that is.
-            if can_write && row["canRemove"].as_bool() == Some(true) {
-                // Destructive, so it asks first — inline, where the eye already is.
-                if confirming {
-                    if w::ghost(ui, "Keep").clicked() {
-                        page.removing = None;
-                    }
-                    if w::danger(ui, "Remove", true).clicked() {
-                        requests.push(Request::Remove(id.to_owned()));
-                    }
-                    faint(ui, "Remove this link?");
-                } else if w::ghost(ui, "Remove").clicked() {
-                    page.removing = Some(id.to_owned());
-                }
-            }
-            if !confirming {
-                if let Some(who) = added_by(row) {
-                    faint(ui, &who);
-                }
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                c::chip(ui, kind_label(kind), kind_tone(kind), false);
-                let short = super::task::link_label(url);
-                let name = if !title.is_empty() {
-                    title
-                } else {
-                    short.as_deref().unwrap_or(where_)
-                };
-                // Half the row at most, so the address beside it still shows
-                // where the link goes.
-                let room = if title.is_empty() { ui.available_width() } else { ui.available_width() * 0.55 };
-                let r = ui.add(
-                    egui::Label::new(
-                        RichText::new(elide(ui, name, room))
-                            .size(text::SMALL)
-                            .color(colour::TEXT()),
-                    )
-                    .sense(egui::Sense::click())
-                    .selectable(false),
-                );
-                let r = motion::operable(ui, r, radius::SM as f32);
-                if r.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if r.on_hover_text(url).clicked() {
-                    super::mrkdwn::open(ui.ctx(), url);
-                }
-                if !title.is_empty() {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(short.as_deref().unwrap_or(where_))
-                                .size(text::SMALL)
-                                .color(colour::TEXT_MUTED()),
-                        )
-                        .truncate(),
-                    );
-                }
-            });
-        });
-    });
+    let links: Vec<&Value> = rows.iter().collect();
+    if let Some(id) = super::task::link_tiles(ui, &links, can_write, &mut page.removing, false) {
+        requests.push(Request::Remove(id));
+    }
 }
 
 /// "github.com/org/repo/pull/12" from the full URL: the scheme is noise, the
@@ -1668,7 +1568,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
             return;
         }
         ui.spacing_mut().item_spacing.x = space::XS;
-        avatar::small(ui, who, size::AVATAR_SM);
+        avatar::small(ui, email_or(t, who), size::AVATAR_SM);
         ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2()));
         super::home::agent_marker(ui, t);
     });
@@ -1812,6 +1712,10 @@ pub(super) fn array(v: Option<&Value>) -> Vec<Value> {
 
 pub(super) fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn email_or<'a>(t: &'a Value, name: &'a str) -> &'a str {
+    Some(str_at(t, "assigneeEmail")).filter(|e| !e.is_empty()).unwrap_or(name)
 }
 
 /// "Added by Dhaval", or "Attached by Hermes" when an agent did — whose

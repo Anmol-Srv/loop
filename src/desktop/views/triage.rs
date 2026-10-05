@@ -373,6 +373,7 @@ fn quoted(ui: &mut egui::Ui, rule: egui::Color32, add: impl FnOnce(&mut egui::Ui
 /// enough that three sit in a row of the prose column.
 const THUMB_W: f32 = 240.0;
 const THUMB_H: f32 = 180.0;
+pub(super) const THUMB: Vec2 = Vec2::new(THUMB_W, THUMB_H);
 /// The side a texture is kept at, past which it is scaled down on decode.
 const MAX_TEXTURE: u32 = 4096;
 const LIGHTBOX: &str = "source:lightbox";

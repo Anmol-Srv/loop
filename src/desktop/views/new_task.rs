@@ -6,6 +6,7 @@ use egui::{Key, Modifiers};
 use serde_json::{json, Value};
 
 use super::board::str_at;
+use super::task::Held;
 use super::projects::{label_picker, person_option, DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES};
 use crate::desktop::design::{colour, space, text, viz, widgets as w};
 use crate::desktop::App;
@@ -29,7 +30,7 @@ pub struct Draft {
     /// Focus goes to the title once, on the first frame.
     focused: bool,
     sent: bool,
-    files: Vec<Value>,
+    files: Vec<Held>,
     swallow_paste: bool,
 }
 
@@ -134,7 +135,7 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
                 n => format!("; attaching {n} files"),
             };
             w::toast(ctx, format!("Created \u{201c}{}\u{201d}{attaching}.", d.title.trim()), false);
-            state.pending.extend(d.files.drain(..).map(|f| (id.clone(), f)));
+            state.pending.extend(d.files.drain(..).map(|f| (id.clone(), f.body)));
             net.invalidate(KEY);
             net.invalidate_prefix("home");
             net.invalidate_prefix("mytasks");
@@ -169,21 +170,11 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
             ui.add_space(space::SM);
             let mut remove = None;
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(space::MD, space::XS);
+                ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
                 for (i, f) in d.files.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = space::XS;
-                        let icon = if str_at(f, "mime").starts_with("image/") {
-                            egui_phosphor::regular::IMAGE
-                        } else {
-                            egui_phosphor::regular::FILE_TEXT
-                        };
-                        ui.label(egui::RichText::new(icon).size(text::SMALL).color(colour::TEXT_MUTED()));
-                        ui.label(egui::RichText::new(str_at(f, "name")).size(text::SMALL).color(colour::TEXT_2()));
-                        if !busy && super::task::remove_x(ui).clicked() {
-                            remove = Some(i);
-                        }
-                    });
+                    if held(ui, f, busy) {
+                        remove = Some(i);
+                    }
                 }
             });
             w::caption(ui, "Attached once the task is created.");
@@ -198,9 +189,11 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
             viz::select(ui, "P2 Normal", &priorities, &mut d.priority);
             viz::select(ui, "No category", &categories, &mut d.category);
             viz::select(ui, "No project", &projects, &mut d.project);
+            if ui.available_width() < LABELS_W {
+                ui.end_row();
+            }
+            new_label = label_picker(ui, "Add labels", &all_labels, &mut d.labels);
         });
-        ui.add_space(space::SM);
-        new_label = label_picker(ui, "Add labels", &all_labels, &mut d.labels);
         if let Some(err) = &label_error {
             ui.label(egui::RichText::new(format!("Could not make that label: {err}")).size(text::CAPTION).color(colour::DANGER()));
         }
@@ -237,6 +230,31 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
     } else if (close || modal.should_close()) && !busy {
         state.draft = None;
     }
+}
+
+const LABELS_W: f32 = 140.0;
+const HELD_MAX: egui::Vec2 = egui::vec2(160.0, 96.0);
+
+fn held(ui: &mut egui::Ui, f: &Held, busy: bool) -> bool {
+    let Some(tex) = &f.preview else {
+        return ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                ui.label(egui::RichText::new(egui_phosphor::regular::FILE_TEXT).size(text::SMALL).color(colour::TEXT_MUTED()));
+                ui.label(egui::RichText::new(&f.name).size(text::SMALL).color(colour::TEXT_2()));
+                !busy && super::task::remove_x(ui).clicked()
+            })
+            .inner;
+    };
+    let shot = super::task::preview(ui, tex, HELD_MAX, &f.name);
+    if busy {
+        return false;
+    }
+    let side = space::XL;
+    let slot = egui::Rect::from_min_size(shot.rect.right_top() + egui::vec2(-side - space::XS, space::XS), egui::Vec2::splat(side));
+    ui.painter().circle_filled(slot.center(), side / 2.0, colour::CANVAS().gamma_multiply(0.85));
+    let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(slot).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)));
+    super::task::remove_x(ui).clicked()
 }
 
 /// "New task", for a page header: whether it was clicked. Call `open` then.

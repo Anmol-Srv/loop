@@ -751,7 +751,7 @@ fn group_header(ui: &mut egui::Ui, g: &Bucket<'_>, open: bool) -> egui::Response
 /// A board column's narrowest: a title of two lines and a row of chips. The
 /// columns share the width when they all fit, and scroll sideways at this
 /// width when they do not.
-const COLUMN_W: f32 = 232.0;
+const COLUMN_W: f32 = 216.0;
 /// A column's floor, so an empty one is still a place to drop onto.
 const COLUMN_MIN_H: f32 = 160.0;
 

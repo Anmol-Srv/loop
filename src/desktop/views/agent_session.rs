@@ -444,7 +444,12 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
         .and_then(|d| str_of(d, "ownerName"))
         .or_else(|| str_of(f.task, "assigneeName"))
         .unwrap_or("Someone");
-    let owner_seed = owner.to_owned();
+    let owner_seed = f
+        .delegate
+        .and_then(|d| str_of(d, "ownerEmail"))
+        .or_else(|| str_of(f.task, "assigneeEmail"))
+        .unwrap_or(owner)
+        .to_owned();
 
     let notes: Vec<&Value> = f
         .notes
@@ -541,7 +546,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                 let node = match note_agent {
                     Some(a) => Node::Agent(str_of(a, "id").unwrap_or(agent_seed)),
                     None => {
-                        seed_owned = author.to_owned();
+                        seed_owned = str_of(n, "authorEmail").unwrap_or(author).to_owned();
                         Node::Person(&seed_owned)
                     }
                 };
@@ -784,25 +789,27 @@ pub(super) fn entry(
         ui.vertical(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
             ui.spacing_mut().item_spacing.y = space::XS;
-            ui.horizontal(|ui| {
-                ui.set_min_height(NODE);
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new(who)
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                if !verb.is_empty() {
-                    ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
-                }
-                if let Some(at) = at {
-                    ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                }
-                if private {
-                    ui.add_space(space::XS);
-                    face::private_label(ui);
-                }
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = NODE;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    ui.label(
+                        RichText::new(who)
+                            .size(text::SMALL)
+                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                            .color(colour::TEXT()),
+                    );
+                    if !verb.is_empty() {
+                        ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
+                    }
+                    if let Some(at) = at {
+                        ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                    }
+                    if private {
+                        ui.add_space(space::XS);
+                        face::private_label(ui);
+                    }
+                });
             });
             body(ui);
         });
@@ -864,12 +871,12 @@ fn day_marker(ui: &mut egui::Ui, label: &str) {
 fn mark_day(ui: &mut egui::Ui, at: Option<&str>, day: &mut String, drawn: &mut bool, prev_minor: &mut bool) {
     let Some(label) = at.map(day_label).filter(|l| !l.is_empty() && l.as_str() != day.as_str()) else { return };
     if *drawn {
-        ui.add_space(space::MD);
+        ui.add_space(space::XL);
     }
     day_marker(ui, &label);
     ui.add_space(space::XS);
     *day = label;
-    *drawn = true;
+    *drawn = false;
     *prev_minor = false;
 }
 
@@ -980,34 +987,9 @@ fn substantive(
     body: &str,
     extra: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
-        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(face::SM), egui::Sense::hover());
-        paint_node(ui, r, &node);
-        ui.vertical(|ui| {
-            ui.set_max_width(PROSE_W.min(ui.available_width()));
-            ui.spacing_mut().item_spacing.y = space::XS;
-            ui.horizontal(|ui| {
-                ui.set_min_height(face::SM);
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new(author)
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                ui.label(RichText::new(kind_label).size(text::SMALL).color(colour::TEXT_MUTED()));
-                if let Some(at) = at {
-                    ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                }
-                if private {
-                    ui.add_space(space::XS);
-                    face::private_label(ui);
-                }
-            });
-            clamped_body(ui, body_id, body, colour::TEXT_2());
-            extra(ui);
-        });
+    entry(ui, node, author, kind_label, at, private, |ui| {
+        clamped_body(ui, body_id, body, colour::TEXT_2());
+        extra(ui);
     });
 }
 

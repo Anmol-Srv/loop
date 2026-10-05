@@ -935,11 +935,13 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id
         let p = num(t, "priority").clamp(0, 4);
         c::chip(ui, &format!("P{p}"), priority_tone(p), false);
     });
-    row.at(3, |ui| {
-        if !department.is_empty() {
+    if department.is_empty() {
+        row.muted(3, "");
+    } else {
+        row.at(3, |ui| {
             c::chip(ui, department, c::discipline_tone(department), false);
-        }
-    });
+        });
+    }
     row.at(4, |ui| {
         if super::board::archived(t) {
             super::board::archived_chip(ui);

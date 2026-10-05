@@ -417,6 +417,8 @@ fn button_with(
 
     // Every colour decided here, before a single draw call.
     let (fill, stroke, fg) = match (emphasis, enabled) {
+        (Emphasis::Primary, false) => (colour::ACCENT_SOFT(), Color32::TRANSPARENT, colour::TEXT_FAINT()),
+        (Emphasis::Secondary | Emphasis::Danger, false) => (Color32::TRANSPARENT, colour::LINE_SOFT(), colour::TEXT_FAINT()),
         (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_FAINT()),
         (Emphasis::Primary, _) => {
             let f = if pressed {

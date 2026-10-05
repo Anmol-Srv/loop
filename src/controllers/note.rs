@@ -21,6 +21,7 @@ pub struct Note {
     /// Resolved here so a client never has to join the roster to render a
     /// thread. `None` when an agent wrote it.
     pub author_name: Option<String>,
+    pub author_email: Option<String>,
     pub body: String,
     /// note, progress, question, answer, submission, review or instruction.
     /// Everything a person types is a `note` unless it answers, reviews or
@@ -31,7 +32,7 @@ pub struct Note {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-const NOTE_COLUMNS: &str = "n.id, n.task_id, n.author_id, p.name AS author_name, n.body, n.kind,
+const NOTE_COLUMNS: &str = "n.id, n.task_id, n.author_id, p.name AS author_name, p.email AS author_email, n.body, n.kind,
     (SELECT json_build_object('id', ag.id, 'name', ag.name) FROM agent ag WHERE ag.id = n.agent_id) AS agent,
     n.created_at";
 
