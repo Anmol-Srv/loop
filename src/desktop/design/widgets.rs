@@ -417,7 +417,7 @@ fn button_with(
 
     // Every colour decided here, before a single draw call.
     let (fill, stroke, fg) = match (emphasis, enabled) {
-        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_DISABLED()),
+        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_FAINT()),
         (Emphasis::Primary, _) => {
             let f = if pressed {
                 colour::ACCENT()
@@ -599,7 +599,7 @@ pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &
             [ui.available_width(), size::CONTROL],
             egui::TextEdit::singleline(value)
                 .password(secret)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         );
         accessible_field(ui, response, Some(name.id), value, secret)
@@ -630,7 +630,7 @@ pub fn field_multiline(
             [ui.available_width(), size::CONTROL * rows as f32],
             egui::TextEdit::multiline(value)
                 .desired_rows(rows)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
         );
         accessible_field(ui, response, name, value, false)
@@ -790,7 +790,7 @@ pub fn empty(ui: &mut Ui, message: &str, detail: &str) {
             ui.label(
                 RichText::new(detail)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_DISABLED()),
+                    .color(colour::TEXT_FAINT()),
             );
         }
     });
@@ -808,14 +808,34 @@ pub fn loading(ui: &mut Ui, what: &str) {
 }
 
 pub fn error(ui: &mut Ui, message: &str) {
+    error_box(ui, message, false);
+}
+
+pub fn error_retry(ui: &mut Ui, message: &str) -> bool {
+    error_box(ui, message, true)
+}
+
+fn error_box(ui: &mut Ui, message: &str, retry: bool) -> bool {
+    let mut retried = false;
     egui::Frame::new()
         .fill(colour::DANGER().gamma_multiply(0.06))
         .stroke(egui::Stroke::new(1.0, colour::DANGER().gamma_multiply(0.30)))
         .corner_radius(radius::SM)
         .inner_margin(egui::Margin::symmetric(pad::BUTTON.0 as i8, pad::BUTTON.1 as i8))
         .show(ui, |ui| {
-            ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER()));
+            let said = RichText::new(message).size(text::SMALL).color(colour::DANGER());
+            if !retry {
+                ui.label(said);
+                return;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                retried = secondary(ui, "Retry", true).clicked();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(said).wrap());
+                });
+            });
         });
+    retried
 }
 
 // ---------------------------------------------------------------- toast

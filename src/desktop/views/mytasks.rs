@@ -280,10 +280,9 @@ fn page(app: &mut App, ui: &mut egui::Ui, scope: Scope) {
     }
 
     if let Some(err) = &error {
-        w::error(
-            ui,
-            &format!("Could not load your work. {err} Use Refresh in the sidebar to try again."),
-        );
+        if w::error_retry(ui, &format!("Could not load your work. {err}")) {
+            app.net.as_mut().unwrap().invalidate(key);
+        }
         return;
     }
     let mut open_task: Option<String> = None;

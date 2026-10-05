@@ -781,3 +781,23 @@ fn task_page_width_sweep() {
             .expect("png");
     }
 }
+
+#[test]
+fn a_failed_triage_load_offers_retry_and_retry_fetches_again() {
+    let f = base(me("anmol"));
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 900.0), false);
+    app.borrow_mut().as_mut().unwrap().net.as_mut().unwrap().results.insert(
+        "mytasks:mine".into(),
+        Err("The server did not answer.".into()),
+    );
+    p.steps(2);
+    assert!(p.has_part("Could not load triage. The server did not answer."));
+    assert!(!p.has_part("Refresh in the sidebar"), "no pointer at a control that is gone");
+
+    p.button("Retry");
+    let a = app.borrow();
+    let net = a.as_ref().unwrap().net.as_ref().unwrap();
+    assert!(net.error("mytasks:mine").is_none(), "the failure is cleared");
+    assert!(net.is_loading("mytasks:mine"), "and the triage list is asked for again");
+}

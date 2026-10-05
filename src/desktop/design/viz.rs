@@ -1055,7 +1055,7 @@ fn action_row_with(
     let hot = enabled && (response.hovered() || response.has_focus());
     let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER());
     let ink = match (enabled, danger) {
-        (false, _) => colour::TEXT_DISABLED(),
+        (false, _) => colour::TEXT_FAINT(),
         (true, true) => colour::DANGER(),
         (true, false) if hot => colour::TEXT(),
         _ => colour::TEXT_2(),
@@ -1089,7 +1089,7 @@ fn action_row_with(
     }
     if chevron {
         let x = rect.right() - space::SM - CHEVRON;
-        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED() } else { colour::TEXT_DISABLED() });
+        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED() } else { colour::TEXT_FAINT() });
         p.line_segment([egui::pos2(x - CHEVRON / 2.0, rect.center().y - CHEVRON), egui::pos2(x + CHEVRON / 2.0, rect.center().y)], stroke);
         p.line_segment([egui::pos2(x + CHEVRON / 2.0, rect.center().y), egui::pos2(x - CHEVRON / 2.0, rect.center().y + CHEVRON)], stroke);
     }

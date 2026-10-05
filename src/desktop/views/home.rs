@@ -194,7 +194,11 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     shell::page_title(ui, "Overview", &subtitle, |_| {});
 
     if let Some(err) = &error {
-        w::error(ui, &format!("{err} Use Refresh in the sidebar to try again."));
+        if w::error_retry(ui, err) {
+            let net = app.net.as_mut().unwrap();
+            net.invalidate(HOME);
+            net.invalidate(TASKS);
+        }
         return;
     }
     if loading && d.all.is_empty() {

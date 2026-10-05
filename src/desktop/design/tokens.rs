@@ -55,16 +55,14 @@ pub mod colour {
         pub LINE: Color32,
         pub LINE_SOFT: Color32,
         pub LINE_STRONG: Color32,
-        // ---- ink, five levels. Every level clears 4.5:1 on SURFACE.
+        // ---- ink, four levels. Every level clears 4.5:1 on SURFACE.
         pub TEXT: Color32,
         /// A value next to its label.
         pub TEXT_2: Color32,
         /// Labels, metadata.
         pub TEXT_MUTED: Color32,
-        /// Timestamps, ids.
+        /// Timestamps, ids, placeholders and disabled text, which people still read.
         pub TEXT_FAINT: Color32,
-        /// Disabled and placeholders — still hint text people read.
-        pub TEXT_DISABLED: Color32,
         // ---- state. A dot, a pill or a thin rule; never a filled block.
         pub OK: Color32,
         pub WARN: Color32,
@@ -115,8 +113,7 @@ pub mod colour {
         TEXT: rgb(0xF2F3F5),
         TEXT_2: rgb(0xC3C7CC),
         TEXT_MUTED: rgb(0x8A9099),
-        TEXT_FAINT: rgb(0x7B828C),
-        TEXT_DISABLED: rgb(0x767C85),
+        TEXT_FAINT: rgb(0x858B94),
         OK: rgb(0x5FD39B),
         WARN: rgb(0xF0B354),
         DANGER: rgb(0xF27A7A),
@@ -161,8 +158,7 @@ pub mod colour {
         TEXT: rgb(0x15171B),
         TEXT_2: rgb(0x383D45),
         TEXT_MUTED: rgb(0x565D67),
-        TEXT_FAINT: rgb(0x656C76),
-        TEXT_DISABLED: rgb(0x6F757E),
+        TEXT_FAINT: rgb(0x5F6670),
         OK: rgb(0x16794D),
         WARN: rgb(0x9A5A00),
         DANGER: rgb(0xBF3036),
@@ -274,7 +270,7 @@ pub mod colour {
         };
     }
     swap!(CONTRAST:
-        TEXT_FAINT => TEXT_MUTED, TEXT_DISABLED => TEXT_MUTED, LINE => LINE_STRONG,
+        TEXT_FAINT => TEXT_MUTED, LINE => LINE_STRONG,
         LINE_SOFT => LINE_STRONG, EDGE_MID => EDGE_HI_HOVER, EDGE_MID_HOVER => EDGE_HI_HOVER,
     );
     swap!(OPAQUE: GLASS => SURFACE, GLASS_HOVER => SURFACE_HOVER, GLASS_ACTIVE => SURFACE_ACTIVE);

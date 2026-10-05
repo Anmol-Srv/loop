@@ -990,7 +990,7 @@ fn row_input(ui: &mut egui::Ui, width: f32, hint: &str, value: &mut String) -> e
     ui.add_sized(
         [width, viz::HEIGHT],
         egui::TextEdit::singleline(value)
-            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
             .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
     )
 }

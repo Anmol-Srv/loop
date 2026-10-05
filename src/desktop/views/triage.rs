@@ -953,10 +953,9 @@ pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
     shell::page_title(ui, "Triage", &subtitle, |_| {});
 
     if let Some(err) = error {
-        w::error(
-            ui,
-            &format!("Could not load triage. {err} Use Refresh in the sidebar to try again."),
-        );
+        if w::error_retry(ui, &format!("Could not load triage. {err}")) {
+            app.net.as_mut().unwrap().invalidate(super::mytasks::MINE);
+        }
         return;
     }
     if rows.is_empty() {

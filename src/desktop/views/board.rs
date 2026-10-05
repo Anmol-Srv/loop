@@ -1429,7 +1429,7 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
                     .hint_text(
                         RichText::new("Not set \u{2014} choose or paste this repo's folder")
                             .size(text::BODY)
-                            .color(colour::TEXT_DISABLED()),
+                            .color(colour::TEXT_FAINT()),
                     )
                     .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
