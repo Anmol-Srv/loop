@@ -23,7 +23,6 @@ adm set-department anmol@airtribe.live backend    >/dev/null
 adm set-department pratik@airtribe.live design    >/dev/null
 adm set-department evana@airtribe.live design     >/dev/null
 adm set-department chinmay@airtribe.live frontend >/dev/null
-adm set-role chinmay@airtribe.live admin >/dev/null
 
 # A local-only password, so the app can sign in after every re-seed.
 PASSWORD=12345678
@@ -127,5 +126,5 @@ agent "$T_HOME" ask '{"body":"The mock shows two empty states for the inbox. Whi
 
 echo
 echo "seeded."
-echo "  sign in as   chinmay@airtribe.live / $PASSWORD   (admin; anmol, pratik and evana work too)"
+echo "  sign in as   chinmay@airtribe.live / $PASSWORD   (anmol, pratik and evana work too)"
 echo "  agent        $A"
