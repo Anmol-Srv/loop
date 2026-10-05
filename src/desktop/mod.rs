@@ -4,6 +4,7 @@
 //!   cargo build --features app --bin acp-app
 
 pub mod design;
+pub mod menu;
 pub mod net;
 pub mod views;
 
@@ -39,6 +40,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         design::theme::install(&cc.egui_ctx);
+        menu::install(&cc.egui_ctx, views::chrome::VERSION);
         // The type scale is tuned for a comfortable reading size on a Mac's
         // scaled display, where egui's default points come out small. This is
         // one knob instead of nudging every token.
@@ -161,8 +163,13 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        menu::deliver(ui.ctx());
         self.frame(ui);
         design::widgets::secure_input(ui.ctx());
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        menu::route(raw_input);
     }
 }
 

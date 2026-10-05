@@ -233,7 +233,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 /// This build's version, stamped by `scripts/bundle-mac.sh` (the release's
 /// date for a published build, "dev" otherwise) — what to compare against
 /// the latest release when someone asks whether they are up to date.
-const VERSION: &str = match option_env!("LOOP_VERSION") {
+pub const VERSION: &str = match option_env!("LOOP_VERSION") {
     Some(v) => v,
     None => "dev",
 };

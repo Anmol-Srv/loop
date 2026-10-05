@@ -200,14 +200,11 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
             .with_title_shown(false),
         |vui, class| {
             let vctx = vui.ctx().clone();
+            crate::desktop::menu::deliver(&vctx);
             if focus {
                 vctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
             }
-            let close = vctx.input(|i| {
-                i.viewport().close_requested()
-                    || i.key_pressed(egui::Key::Escape)
-                    || (i.modifiers.command && i.key_pressed(egui::Key::W))
-            });
+            let close = vctx.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape));
             if close {
                 app.settings.window_open = false;
                 return;
