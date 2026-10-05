@@ -166,6 +166,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "winit",
 ]
 
 [[package]]
