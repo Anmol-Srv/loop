@@ -1,3 +1,5 @@
+#![cfg(feature = "app")]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -61,4 +63,27 @@ fn a_right_click_keeps_the_selection_so_copy_is_offered() {
         .iter()
         .any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "ready to copy"));
     assert!(copied, "Copy puts the whole selection on the clipboard");
+}
+
+#[test]
+fn paste_from_the_field_menu_goes_the_edit_menu_way() {
+    use acp_server::desktop::menu;
+    let mut text = String::new();
+    let heard = Rc::new(std::cell::Cell::new(false));
+    let seen = heard.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(320.0, 300.0))
+        .build_ui(move |ui| {
+            menu::deliver(ui.ctx());
+            seen.set(seen.get() || menu::pasted(ui.ctx()));
+            w::field(ui, "Note", &mut text, false, "");
+        });
+    harness.run_steps(2);
+    harness.get_by_role_and_label(Role::TextInput, "Note").click_secondary();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::Button, "Paste").click();
+    harness.step();
+    menu::route(harness.input_mut());
+    harness.step();
+    assert!(heard.get(), "the page hears the paste, so a screenshot on the clipboard is attached rather than ignored");
 }

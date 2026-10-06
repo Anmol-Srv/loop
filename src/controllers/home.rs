@@ -93,7 +93,7 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
     Ok(rows)
 }
 
-/// The sidebar's two numbers.
+/// The sidebar's numbers.
 ///
 /// Every page draws the sidebar, and it used to get these by fetching all of
 /// `/home` — the team rollup included — just to count two lists. Two counts

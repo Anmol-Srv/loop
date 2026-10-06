@@ -574,7 +574,7 @@ pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32
             + space::SM * 2.0
             + space::XS
     };
-    let widths: Vec<f32> = labels.iter().map(|l| badge_w(str_at(l, "name"))).collect();
+    let widths: Vec<f32> = labels.iter().take(MAX_LABEL_CHIPS).map(|l| badge_w(str_at(l, "name"))).collect();
     let avail = ui.available_width();
     let fits = |k: usize| {
         let extra = labels.len() - k;

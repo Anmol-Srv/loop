@@ -106,7 +106,8 @@ fn interact(shot: &Shot, harness: &mut Harness<'_>) {
             .type_text("Checkout totals look wrong on saved cards");
         let shot = std::path::PathBuf::from("docs/design-mocks/render/pages/task-wide.png");
         harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot)));
-        for _ in 0..4 {
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(25));
             harness.step();
         }
     }

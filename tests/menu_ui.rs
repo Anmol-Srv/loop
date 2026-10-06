@@ -1,3 +1,5 @@
+#![cfg(feature = "app")]
+
 use acp_server::desktop::menu;
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
@@ -8,11 +10,15 @@ fn edit_menu_items_reach_the_focused_text_field() {
     let mut text = String::from("hand it to Hermes");
     let pasted = std::rc::Rc::new(std::cell::Cell::new(false));
     let seen = pasted.clone();
+    let listening = std::rc::Rc::new(std::cell::Cell::new(true));
+    let listen = listening.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(320.0, 120.0))
         .build_ui(move |ui| {
             menu::deliver(ui.ctx());
-            seen.set(seen.get() || menu::pasted(ui.ctx()));
+            if listen.get() {
+                seen.set(seen.get() || menu::pasted(ui.ctx()));
+            }
             ui.add(egui::TextEdit::singleline(&mut text));
         });
     harness.run_steps(2);
@@ -35,11 +41,20 @@ fn edit_menu_items_reach_the_focused_text_field() {
     menu::pick("edit.paste");
     menu::route(harness.input_mut());
     harness.step();
-    let asked = harness
+    let deferred = harness
         .output()
         .viewport_output
         .get(&egui::ViewportId::ROOT)
         .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::RequestPaste));
-    assert!(asked, "Paste asks the window for the clipboard");
+    assert!(!deferred, "the text is pasted in this frame, not asked for a frame or two later, so a copied file is attached once");
     assert!(pasted.get(), "and tells the page, which looks for an image or files to attach");
+
+    pasted.set(false);
+    listening.set(false);
+    menu::pick("edit.paste");
+    menu::route(harness.input_mut());
+    harness.step();
+    listening.set(true);
+    harness.step();
+    assert!(!pasted.get(), "a paste no page took is gone by the next frame, so a task opened later attaches nothing");
 }

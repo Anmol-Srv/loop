@@ -6,7 +6,7 @@ use egui::{Key, Modifiers};
 use serde_json::{json, Value};
 
 use super::board::str_at;
-use super::task::Held;
+use super::task::{Held, Intake};
 use super::projects::{label_picker, person_option, DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES};
 use crate::desktop::design::{colour, space, text, viz, widgets as w};
 use crate::desktop::App;
@@ -31,11 +31,11 @@ pub struct Draft {
     focused: bool,
     sent: bool,
     files: Vec<Held>,
-    swallow_paste: bool,
+    intake: Intake,
 }
 
-/// The open dialog, if there is one. Lives in `board::State`, beside the
-/// other task actions.
+/// The open dialog, if there is one, and the files it hands over once the
+/// task exists. Lives in `board::State`, beside the other task actions.
 #[derive(Default)]
 pub struct State {
     draft: Option<Draft>,
@@ -61,8 +61,13 @@ pub fn open(app: &mut App) {
         focused: false,
         sent: false,
         files: Vec::new(),
-        swallow_paste: false,
+        intake: Intake::default(),
     });
+}
+
+pub fn attaching(app: &App) -> bool {
+    let s = &app.board.new_task;
+    !s.pending.is_empty() || s.uploading.is_some()
 }
 
 /// `C` with nothing focused and nothing else open: what Linear does.
@@ -78,8 +83,9 @@ pub fn shortcut(app: &mut App, ctx: &egui::Context) {
 
 pub fn intake(app: &mut App, ctx: &egui::Context) {
     let Some(d) = app.board.new_task.draft.as_mut() else { return };
-    d.files.extend(super::task::pasted_files(ctx, &mut d.swallow_paste));
-    d.files.extend(super::task::dropped_files(ctx));
+    super::task::pasted_files(ctx, &d.intake);
+    super::task::dropped_files(ctx, &d.intake);
+    d.files.extend(d.intake.take());
 }
 
 fn settle_uploads(ctx: &egui::Context, net: &mut crate::desktop::net::Net, s: &mut State) {
@@ -153,7 +159,8 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
     let categories = super::projects::owned(&super::triage::CATEGORIES);
 
     let busy = d.sent;
-    let ready = !d.title.trim().is_empty() && !busy;
+    let preparing = d.intake.working();
+    let ready = !d.title.trim().is_empty() && !busy && preparing == 0;
     let submit_keys = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
     let (mut go, mut close) = (ready && submit_keys, false);
     let modal = super::agents::dialog(ctx, "new-task", super::agents::DIALOG_W * 1.2, |ui| {
@@ -166,7 +173,7 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
         }
         ui.add_space(space::MD);
         w::field_multiline(ui, "Description", &mut d.body, 3, "Add detail, links, acceptance\u{2026}");
-        if !d.files.is_empty() {
+        if !d.files.is_empty() || preparing > 0 {
             ui.add_space(space::SM);
             let mut remove = None;
             ui.horizontal_wrapped(|ui| {
@@ -177,7 +184,11 @@ pub fn ui(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             });
-            w::caption(ui, "Attached once the task is created.");
+            match preparing {
+                0 => w::caption(ui, "Attached once the task is created."),
+                1 => w::caption(ui, "Adding a file\u{2026}"),
+                n => w::caption(ui, &format!("Adding {n} files\u{2026}")),
+            }
             if let Some(i) = remove {
                 d.files.remove(i);
             }

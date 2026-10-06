@@ -243,7 +243,7 @@ struct Local {
     resource_error: Option<String>,
     /// Files picked or dropped, waiting to go up one at a time.
     uploads: Vec<Held>,
-    swallow_paste: bool,
+    intake: Intake,
     /// The file going up now.
     uploading: Option<Held>,
     /// The agent action in flight — its past tense, for the notice.
@@ -277,7 +277,7 @@ impl Local {
             removing: false,
             resource_error: None,
             uploads: Vec::new(),
-            swallow_paste: false,
+            intake: Intake::default(),
             uploading: None,
             agent_busy: None,
             pick: None,
@@ -290,6 +290,12 @@ impl Local {
 
 thread_local! {
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
+}
+
+pub fn attaching() -> bool {
+    LOCAL.with(|cell| {
+        cell.borrow().as_ref().is_some_and(|l| !l.uploads.is_empty() || l.uploading.is_some() || l.intake.working() > 0)
+    })
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -318,7 +324,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let admin = me_str(app, "role") == "admin";
     let can_write = app.can_write();
     if can_write {
-        local.uploads.extend(pasted_files(ui.ctx(), &mut local.swallow_paste));
+        pasted_files(ui.ctx(), &local.intake);
+        local.uploads.extend(local.intake.take());
     }
 
     local.archiving = app.board.tasks.busy();
@@ -619,8 +626,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         local.labels = Some(ids);
         save_details(net, task_id, body, false, local);
     }
-    // The page's own hand-off and details edits say how they went where
-    // they always have; archive and delete share every other menu's dialog.
+    // The page's own details edits say how they went where they always
+    // have; hand-off, take-back, archive and delete share every other menu's
+    // dialog.
     match local.pick.take() {
         Some(Pick::Priority(p)) => {
             let mut body = json!({ "priority": p });
@@ -1815,7 +1823,7 @@ fn resources(
     }
     settle_upload(ui.ctx(), net, task_id, local);
     if can_write {
-        local.uploads.extend(dropped_files(ui.ctx()));
+        dropped_files(ui.ctx(), &local.intake);
     }
 
     let rows = net.shared(ARTIFACTS_KEY);
@@ -1846,7 +1854,7 @@ fn resources(
             .add_filter("Screenshots, PDFs and docs", &["png", "jpg", "jpeg", "gif", "webp", "pdf", "md", "markdown", "txt"])
             .pick_files()
         {
-            local.uploads.extend(upload_bodies(ui.ctx(), &paths));
+            local.intake.spawn(ui.ctx(), move |ctx| upload_bodies(ctx, &paths));
         }
     }
     prompt_panel(ui, net, task_id, local);
@@ -1858,7 +1866,7 @@ fn resources(
     let held: Vec<&Held> = local.uploading.iter().chain(&local.uploads).collect();
     let going_up: Vec<(String, egui::TextureHandle)> =
         held.iter().filter_map(|h| Some((h.name.clone(), h.preview.clone()?))).collect();
-    let unseen = held.len() - going_up.len();
+    let unseen = held.len() - going_up.len() + local.intake.working();
     if unseen > 0 {
         w::caption(ui, &format!("Uploading {}\u{2026}", plural(unseen as i64, "file")));
         ui.add_space(space::SM);
@@ -1871,7 +1879,7 @@ fn resources(
         w::loading(ui, "Loading resources");
         return;
     }
-    if links.is_empty() && files.is_empty() && going_up.is_empty() {
+    if links.is_empty() && files.is_empty() && going_up.is_empty() && unseen == 0 {
         let dragging = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         w::caption(
             ui,
@@ -1978,10 +1986,6 @@ pub(super) fn remove_x(ui: &mut egui::Ui) -> egui::Response {
     r.on_hover_text("Remove")
 }
 
-/// One link as a tile: its kind's mark in a tinted well, the name, and under
-/// it the kind, where it goes and who added it. The whole tile opens it; a
-/// commit has nowhere to go, so its tile is still. Returns the id to remove
-/// once "Remove" has been confirmed.
 pub(super) fn link_tiles(
     ui: &mut egui::Ui,
     links: &[&Value],
@@ -2007,6 +2011,10 @@ pub(super) fn link_tiles(
     remove
 }
 
+/// One link as a tile: its kind's mark in a tinted well, the name, and under
+/// it the kind, where it goes and who added it. The whole tile opens it; a
+/// commit has nowhere to go, so its tile is still. Returns the id to remove
+/// once "Remove" has been confirmed.
 fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, confirm: &mut Option<String>, busy: bool) -> Option<String> {
     let id = str_of(row, "id").unwrap_or_default().to_owned();
     let kind = str_of(row, "kind").unwrap_or("link");
@@ -2212,7 +2220,7 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
-/// Read picked or dropped files into the upload queue, refusing what the
+/// Read picked, dropped or pasted files for upload, refusing what the
 /// server would refuse anyway with a sentence now rather than a 415 later.
 pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -> Vec<Held> {
     let mut out = Vec::new();
@@ -2222,6 +2230,9 @@ pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -
             w::toast(ctx, format!("{name} can\u{2019}t be attached \u{2014} images, PDFs and .md or .txt files only."), true);
             continue;
         };
+        if std::fs::metadata(path).is_ok_and(|m| over_cap(ctx, &name, m.len())) {
+            continue;
+        }
         match std::fs::read(path) {
             Ok(bytes) => out.extend(upload_body(ctx, name, mime, &bytes, None)),
             Err(e) => w::toast(ctx, format!("Could not read {name}: {e}"), true),
@@ -2236,16 +2247,23 @@ pub(super) struct Held {
     pub(super) preview: Option<egui::TextureHandle>,
 }
 
-fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8], preview: Option<egui::TextureHandle>) -> Option<Held> {
-    use base64::Engine;
-    if bytes.len() > 8 * 1024 * 1024 {
+const MAX_UPLOAD: u64 = 8 * 1024 * 1024;
+
+fn over_cap(ctx: &egui::Context, name: &str, len: u64) -> bool {
+    let over = len > MAX_UPLOAD;
+    if over {
         w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
+    }
+    over
+}
+
+fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8], image: Option<image::DynamicImage>) -> Option<Held> {
+    use base64::Engine;
+    if over_cap(ctx, &name, bytes.len() as u64) {
         return None;
     }
-    let preview = preview.or_else(|| {
-        let decoded = mime.starts_with("image/").then(|| image::load_from_memory(bytes).ok()).flatten()?;
-        Some(thumb(ctx, &name, decoded))
-    });
+    let image = image.or_else(|| mime.starts_with("image/").then(|| decode(bytes)).flatten());
+    let preview = image.map(|img| thumb(ctx, &name, img));
     let body = json!({
         "name": name,
         "mime": mime,
@@ -2255,6 +2273,15 @@ fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8], prev
 }
 
 const PREVIEW_PX: u32 = 480;
+const DECODE_MAX_ALLOC: u64 = 256 * 1024 * 1024;
+
+fn decode(bytes: &[u8]) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
+    reader.limits(limits);
+    reader.decode().ok()
+}
 
 fn thumb(ctx: &egui::Context, name: &str, img: image::DynamicImage) -> egui::TextureHandle {
     let img = if img.width().max(img.height()) > PREVIEW_PX { img.thumbnail(PREVIEW_PX, PREVIEW_PX) } else { img };
@@ -2273,51 +2300,91 @@ pub(super) fn preview(ui: &mut egui::Ui, tex: &egui::TextureHandle, max: egui::V
     response.on_hover_text(name)
 }
 
-pub(super) fn pasted_files(ctx: &egui::Context, swallow: &mut bool) -> Vec<Held> {
-    let pasted_text = |e: &egui::Event| matches!(e, egui::Event::Paste(_));
-    if std::mem::take(swallow) {
-        ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
-    }
-    let asked = crate::desktop::menu::pasted(ctx) || ctx.input(|i| i.events.iter().any(pasted_text));
-    if !asked {
-        return Vec::new();
-    }
-    let Ok(mut clip) = arboard::Clipboard::new() else { return Vec::new() };
-    let files = clip.get().file_list().unwrap_or_default();
-    let found = if !files.is_empty() {
-        upload_bodies(ctx, &files)
-    } else if let Ok(image) = clip.get_image() {
-        let name = format!("Pasted image {}.png", chrono::Local::now().format("%H.%M.%S"));
-        match png(&image) {
-            Ok((bytes, rgba)) => {
-                let shown = thumb(ctx, &name, image::DynamicImage::ImageRgba8(rgba));
-                upload_body(ctx, name, "image/png", &bytes, Some(shown)).into_iter().collect()
-            }
-            Err(e) => {
-                w::toast(ctx, format!("Could not paste the image: {e}"), true);
-                Vec::new()
-            }
-        }
-    } else {
-        return Vec::new();
-    };
-    *swallow = true;
-    ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
-    found
+#[derive(Clone, Default)]
+pub(super) struct Intake(std::sync::Arc<std::sync::Mutex<Prepared>>);
+
+#[derive(Default)]
+struct Prepared {
+    ready: Vec<Held>,
+    working: usize,
 }
 
-fn png(image: &arboard::ImageData<'_>) -> Result<(Vec<u8>, image::RgbaImage), String> {
-    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.to_vec())
+impl Intake {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Prepared> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn take(&self) -> Vec<Held> {
+        std::mem::take(&mut self.lock().ready)
+    }
+
+    pub(super) fn working(&self) -> usize {
+        self.lock().working
+    }
+
+    pub(super) fn spawn(&self, ctx: &egui::Context, job: impl FnOnce(&egui::Context) -> Vec<Held> + Send + 'static) {
+        self.lock().working += 1;
+        let (intake, ctx) = (self.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&ctx))).unwrap_or_else(|_| {
+                w::toast(&ctx, "Could not add that file.", true);
+                Vec::new()
+            });
+            let mut prepared = intake.lock();
+            prepared.working -= 1;
+            prepared.ready.extend(held);
+            drop(prepared);
+            ctx.request_repaint();
+        });
+    }
+}
+
+pub(super) fn pasted_files(ctx: &egui::Context, intake: &Intake) {
+    let pasted_text = |e: &egui::Event| matches!(e, egui::Event::Paste(_));
+    let asked = crate::desktop::menu::pasted(ctx) || ctx.input(|i| i.events.iter().any(pasted_text));
+    if !asked {
+        return;
+    }
+    let Ok(mut clip) = arboard::Clipboard::new() else { return };
+    let files = clip.get().file_list().unwrap_or_default();
+    if !files.is_empty() {
+        intake.spawn(ctx, move |ctx| upload_bodies(ctx, &files));
+    } else if ctx.text_edit_focused() && clip.get_text().is_ok_and(|t| !t.trim().is_empty()) {
+        return;
+    } else if let Ok(image) = clip.get_image() {
+        let image = arboard::ImageData { width: image.width, height: image.height, bytes: image.bytes.into_owned().into() };
+        intake.spawn(ctx, move |ctx| pasted_image(ctx, image));
+    } else {
+        return;
+    }
+    ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
+}
+
+fn pasted_image(ctx: &egui::Context, image: arboard::ImageData<'static>) -> Vec<Held> {
+    let name = format!("Pasted image {}.png", chrono::Local::now().format("%H.%M.%S"));
+    match png(image) {
+        Ok((bytes, rgba)) => upload_body(ctx, name, "image/png", &bytes, Some(image::DynamicImage::ImageRgba8(rgba))).into_iter().collect(),
+        Err(e) => {
+            w::toast(ctx, format!("Could not paste the image: {e}"), true);
+            Vec::new()
+        }
+    }
+}
+
+fn png(image: arboard::ImageData<'_>) -> Result<(Vec<u8>, image::RgbaImage), String> {
+    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())
         .ok_or("the clipboard image is malformed")?;
     let mut out = std::io::Cursor::new(Vec::new());
     rgba.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
     Ok((out.into_inner(), rgba))
 }
 
-pub(super) fn dropped_files(ctx: &egui::Context) -> Vec<Held> {
+pub(super) fn dropped_files(ctx: &egui::Context, intake: &Intake) {
     let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
     ctx.input_mut(|i| i.raw.dropped_files.clear());
-    upload_bodies(ctx, &dropped)
+    if !dropped.is_empty() {
+        intake.spawn(ctx, move |ctx| upload_bodies(ctx, &dropped));
+    }
 }
 
 const UPLOAD_KEY: &str = "task:upload";
@@ -2539,8 +2606,6 @@ fn plural(n: i64, unit: &str) -> String {
     }
 }
 
-/// "Today", "Yesterday", or "Mon 22 Sep", in local time — a quiet separator
-/// for a list that reads top to bottom by time.
 pub(super) fn day_time(raw: &str) -> String {
     let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
         return String::new();
@@ -2553,6 +2618,8 @@ pub(super) fn day_time(raw: &str) -> String {
     }
 }
 
+/// "Today", "Yesterday", or "Mon 22 Sep", in local time — a quiet separator
+/// for a list that reads top to bottom by time.
 pub(super) fn day_label(raw: &str) -> String {
     let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
         return String::new();
@@ -2586,10 +2653,10 @@ mod link_label_tests {
     #[test]
     fn a_clipboard_image_becomes_a_png() {
         let image = arboard::ImageData { width: 2, height: 1, bytes: vec![255, 0, 0, 255, 0, 0, 255, 255].into() };
-        let decoded = image::load_from_memory(&png(&image).unwrap().0).unwrap().to_rgba8();
+        let decoded = image::load_from_memory(&png(image).unwrap().0).unwrap().to_rgba8();
         assert_eq!((decoded.width(), decoded.height()), (2, 1));
         assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
         let short = arboard::ImageData { width: 4, height: 4, bytes: vec![0; 3].into() };
-        assert!(png(&short).is_err());
+        assert!(png(short).is_err());
     }
 }

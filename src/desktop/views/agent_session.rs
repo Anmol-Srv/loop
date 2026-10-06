@@ -1,12 +1,12 @@
 //! An agent at work, as the rest of the app sees it: the task page's "Agent
 //! session" section, and Home's "Agents at work" strip.
 //!
-//! The session reads top to bottom the way the work went: who holds it and
-//! where it is (avatar, stepper), what it is doing right now (the now line),
-//! what it has said — quiet single lines for the small stuff, a real block
-//! for a report, question, answer or note — the report it handed in (a card
-//! with its evidence and the review), and — for the owner only — a private
-//! line to the agent and its step log.
+//! The session reads top to bottom the way the work went: where it is (the
+//! stepper), what it is doing right now (the now line), what it has said —
+//! quiet single lines for the small stuff, a real block for a report,
+//! question, answer or note — and, for the owner only, a private line to the
+//! agent and its step log. What waits on the owner (a question, a plan, the
+//! report it handed in) is pinned under the task's title.
 //!
 //! What is private is decided by the server (`canSeeAgentPrivate`, the notes
 //! query, the logs endpoint's 403). This view also leaves those parts out for
@@ -880,8 +880,9 @@ fn mark_day(ui: &mut egui::Ui, at: Option<&str>, day: &mut String, drawn: &mut b
     *prev_minor = false;
 }
 
-/// The vertical gap before the next timeline item: none before the first,
-/// tight between two minor lines, roomier whenever a block is involved.
+/// The vertical gap before the next timeline item: none before the first or
+/// right under a day heading, tight between two minor lines, roomier
+/// whenever a block is involved.
 fn timeline_gap(drawn: bool, prev_minor: bool, minor: bool) -> f32 {
     if !drawn {
         0.0

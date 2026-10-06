@@ -735,7 +735,7 @@ fn field_menu(
                 select(ctx, id, range);
             }
             ctx.memory_mut(|m| m.request_focus(id));
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            crate::desktop::menu::paste();
             ctx.request_repaint();
         }
         super::viz::menu_rule(ui);

@@ -96,9 +96,10 @@ const BLOCKER_RESOLVED: [&str; 4] = ["handoff", "completed", "shipped", "dropped
 /// outcome you want. `dropped` is absent because the whole page excludes it.
 const DONUT: [&str; 7] = ["shipped", "handoff", "completed", "research", "in_progress", "blocked", "open"];
 
-/// Table geometry. Fixed so the columns line up with the header and with each
-/// other; the task column takes whatever is left. Alignment is declared here
-/// too, so "Updated" and the age beneath it cannot disagree.
+// Table geometry. Fixed so the columns line up with the header and with each
+// other; the task column takes whatever is left. Alignment is declared here
+// too, so "Updated" and the age beneath it cannot disagree.
+
 /// "P0" plus chip padding, the same width the task tables use.
 const COL_PRIORITY: f32 = 52.0;
 const COL_DEPARTMENT: f32 = 88.0;

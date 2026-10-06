@@ -1,6 +1,6 @@
 use std::sync::{Mutex, PoisonError};
 
-use egui::{Event, Key, Modifiers, ViewportCommand, ViewportId};
+use egui::{Event, Key, Modifiers, ViewportId};
 
 const CMD: Modifiers = Modifiers::MAC_CMD.plus(Modifiers::COMMAND);
 
@@ -99,6 +99,10 @@ fn build(version: &str) -> muda::Result<muda::Menu> {
     Ok(menu)
 }
 
+pub fn paste() {
+    pick(PASTE);
+}
+
 pub fn pick(id: &str) {
     PICKED.lock().unwrap_or_else(PoisonError::into_inner).push(id.to_owned());
 }
@@ -148,8 +152,11 @@ pub fn deliver(ctx: &egui::Context) {
         match h {
             Held::Events(events) => ctx.input_mut(|i| i.events.extend(events)),
             Held::Paste => {
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new((PASTED, here)), true));
-                ctx.send_viewport_cmd(ViewportCommand::RequestPaste);
+                let frame = ctx.cumulative_frame_nr();
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new((PASTED, here)), frame));
+                if let Some(text) = clipboard_text() {
+                    ctx.input_mut(|i| i.events.push(Event::Paste(text)));
+                }
             }
         }
     }
@@ -157,9 +164,15 @@ pub fn deliver(ctx: &egui::Context) {
 
 const PASTED: &str = "menu:pasted";
 
+fn clipboard_text() -> Option<String> {
+    let text = arboard::Clipboard::new().ok()?.get_text().ok()?.replace("\r\n", "\n");
+    (!text.is_empty()).then_some(text)
+}
+
 pub fn pasted(ctx: &egui::Context) -> bool {
     let id = egui::Id::new((PASTED, ctx.viewport_id()));
-    ctx.data_mut(|d| d.remove_temp::<bool>(id)).unwrap_or(false)
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| d.remove_temp::<u64>(id)).is_some_and(|at| at == frame)
 }
 
 fn chord(key: Key, modifiers: Modifiers) -> Vec<Event> {

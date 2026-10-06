@@ -212,7 +212,7 @@ fn link_at(s: &str) -> Option<(usize, String)> {
     } else {
         return None;
     };
-    Some((word.len(), target))
+    allowed(&target).then_some((word.len(), target))
 }
 
 fn is_scheme(s: &str) -> bool {
@@ -233,84 +233,100 @@ fn is_email(word: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-const OPENER: &str = "open";
+const OPENER: (&str, &[&str]) = ("open", &["--"]);
 #[cfg(not(target_os = "macos"))]
-const OPENER: &str = "xdg-open";
+const OPENER: (&str, &[&str]) = ("xdg-open", &[]);
+
+const APP_SCHEMES: [&str; 5] = ["figma", "slack", "notion", "linear", "zoommtg"];
+const DOCUMENTS: [&str; 30] = [
+    "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "svg", "md", "markdown", "txt", "csv", "tsv",
+    "json", "log", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages", "mov", "mp4", "mp3",
+];
+
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Web,
+    Open(String),
+    Reveal(String),
+    Missing(std::path::PathBuf),
+    Refused,
+}
+
+fn is_web(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn allowed(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    is_web(target)
+        || lower.starts_with("file:")
+        || target.starts_with('/')
+        || target.starts_with("~/")
+        || BARE_SCHEMES.iter().any(|p| lower.starts_with(p))
+        || lower.split_once("://").is_some_and(|(scheme, _)| APP_SCHEMES.contains(&scheme))
+}
+
+fn plan(target: &str) -> Plan {
+    if !allowed(target) {
+        return Plan::Refused;
+    }
+    if is_web(target) {
+        return Plan::Web;
+    }
+    match local_path(target) {
+        Some(path) => match std::fs::canonicalize(&path) {
+            Err(_) => Plan::Missing(path),
+            Ok(real) if opens_in_place(&real) => Plan::Open(real.display().to_string()),
+            Ok(real) => Plan::Reveal(real.display().to_string()),
+        },
+        None => Plan::Open(target.to_owned()),
+    }
+}
 
 pub fn open(ctx: &egui::Context, target: &str) {
-    if target.starts_with("http://") || target.starts_with("https://") {
+    if is_web(target) {
         ctx.open_url(egui::OpenUrl::new_tab(target));
         return;
     }
-    let args: Vec<String> = match local_path(target) {
-        Some(path) if !path.exists() => {
-            w::toast(ctx, format!("{} isn\u{2019}t on this Mac.", path.display()), true);
-            return;
-        }
-        Some(path) if launches(&path) => vec!["-R".to_owned(), path.display().to_string()],
-        Some(path) => vec![path.display().to_string()],
-        None => vec![target.to_owned()],
-    };
     let ctx = ctx.clone();
     let target = target.to_owned();
     std::thread::spawn(move || {
-        let opened = std::process::Command::new(OPENER).args(&args).status().is_ok_and(|s| s.success());
-        if !opened {
-            w::toast(&ctx, format!("Nothing on this Mac opens {target}."), true);
+        let failed = match plan(&target) {
+            Plan::Web | Plan::Refused => Some("Loop opens web, mail, file, Figma, Slack, Notion, Linear and Zoom links only.".to_owned()),
+            Plan::Missing(path) => Some(format!("{} isn\u{2019}t on this Mac.", path.display())),
+            Plan::Open(operand) => (!launch(false, &operand)).then(|| format!("Nothing on this Mac opens {target}.")),
+            Plan::Reveal(operand) => (!launch(true, &operand)).then(|| format!("Nothing on this Mac opens {target}.")),
+        };
+        if let Some(message) = failed {
+            w::toast(&ctx, message, true);
             ctx.request_repaint();
         }
     });
 }
 
+fn launch(reveal: bool, operand: &str) -> bool {
+    let (opener, end) = OPENER;
+    let args = reveal.then_some("-R").into_iter().chain(end.iter().copied());
+    std::process::Command::new(opener).args(args).arg(operand).status().is_ok_and(|s| s.success())
+}
+
 fn local_path(target: &str) -> Option<std::path::PathBuf> {
-    let raw = match target.strip_prefix("file://") {
-        Some(rest) => percent_decode(rest.strip_prefix("localhost").unwrap_or(rest)),
-        None if target.starts_with('/') || target.starts_with("~/") => target.to_owned(),
-        None => return None,
-    };
-    match raw.strip_prefix("~/") {
-        Some(rest) => std::env::home_dir().map(|home| home.join(rest)),
-        None => Some(raw.into()),
+    if target.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:")) {
+        return reqwest::Url::parse(target).ok()?.to_file_path().ok();
     }
+    if let Some(rest) = target.strip_prefix("~/") {
+        return std::env::home_dir().map(|home| home.join(rest));
+    }
+    target.starts_with('/').then(|| target.into())
 }
 
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = (bytes[i] == b'%').then(|| s.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
-        match hex {
-            Some(b) => {
-                out.push(b);
-                i += 3;
-            }
-            None => {
-                out.push(bytes[i]);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
-}
-
-const RUNS: [&str; 21] = [
-    "app", "command", "tool", "terminal", "sh", "bash", "zsh", "py", "rb", "pl", "scpt", "applescript", "workflow",
-    "action", "pkg", "mpkg", "dmg", "jar", "webloc", "inetloc", "fileloc",
-];
-
-fn launches(path: &std::path::Path) -> bool {
+fn opens_in_place(path: &std::path::Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if ext.is_some_and(|e| RUNS.contains(&e.as_str())) {
-        return true;
+    if path.is_dir() {
+        return ext.is_none();
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        path.is_file() && path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    false
+    ext.is_some_and(|e| DOCUMENTS.contains(&e.as_str()))
 }
 
 /// One `<…>`: a link, a mention, a channel or a special.
@@ -336,7 +352,7 @@ fn token(inner: &str, style: Style) -> Span {
         _ => {
             let url = unescape(target);
             let shown = label.map(unescape).unwrap_or_else(|| url.trim_start_matches("mailto:").to_owned());
-            Span { text: shown, style, link: Some(url) }
+            Span { text: shown, style, link: allowed(&url).then_some(url) }
         }
     }
 }
@@ -619,7 +635,6 @@ mod tests {
         for (src, target) in [
             ("figma://file/aR7x", "figma://file/aR7x"),
             ("slack://channel?team=T1&id=C2", "slack://channel?team=T1&id=C2"),
-            ("vscode://file/Users/a/x.rs:12", "vscode://file/Users/a/x.rs:12"),
             ("file:///Users/a/spec%20v2.pdf", "file:///Users/a/spec%20v2.pdf"),
             ("~/Desktop/spec.pdf", "~/Desktop/spec.pdf"),
             ("/Users/a/notes.md", "/Users/a/notes.md"),
@@ -635,7 +650,7 @@ mod tests {
             ], "{src}");
         }
         assert_eq!(texts(&inline("(https://x.test/a)")), vec![("(", n, None), ("https://x.test/a", n, Some("https://x.test/a")), (")", n, None)]);
-        for prose in ["GET /cart/totals", "std::fs::read", "localhost:8091", "a@b", "x/~/y", "www.", "http://"] {
+        for prose in ["GET /cart/totals", "std::fs::read", "localhost:8091", "a@b", "x/~/y", "www.", "http://", "vscode://file/x.rs", "shortcuts://run-shortcut?name=x"] {
             assert!(inline(prose).iter().all(|s| s.link.is_none()), "{prose}");
         }
     }
@@ -644,14 +659,46 @@ mod tests {
     fn local_targets_resolve_and_scripts_are_revealed_not_run() {
         assert_eq!(local_path("file:///Users/a/spec%20v2.pdf"), Some("/Users/a/spec v2.pdf".into()));
         assert_eq!(local_path("file://localhost/tmp/x"), Some("/tmp/x".into()));
+        assert_eq!(local_path("FILE:///tmp/x"), Some("/tmp/x".into()), "the scheme is any case");
+        assert_eq!(local_path("file:/tmp/x"), Some("/tmp/x".into()), "and one slash is still a file");
         assert_eq!(local_path("/Users/a/b"), Some("/Users/a/b".into()));
         assert!(local_path("~/Desktop").is_some_and(|p| p.ends_with("Desktop") && p.is_absolute()));
         assert_eq!(local_path("figma://file/x"), None);
         assert_eq!(local_path("mailto:a@b.co"), None);
-        for runs in ["/Applications/Calculator.app", "/tmp/install.command", "/tmp/setup.sh", "/tmp/Installer.PKG"] {
-            assert!(launches(std::path::Path::new(runs)), "{runs}");
+
+        let dir = std::env::temp_dir().join(format!("loop-open-{}", std::process::id()));
+        let app = dir.join("Thing.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        let doc = dir.join("spec.pdf");
+        std::fs::write(&doc, "%PDF").unwrap();
+        let script = dir.join("payload");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let disguised = dir.join("report.pdf");
+        let _ = std::fs::remove_file(&disguised);
+        std::os::unix::fs::symlink(&app, &disguised).unwrap();
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().display().to_string();
+
+        assert_eq!(plan(&doc.display().to_string()), Plan::Open(real(&doc)), "a document opens");
+        assert_eq!(plan(&dir.display().to_string()), Plan::Open(real(&dir)), "a plain folder opens");
+        for hostile in [
+            app.display().to_string(),
+            format!("{}/Contents/..", app.display()),
+            format!("file://{}/Contents/%2E%2E", app.display()),
+            format!("FILE://{}", app.display()),
+            disguised.display().to_string(),
+        ] {
+            assert_eq!(plan(&hostile), Plan::Reveal(real(&app)), "{hostile} is shown in Finder, not run");
         }
-        assert!(!launches(std::path::Path::new("/tmp/spec.pdf")));
+        assert_eq!(plan(&script.display().to_string()), Plan::Reveal(real(&script)), "no document type, no run");
+        assert!(matches!(plan("/no/such/file.pdf"), Plan::Missing(_)));
+
+        assert_eq!(plan("HTTPS://example.com"), Plan::Web);
+        assert_eq!(plan("mailto:a@b.co"), Plan::Open("mailto:a@b.co".into()));
+        assert_eq!(plan("figma://file/x"), Plan::Open("figma://file/x".into()));
+        for refused in ["shortcuts://run-shortcut?name=x", "x-man-page://ls", "smb://host/share", "-aCalculator", "vscode://ext"] {
+            assert_eq!(plan(refused), Plan::Refused, "{refused}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

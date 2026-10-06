@@ -1,3 +1,5 @@
+#![cfg(feature = "app")]
+
 use acp_server::desktop::design::theme;
 use egui::{Event, MouseWheelUnit, TouchPhase, Vec2};
 use egui_kittest::Harness;

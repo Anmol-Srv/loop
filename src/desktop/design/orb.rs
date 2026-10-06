@@ -18,7 +18,7 @@ use std::f32::consts::TAU;
 use egui::{vec2, Color32, Painter, Pos2, Stroke, Vec2};
 
 /// Dots sit inside the box, leaving room for the hairline and, on
-/// `NeedsInput`, the amber dot at the corner.
+/// `NeedsInput`, the rose dot at the corner.
 pub const INSET: f32 = 0.86;
 
 /// A lattice point after rotation: its screen offset from the globe's centre
