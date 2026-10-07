@@ -840,46 +840,176 @@ fn error_box(ui: &mut Ui, message: &str, retry: bool) -> bool {
     retried
 }
 
-// ---------------------------------------------------------------- toast
+// ---------------------------------------------------------------- popups
 
-const TOAST: &str = "widgets:toast";
+const POPUPS: &str = "widgets:popups";
+/// A popup's action was clicked: the task id it opens. The shell takes it.
+const POPUP_OPEN: &str = "widgets:popup-open";
 
-/// Say how an action from a menu went, for a moment, at the foot of the
-/// window. A row's menu has no page of its own to put a notice on, and
-/// "Copied" belongs nowhere else.
-pub fn toast(ctx: &egui::Context, message: impl Into<String>, failed: bool) {
-    let at = ctx.input(|i| i.time);
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(TOAST), (message.into(), failed, at)));
+/// What a popup is about, which sets its icon and accent.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PopTone {
+    Ok,
+    Error,
+    Info,
+    /// Something an agent did, or something handed to one.
+    Agent,
 }
 
-/// Draw the current toast, if it has not run out. Once a frame, from the shell.
+/// A short-lived card in the bottom-right: how an action went, or something new
+/// that happened. Newest on top, three at most; hovering one holds it.
+#[derive(Clone)]
+pub struct Popup {
+    pub title: String,
+    pub detail: Option<String>,
+    pub tone: PopTone,
+    /// ("Open", task id): a button that opens the task.
+    pub action: Option<(String, String)>,
+}
+
+impl Popup {
+    pub fn new(tone: PopTone, title: impl Into<String>) -> Self {
+        Self { title: title.into(), detail: None, tone, action: None }
+    }
+    pub fn detail(mut self, d: impl Into<String>) -> Self {
+        self.detail = Some(d.into()).filter(|d: &String| !d.trim().is_empty());
+        self
+    }
+    pub fn open_task(mut self, label: impl Into<String>, task_id: impl Into<String>) -> Self {
+        self.action = Some((label.into(), task_id.into()));
+        self
+    }
+}
+
+/// (popup, shown at, id, held — seconds of hover so far).
+type Shown = Vec<(Popup, f64, u64, f64)>;
+
+/// Say how an action went, for a moment. The one-line form every view uses.
+pub fn toast(ctx: &egui::Context, message: impl Into<String>, failed: bool) {
+    popup(ctx, Popup::new(if failed { PopTone::Error } else { PopTone::Ok }, message));
+}
+
+pub fn popup(ctx: &egui::Context, p: Popup) {
+    let at = ctx.input(|i| i.time);
+    ctx.data_mut(|d| {
+        let list = d.get_temp_mut_or_default::<Shown>(egui::Id::new(POPUPS));
+        let id = list.iter().map(|x| x.2).max().unwrap_or(0) + 1;
+        // The same words again (a double click, a retry) restart the one shown.
+        list.retain(|x| x.0.title != p.title);
+        list.insert(0, (p, at, id, 0.0));
+        list.truncate(3);
+    });
+    ctx.request_repaint();
+}
+
+/// The task a popup's action asked to open, once.
+pub fn take_popup_open(ctx: &egui::Context) -> Option<String> {
+    ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new(POPUP_OPEN)))
+}
+
+fn lasts(p: &Popup) -> f64 {
+    if p.tone == PopTone::Error {
+        7.0
+    } else if p.detail.is_some() || p.action.is_some() {
+        6.0
+    } else {
+        3.0
+    }
+}
+
+const POPUP_W: f32 = 340.0;
+
+/// Draw the stack. Once a frame, from the shell.
 pub fn toasts(ctx: &egui::Context) {
-    let id = egui::Id::new(TOAST);
-    let Some((message, failed, at)) = ctx.data(|d| d.get_temp::<(String, bool, f64)>(id)) else { return };
-    // A failure is a sentence someone has to read; "Copied." is a glance.
-    let lasts = if failed { 6.0 } else { 2.0 };
-    let left = lasts - (ctx.input(|i| i.time) - at);
-    if left <= 0.0 {
-        ctx.data_mut(|d| d.remove::<(String, bool, f64)>(id));
+    let key = egui::Id::new(POPUPS);
+    let now = ctx.input(|i| i.time);
+    let dt = ctx.input(|i| i.stable_dt as f64).min(0.1);
+    let mut list: Shown = ctx.data(|d| d.get_temp::<Shown>(key)).unwrap_or_default();
+    list.retain(|(p, at, _, held)| now - at - held < lasts(p));
+    if list.is_empty() {
+        ctx.data_mut(|d| d.remove::<Shown>(key));
         return;
     }
-    ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
-    egui::Area::new(id)
-        .order(egui::Order::Tooltip)
-        .interactable(false)
-        .anchor(egui::Align2::CENTER_BOTTOM, Vec2::new(0.0, -space::XL))
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(colour::SURFACE_ACTIVE())
-                .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
-                .corner_radius(radius::MD)
-                .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new(message)
-                            .size(text::SMALL)
-                            .color(if failed { colour::DANGER() } else { colour::TEXT() }),
-                    );
-                });
-        });
+    let calm = ctx.global_style().animation_time <= f32::EPSILON;
+    let mut close: Option<u64> = None;
+    let mut open: Option<String> = None;
+    let mut hovered: Option<u64> = None;
+    // Bottom-right, stacking upward with the newest nearest the corner: the
+    // top-right belongs to the toolbar and the notifications panel.
+    let mut y = space::LG;
+    for (p, at, id, held) in &list {
+        let age = (now - at) as f32;
+        let left = (lasts(p) - (now - at - held)) as f32;
+        // In over 0.2 s from the right, out over the last 0.3 s.
+        let t_in = if calm { 1.0 } else { (age / 0.2).clamp(0.0, 1.0) };
+        let t_in = 1.0 - (1.0 - t_in).powi(3);
+        let alpha = t_in * if calm { 1.0 } else { (left / 0.3).clamp(0.0, 1.0) };
+        let (accent, glyph) = match p.tone {
+            PopTone::Ok => (colour::OK(), egui_phosphor::regular::CHECK),
+            PopTone::Error => (colour::DANGER(), egui_phosphor::regular::WARNING),
+            PopTone::Info => (colour::INFO(), egui_phosphor::regular::BELL_SIMPLE),
+            PopTone::Agent => (colour::AGENT(), egui_phosphor::regular::SPARKLE),
+        };
+        let area = egui::Area::new(egui::Id::new(("popup", *id)))
+            .order(egui::Order::Tooltip)
+            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-space::LG + (1.0 - t_in) * 28.0, -y))
+            .show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                egui::Frame::new()
+                    .fill(colour::SURFACE_ACTIVE())
+                    .stroke(egui::Stroke::new(1.0, colour::LINE_STRONG()))
+                    .corner_radius(radius::LG)
+                    .shadow(egui::epaint::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha(90) })
+                    .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(POPUP_W - space::MD * 2.0);
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+                            ui.painter().circle_filled(r.center(), 13.0, accent.gamma_multiply(0.16));
+                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(text::BODY), accent);
+                            ui.vertical(|ui| {
+                                ui.set_width(POPUP_W - space::MD * 2.0 - 26.0 - space::SM * 2.0 - 18.0);
+                                ui.spacing_mut().item_spacing.y = space::XXS;
+                                ui.add(egui::Label::new(
+                                    RichText::new(&p.title).size(text::SMALL).family(egui::FontFamily::Name(super::theme::SEMIBOLD.into())).color(colour::TEXT()),
+                                ).wrap());
+                                if let Some(d) = &p.detail {
+                                    let short: String = d.chars().take(140).collect();
+                                    ui.add(egui::Label::new(RichText::new(short).size(text::CAPTION).color(colour::TEXT_MUTED())).wrap());
+                                }
+                                if let Some((label, task)) = &p.action {
+                                    if link(ui, label).clicked() {
+                                        open = Some(task.clone());
+                                        close = Some(*id);
+                                    }
+                                }
+                            });
+                            let x = ui.add(egui::Button::new(RichText::new(egui_phosphor::regular::X).size(text::CAPTION).color(colour::TEXT_FAINT())).frame(false));
+                            x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss"));
+                            if x.clicked() {
+                                close = Some(*id);
+                            }
+                        });
+                    });
+            });
+        if area.response.hovered() || area.response.contains_pointer() {
+            hovered = Some(*id);
+        }
+        y += area.response.rect.height() + space::SM;
+    }
+    // A popup under the pointer does not run out while it is being read.
+    for (_, _, id, held) in list.iter_mut() {
+        if Some(*id) == hovered {
+            *held += dt;
+        }
+    }
+    if let Some(c) = close {
+        list.retain(|x| x.2 != c);
+    }
+    if let Some(task) = open {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(POPUP_OPEN), task));
+    }
+    ctx.data_mut(|d| d.insert_temp(key, list));
+    ctx.request_repaint_after(std::time::Duration::from_millis(if calm { 250 } else { 16 }));
 }

@@ -19,6 +19,7 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::user::people::routes())
         .merge(routes::user::home::routes())
         .merge(routes::user::label::routes())
+        .merge(routes::user::notification::routes())
         .merge(routes::user::repo::routes())
         .merge(routes::user::folder::routes())
         .merge(routes::user::note::routes())

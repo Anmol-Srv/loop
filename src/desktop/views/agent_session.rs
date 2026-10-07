@@ -21,7 +21,7 @@ use serde_json::Value;
 
 use super::agents::state_words;
 use super::projects::PROSE_W;
-use super::task::{ago, day_label, day_time, elide, exact};
+use super::task::{ago, day_label, day_time, exact};
 use crate::desktop::design::agent::{self as face, Presence, Step};
 use crate::desktop::design::{
     avatar, cards as c, colour, glyph, motion, pad, radius, shell, size, space, status_label, text, theme, widgets as w,
@@ -166,14 +166,8 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         });
     }
 
-    // ---- attach: the owner's local Claude Code session, once the watcher
-    // has started one for this task
-    if s.private {
-        if let Some(session) = s.task.get("agentSession").filter(|v| !v.is_null()) {
-            ui.add_space(space::SM);
-            cmux_row(ui, session, str_of(s.task, "title").unwrap_or("Untitled"));
-        }
-    }
+    // The way into the agent's own Claude session is in the properties pane
+    // (`session_property`), beside the delegate.
 
     // ---- the owner's note at hand-off
     if let Some(brief) = str_of(s.task, "brief").filter(|_| s.private) {
@@ -596,57 +590,115 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
 
 // ------------------------------------------------------------------- attach
 
-/// The owner's way back into the agent's Claude Code session on their own
-/// Mac: a cmux workspace attached to it, or — failing that — the attach
-/// command on the clipboard. Owner-only: the session lives on their machine,
-/// not the dashboard's.
-fn cmux_row(ui: &mut egui::Ui, session: &Value, title: &str) {
+/// The properties pane's "Session" row: the owner's way back into the
+/// agent's Claude Code session on their own Mac — a cmux workspace attached
+/// to it, or the attach command on the clipboard. Owner-only: the session
+/// lives on their machine, not the dashboard's. Nothing until the watcher
+/// has started one.
+pub(super) fn session_property(ui: &mut egui::Ui, task: &Value) {
+    let Some(session) = task.get("agentSession").filter(|v| !v.is_null()) else { return };
     let Some(session_id) = str_of(session, "sessionId") else { return };
     let cwd = str_of(session, "cwd").unwrap_or_default();
-    let path = tildify(cwd);
-    // Wrapped, and the path elided to whatever is left on its line: a
-    // worktree path is the one string here with nowhere to break on its own.
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(space::SM, space::XS);
-        if w::secondary(ui, "Open in cmux", true).clicked() {
+    let title = str_of(task, "title").unwrap_or("Untitled");
+    shell::property(ui, "Session", |ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        let hint = format!(
+            "Claude session {session_id}\n{}\n\nWhile it\u{2019}s open, the agent waits and won\u{2019}t run in the background.",
+            tildify(cwd)
+        );
+        if w::secondary(ui, "Open in cmux", true).on_hover_text(hint).clicked() {
             open_cmux(ui.ctx(), title, cwd, session_id);
         }
-        w::muted(ui, "Claude session \u{00B7}");
-        w::id(ui, session_id);
-        w::muted(ui, "\u{00B7}");
-        let fitted = elide(ui, &path, ui.available_width());
-        ui.label(RichText::new(fitted).size(text::SMALL).color(colour::TEXT_MUTED())).on_hover_text(&path);
-        if w::link(ui, "Copy").clicked() {
+        if w::link(ui, "Copy").on_hover_text("Copy the attach command").clicked() {
             ui.ctx().copy_text(attach_command(cwd, session_id));
             w::toast(ui.ctx(), "Attach command copied.", false);
         }
     });
-    w::caption(ui, "While it\u{2019}s open, the agent waits and won\u{2019}t run in the background.");
 }
 
-/// `cmux new-workspace`, non-blocking: `cmux` on PATH first, then its
-/// absolute install path. Either succeeding hands the terminal to cmux; if
-/// neither spawns, the attach command goes to the clipboard instead.
+/// Open the session in cmux, or go to it when it is already open there.
 ///
-/// ponytail: "available" is judged only by whether the process spawned, not
-/// whether the workspace actually opened (that would mean waiting on it,
-/// which blocks the UI thread). If cmux starts but its own command fails,
-/// that shows up in cmux's window, not here.
+/// A workspace Loop opens carries `Loop · <session id>` as its description
+/// and Loop's colour in the sidebar, so it is told apart at a glance and
+/// found again: any cmux window holding a workspace with that tag is focused
+/// and the workspace selected, instead of a second copy being opened. One
+/// opened before tagging is recognised by its title and folder, and tagged.
+/// Runs off the UI thread — it is a handful of short `cmux` calls; if cmux is
+/// not there at all, the attach command goes to the clipboard instead.
 fn open_cmux(ctx: &egui::Context, title: &str, cwd: &str, session_id: &str) {
-    let resume = resume_command(session_id);
-    let spawn = |bin: &str| {
-        Command::new(bin)
-            .args(["new-workspace", "--name", title, "--cwd", cwd, "--command", resume.as_str()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+    let (ctx, title, cwd, sid) = (ctx.clone(), title.to_owned(), cwd.to_owned(), session_id.to_owned());
+    std::thread::spawn(move || {
+        let Some(bin) = cmux_bin() else {
+            ctx.copy_text(attach_command(&cwd, &sid));
+            w::toast(&ctx, "cmux isn\u{2019}t available \u{2014} copied the attach command instead.", true);
+            return;
+        };
+        let tag = format!("Loop \u{00B7} {sid}");
+        let cmux = |args: &[&str]| {
+            Command::new(&bin).args(args).env("CMUX_QUIET", "1").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        let mark = |ws: &str, win: Option<&str>| {
+            let mut base = vec!["workspace-action", "--workspace", ws];
+            if let Some(win) = win {
+                base.extend(["--window", win]);
+            }
+            cmux(&[base.as_slice(), &["--action", "set-color", "--color", LOOP_COLOUR]].concat());
+            cmux(&[base.as_slice(), &["--action", "set-description", "--description", tag.as_str()]].concat());
+        };
+
+        if let Some((win, ws)) = find_workspace(&cmux, &sid, &title, &cwd) {
+            mark(&ws, Some(&win));
+            cmux(&["focus-window", "--window", &win]);
+            cmux(&["select-workspace", "--workspace", &ws, "--window", &win]);
+            let _ = Command::new("open").args(["-a", "cmux"]).status();
+            return;
+        }
+        let resume = resume_command(&sid);
+        let made = cmux(&["new-workspace", "--name", &title, "--description", &tag, "--cwd", &cwd, "--command", &resume]);
+        // "OK workspace:12": the new workspace's ref, to colour it.
+        match made.as_deref().and_then(|out| out.split_whitespace().find(|w| w.starts_with("workspace:"))) {
+            Some(ws) => mark(ws, None),
+            None => {
+                ctx.copy_text(attach_command(&cwd, &sid));
+                w::toast(&ctx, "cmux didn\u{2019}t open it \u{2014} copied the attach command instead.", true);
+            }
+        }
+    });
+}
+
+/// The sidebar colour of a workspace Loop opened: the agents' purple.
+const LOOP_COLOUR: &str = "Purple";
+
+/// `cmux` on PATH, else where the app installs it.
+fn cmux_bin() -> Option<String> {
+    let works = |bin: &str| {
+        Command::new(bin).arg("version").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
     };
-    if spawn("cmux").or_else(|_| spawn(CMUX_FALLBACK)).is_ok() {
-        return;
+    ["cmux", CMUX_FALLBACK].into_iter().find(|b| works(b)).map(str::to_owned)
+}
+
+/// The (window, workspace) already holding this session, across every cmux
+/// window: tagged with it, or — opened before tagging — the same title in the
+/// same folder.
+fn find_workspace(cmux: &dyn Fn(&[&str]) -> Option<String>, sid: &str, title: &str, cwd: &str) -> Option<(String, String)> {
+    let windows: Vec<Value> = serde_json::from_str(&cmux(&["list-windows", "--json"])?).ok()?;
+    let mut legacy = None;
+    for win in windows.iter().filter_map(|w| str_of(w, "id")) {
+        let Some(listed) = cmux(&["workspace", "list", "--window", win, "--json"]) else { continue };
+        let Ok(listed) = serde_json::from_str::<Value>(&listed) else { continue };
+        for ws in listed["workspaces"].as_array().into_iter().flatten() {
+            let Some(id) = str_of(ws, "id") else { continue };
+            if str_of(ws, "description").is_some_and(|d| d.contains(sid)) {
+                return Some((win.to_owned(), id.to_owned()));
+            }
+            if legacy.is_none() && str_of(ws, "custom_title") == Some(title) && str_of(ws, "current_directory") == Some(cwd) {
+                legacy = Some((win.to_owned(), id.to_owned()));
+            }
+        }
     }
-    ctx.copy_text(attach_command(cwd, session_id));
-    w::toast(ctx, "cmux isn\u{2019}t available \u{2014} copied the attach command instead.", true);
+    legacy
 }
 
 fn attach_command(cwd: &str, session_id: &str) -> String {

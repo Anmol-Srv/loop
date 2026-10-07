@@ -362,6 +362,8 @@ pub struct Tasks {
     pub(super) deciding: Option<String>,
     /// What to say when the reply lands, and the task's id if it deletes it.
     sent: Option<(String, Option<String>)>,
+    /// A richer popup to show instead of `sent`'s line when it lands.
+    pop: Option<w::Popup>,
 }
 
 impl Tasks {
@@ -486,10 +488,16 @@ pub(super) fn settle(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) -> Optio
                 false,
             ),
             Some(Ok(_)) => {
-                w::toast(ctx, done, false);
+                match s.pop.take() {
+                    Some(p) => w::popup(ctx, p),
+                    None => w::toast(ctx, done, false),
+                }
                 gone = deletes;
             }
-            Some(Err(e)) => w::toast(ctx, e.clone(), true),
+            Some(Err(e)) => {
+                s.pop = None;
+                w::toast(ctx, e.clone(), true)
+            }
             None => {}
         }
         net.invalidate(KEY);
@@ -625,6 +633,10 @@ fn handoff_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
             json!({ "agentId": h.agent_id, "brief": (!brief.is_empty()).then_some(brief) }),
         );
         s.sent = Some((format!("Handed off to {}.", h.agent_name), None));
+        s.pop = Some(
+            w::Popup::new(w::PopTone::Agent, format!("Handed off to {}", h.agent_name))
+                .detail("It reads the task and sends you a plan to approve before it builds anything."),
+        );
     } else if close || modal.should_close() {
         s.handoff = None;
     }
@@ -656,6 +668,10 @@ fn take_back_dialog(ctx: &egui::Context, net: &mut Net, s: &mut Tasks) {
         net.invalidate(KEY);
         net.post(KEY, &format!("/api/user/tasks/{id}/takeback"), json!({}));
         s.sent = Some(("Taken back \u{2014} the agent no longer has this task.".to_owned(), None));
+        s.pop = Some(
+            w::Popup::new(w::PopTone::Agent, "Taken back")
+                .detail("The agent stops and no longer has this task. Its branch is left as it was."),
+        );
     } else if close || modal.should_close() {
         s.take_back = None;
     }

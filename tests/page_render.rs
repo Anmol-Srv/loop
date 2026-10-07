@@ -54,6 +54,7 @@ const SHOTS: &[Shot] = &[
     Shot { name: "long-mytasks", tab: Tab::AllTasks, project: None, task: None, signed_in: true },
     Shot { name: "newtask", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
     Shot { name: "newtask-held", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
+    Shot { name: "notifications", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
     Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
     Shot { name: "login-error", tab: Tab::Home, project: None, task: None, signed_in: false },
@@ -92,8 +93,18 @@ fn interact(shot: &Shot, harness: &mut Harness<'_>) {
         "mytasks-board" => harness.query_by_label("Board view"),
         "account-menu" => harness.query_by_label_contains("Account:"),
         "newtask" | "newtask-held" => harness.query_by_label("New task"),
+        "notifications" => harness.query_by_label_contains("unread"),
         _ => None,
     };
+    if shot.name == "notifications" {
+        use acp_server::desktop::design::widgets as w;
+        w::popup(
+            &harness.ctx,
+            w::Popup::new(w::PopTone::Agent, "Handed off to Airtribe Agent")
+                .detail("It reads the task and sends you a plan to approve before it builds anything."),
+        );
+        w::toast(&harness.ctx, "Copied.", false);
+    }
     if let Some(node) = click {
         node.click();
         for _ in 0..6 {

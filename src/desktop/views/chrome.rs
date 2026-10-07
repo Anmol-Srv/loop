@@ -116,6 +116,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let private_here = here.is_some_and(|w| w.private);
     let mut switch_to: Option<usize> = shortcut_workspace(ui.ctx(), spaces.len());
     let mut add_workspace = false;
+    let mut open_updates = false;
+    views::updates::check(ui.ctx(), false);
     let mut manage_workspaces = false;
 
     let (clicked, search, switcher) = shell::sidebar(ui, &brand, &groups, |ui| {
@@ -134,6 +136,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             // Where an admin hands out setup codes, one click from anywhere.
             if role == "admin" {
                 invite |= viz::menu_item_with(ui, icon::USER_PLUS, "Invite people", "");
+            }
+            if let Some(v) = views::updates::available() {
+                open_updates |= viz::menu_item_with(ui, icon::ARROW_CIRCLE_UP, &format!("Update available \u{00B7} {v}"), "");
             }
             open_settings |= viz::menu_item_with(ui, icon::GEAR_SIX, "Settings\u{2026}", "\u{2318},");
             if !private_here {
@@ -173,6 +178,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         app.add_workspace();
         return;
     }
+    if open_updates {
+        views::settings::open_section(&mut app.settings, views::settings::Section::Updates);
+    }
     if manage_workspaces {
         views::settings::open_section(&mut app.settings, views::settings::Section::Workspaces);
     }
@@ -206,7 +214,16 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     // palette and not on whatever form sits underneath it.
     views::palette::ui(app, ui);
 
+    views::notifications::tick(app, ui.ctx());
+    if let Some(task) = w::take_popup_open(ui.ctx()) {
+        views::agents::close();
+        app.task = Some(task);
+    }
+
     shell::content(ui, |ui| {
+        // First into the toolbar's trailing slot, which fills right to left:
+        // the bell sits at the far right of every page.
+        shell::toolbar_trailing(ui, |ui| views::notifications::bell(app, ui));
         if app.task.is_some() {
             views::task::ui(app, ui);
         } else {
@@ -222,6 +239,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 
+    views::notifications::panel(app, ui.ctx());
     views::new_task::ui(app, ui.ctx());
     views::settings::window(app, ui.ctx());
     // After every page, so a task's confirm dialog sits over whichever one
@@ -257,6 +275,17 @@ struct Who<'a> {
     server: &'a str,
 }
 
+/// A dot on the avatar's shoulder while a newer Loop is out: the one place
+/// on screen that is always there, and where the menu that updates it opens.
+fn update_dot(p: &egui::Painter, disc: egui::Rect) {
+    if views::updates::available().is_none() {
+        return;
+    }
+    let c = disc.right_top() + egui::vec2(-2.0, 2.0);
+    p.circle_filled(c, 5.0, colour::CHROME());
+    p.circle_filled(c, 3.5, colour::ACCENT());
+}
+
 /// Who is signed in, and where: the sidebar's foot. One target that opens the
 /// account menu, rather than a row of bare icons beside a truncated name.
 /// Collapsed, it is the avatar alone.
@@ -285,6 +314,7 @@ fn account_button(ui: &mut egui::Ui, who: &Who<'_>, narrow: bool, active: bool) 
     if narrow {
         let disc = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size::AVATAR_MD + 4.0));
         avatar::paint(p, disc, who.email);
+        update_dot(p, disc);
         return if open {
             response
         } else {
@@ -298,6 +328,7 @@ fn account_button(ui: &mut egui::Ui, who: &Who<'_>, narrow: bool, active: bool) 
         egui::Vec2::splat(side),
     );
     avatar::paint(p, disc, who.email);
+    update_dot(p, disc);
 
     let caret_w = size::ICON_COL;
     let x = disc.right() + space::SM;

@@ -456,7 +456,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     // `net` is still free, so neither column has to own it.
     settle_move(net, local);
     settle_details(ui.ctx(), net, task_id, local);
-    settle_agent(net, local);
+    settle_agent(ui.ctx(), net, local);
     // A label made from the rail exists now, so it joins the set.
     let mut label_patch: Option<Vec<String>> = None;
     if let Some(label) = net.data(NEW_LABEL_KEY).cloned() {
@@ -1078,14 +1078,14 @@ fn agent_action(
 }
 
 /// Fold in the reply to an agent action.
-fn settle_agent(net: &mut crate::desktop::net::Net, local: &mut Local) {
+fn settle_agent(ctx: &egui::Context, net: &mut crate::desktop::net::Net, local: &mut Local) {
     if local.agent_busy.is_none() || net.is_loading(AGENT_KEY) {
         return;
     }
     let done = local.agent_busy.take().unwrap_or_default();
     match net.peek(AGENT_KEY) {
         Some(Ok(_)) => {
-            local.notice = Some((done, false));
+            w::popup(ctx, w::Popup::new(w::PopTone::Agent, done));
             local.session.sent();
         }
         Some(Err(e)) => local.notice = Some((e.to_string(), true)),
@@ -1314,6 +1314,9 @@ fn rail(
             }
             None => faint(ui, "Not yet"),
         });
+        if r.private {
+            session::session_property(ui, task);
+        }
     }
 
     shell::property(ui, "Department", |ui| {
@@ -2568,23 +2571,6 @@ fn activity(
 
 fn failed(ui: &mut egui::Ui, what: &str, err: &str) {
     w::error(ui, &format!("{what}: {err}"));
-}
-
-/// `s` cut to `width`, with an ellipsis where it was cut. The cut point is
-/// estimated from the full string's measure rather than fitted glyph by glyph;
-/// the whole value is on the hover text either way.
-pub(super) fn elide(ui: &egui::Ui, s: &str, width: f32) -> String {
-    let font = egui::FontId::proportional(text::SMALL);
-    let full = ui
-        .painter()
-        .layout_no_wrap(s.to_owned(), font, colour::TEXT())
-        .size()
-        .x;
-    if full <= width || full <= 0.0 {
-        return s.to_owned();
-    }
-    let keep = (s.chars().count() as f32 * (width / full)) as usize;
-    s.chars().take(keep.saturating_sub(1)).collect::<String>() + "\u{2026}"
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

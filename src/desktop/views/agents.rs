@@ -686,6 +686,27 @@ fn skills_section(ui: &mut egui::Ui) {
     });
 }
 
+/// Skills installed on this Mac that differ from the copy in this build.
+pub(super) fn stale_skills() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let root = std::path::PathBuf::from(home).join(".claude/skills");
+    SKILLS
+        .iter()
+        .filter(|(name, _, body)| {
+            std::fs::read_to_string(root.join(name).join("SKILL.md")).is_ok_and(|on_disk| on_disk != *body)
+        })
+        .map(|(name, _, _)| (*name).to_owned())
+        .collect()
+}
+
+/// Rewrite the named skills with this build's copies.
+pub(super) fn reinstall_skills(names: &[String]) -> std::io::Result<()> {
+    for (name, _, body) in SKILLS.iter().filter(|(n, _, _)| names.iter().any(|x| x == n)) {
+        install_skill(name, body)?;
+    }
+    Ok(())
+}
+
 /// Write a skill where Claude Code finds it at user scope, replacing any
 /// older copy.
 fn install_skill(name: &str, body: &str) -> std::io::Result<String> {

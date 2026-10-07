@@ -13,4 +13,6 @@ pub mod palette;
 pub mod menus;
 pub mod triage;
 pub mod settings;
+pub mod updates;
+pub mod notifications;
 pub mod mrkdwn;

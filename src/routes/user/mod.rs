@@ -13,3 +13,4 @@ pub mod note;
 pub mod repo;
 pub mod folder;
 pub mod agent_overview;
+pub mod notification;

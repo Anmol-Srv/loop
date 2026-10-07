@@ -163,7 +163,8 @@ BEGIN
   UPDATE task SET delegate_agent_id = bot, agent_state = 'needs_input', delegated_at = now() - interval '3 days',
          plan_approved_at = now() - interval '2 days', agent_now = 'Waiting on the coupon question',
          agent_now_at = now() - interval '20 minutes',
-         brief = 'Keep the response shape backwards compatible; the picker reads it today.'
+         brief = 'Keep the response shape backwards compatible; the picker reads it today.',
+         agent_session = '{"sessionId":"7c1e2a90-4b1d-4f3e-9a55-2d8f0c6b1e44","cwd":"/Users/anmol/Drive/Airtribe/.airtribe-worktrees/cart-totals-api-222222","runtime":"claude-code"}'
    WHERE id = t_totals;
   INSERT INTO task_plan (task_id, agent_id, summary, plan, decision, decided_at, changes_note, created_at) VALUES
     (t_totals, bot, 'Compute totals in one SQL pass and return them from GET /cart/totals.',

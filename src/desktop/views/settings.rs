@@ -51,6 +51,7 @@ pub enum Section {
     Folders,
     Members,
     Workspaces,
+    Updates,
 }
 
 pub struct State {
@@ -272,7 +273,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         app.settings.section = picked;
     }
 
+    let me = app.net.as_ref().and_then(|n| n.data("__me")).and_then(|m| m.get("email")).and_then(Value::as_str).unwrap_or("").to_owned();
     pane(ui, section, |ui| match section {
+        Section::Updates => super::updates::section(ui, &me),
         Section::Account => {
             if account_section(ui, &me_name, &me_email, &me_role, &me_department, &scopes, &base_url) {
                 app.sign_out();
@@ -315,6 +318,7 @@ fn nav_sections(is_admin: bool) -> Vec<(&'static str, &'static str, Section)> {
         v.push((icon::USERS, "Members", Section::Members));
     }
     v.push((icon::STACK, "Workspaces", Section::Workspaces));
+    v.push((icon::ARROW_CIRCLE_UP, "Updates", Section::Updates));
     v
 }
 
@@ -333,7 +337,10 @@ fn sidebar(ui: &mut egui::Ui, section: Section, is_admin: bool) -> Option<Sectio
         .show(ui, |ui| {
             ui.add_space(TRAFFIC_LIGHTS);
             for (glyph, label, s) in nav_sections(is_admin) {
-                let item = shell::NavItem::new(glyph, label, section == s);
+                let mut item = shell::NavItem::new(glyph, label, section == s);
+                if s == Section::Updates && super::updates::available().is_some() {
+                    item = item.badge(1);
+                }
                 if shell::nav_row(ui, &item).clicked() {
                     picked = Some(s);
                 }
@@ -351,6 +358,7 @@ fn section_title(s: Section) -> &'static str {
         Section::Folders => "Folders",
         Section::Members => "Members",
         Section::Workspaces => "Workspaces",
+        Section::Updates => "Updates",
     }
 }
 
@@ -361,6 +369,7 @@ fn section_subtitle(s: Section) -> &'static str {
         Section::Folders => "Where your agent works when a task has no project.",
         Section::Members => "Who's on the team, and their access.",
         Section::Workspaces => "Every server you've signed in to.",
+        Section::Updates => "Keep Loop and this Mac's setup current.",
     }
 }
 
@@ -420,7 +429,7 @@ fn pane_fade(ui: &egui::Ui, section: Section) -> f32 {
 /// needs a trailing action (an "Add" or "Invite" button), use `group_header`
 /// and `group_body` directly — two statements rather than two closures
 /// fighting over the same `&mut State`.
-fn group(ui: &mut egui::Ui, caption: &str, body: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn group(ui: &mut egui::Ui, caption: &str, body: impl FnOnce(&mut egui::Ui)) {
     if !caption.is_empty() {
         group_header(ui, caption, |_| {});
     }
@@ -456,7 +465,7 @@ fn group_body(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
 /// One row inside a group: a label over a muted description on the left, a
 /// control right-aligned and vertically centred. `top_line` draws the hairline
 /// above it — every row but a group's first.
-fn row(ui: &mut egui::Ui, label: &str, description: &str, top_line: bool, control: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row(ui: &mut egui::Ui, label: &str, description: &str, top_line: bool, control: impl FnOnce(&mut egui::Ui)) {
     // Laid out by hand rather than with nested egui layouts: those centre an
     // item against the row's height when it is placed, not the height the
     // row ends up with, which left controls hanging a line below their label.
