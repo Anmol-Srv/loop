@@ -209,6 +209,7 @@ impl App {
         if let Some(net) = self.net.as_mut() {
             net.pump();
         }
+        views::task::pump_uploads(self, ui.ctx());
 
         if self.net.is_none() {
             views::login::ui(self, ui);

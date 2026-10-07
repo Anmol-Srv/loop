@@ -241,11 +241,9 @@ struct Local {
     /// A failed remove, shown over the list it failed in rather than up by
     /// the title where the move notices live.
     resource_error: Option<String>,
-    /// Files picked or dropped, waiting to go up one at a time.
-    uploads: Vec<Held>,
+    /// Files being read and encoded off the UI thread; once ready they join
+    /// the app-wide `QUEUE`.
     intake: Intake,
-    /// The file going up now.
-    uploading: Option<Held>,
     /// The agent action in flight — its past tense, for the notice.
     agent_busy: Option<String>,
     /// A pick from the title's menu, acted on once the page is drawn.
@@ -276,9 +274,7 @@ impl Local {
             confirm_remove: None,
             removing: false,
             resource_error: None,
-            uploads: Vec::new(),
             intake: Intake::default(),
-            uploading: None,
             agent_busy: None,
             pick: None,
             archiving: false,
@@ -292,10 +288,68 @@ thread_local! {
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
 }
 
+/// Files on their way up, across every task: (task id, file). App-wide, not
+/// the task page's, so leaving the page or opening another task neither
+/// stalls nor drops them — `pump_uploads` drains it from the shell each frame.
+#[derive(Default)]
+struct Queue {
+    waiting: Vec<(String, Held)>,
+    current: Option<(String, Held)>,
+}
+
+thread_local! {
+    static QUEUE: RefCell<Queue> = RefCell::new(Queue::default());
+}
+
 pub fn attaching() -> bool {
+    QUEUE.with(|q| {
+        let q = q.borrow();
+        !q.waiting.is_empty() || q.current.is_some()
+    }) || LOCAL.with(|cell| cell.borrow().as_ref().is_some_and(|l| l.intake.working() > 0))
+}
+
+/// Under `upload:`, not `task:`: opening another task clears `task:`, and that
+/// must not throw away the reply to a file still going up.
+const UPLOAD_KEY: &str = "upload:task";
+
+/// Called by the shell every frame, whatever page is showing: files the task
+/// page finished encoding join the queue, then one upload at a time goes out.
+pub fn pump_uploads(app: &mut App, ctx: &egui::Context) {
     LOCAL.with(|cell| {
-        cell.borrow().as_ref().is_some_and(|l| !l.uploads.is_empty() || l.uploading.is_some() || l.intake.working() > 0)
-    })
+        if let Some(l) = cell.borrow_mut().as_mut() {
+            let ready = l.intake.take();
+            if !ready.is_empty() {
+                QUEUE.with(|q| q.borrow_mut().waiting.extend(ready.into_iter().map(|h| (l.task_id.clone(), h))));
+            }
+        }
+    });
+    let Some(net) = app.net.as_mut() else { return };
+    QUEUE.with(|q| {
+        let mut q = q.borrow_mut();
+        if let Some((task, held)) = q.current.as_ref() {
+            if net.is_loading(UPLOAD_KEY) {
+                return;
+            }
+            match net.peek(UPLOAD_KEY) {
+                Some(Ok(_)) => w::toast(ctx, format!("Attached {}.", held.name), false),
+                Some(Err(e)) => w::toast(ctx, format!("Could not attach {}: {e}", held.name), true),
+                None => {}
+            }
+            // The page refetches the task when it is showing this one.
+            if app.task.as_deref() == Some(task.as_str()) {
+                net.invalidate(TASK_KEY);
+            }
+            q.current = None;
+        }
+        if q.waiting.is_empty() {
+            return;
+        }
+        let (task, mut next) = q.waiting.remove(0);
+        let body = std::mem::take(&mut next.body);
+        net.invalidate(UPLOAD_KEY);
+        net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task}/files"), body);
+        q.current = Some((task, next));
+    });
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -325,7 +379,6 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let can_write = app.can_write();
     if can_write {
         pasted_files(ui.ctx(), &local.intake);
-        local.uploads.extend(local.intake.take());
     }
 
     local.archiving = app.board.tasks.busy();
@@ -1821,7 +1874,6 @@ fn resources(
         net.invalidate(ARTIFACTS_KEY);
         net.invalidate(TASK_KEY);
     }
-    settle_upload(ui.ctx(), net, task_id, local);
     if can_write {
         dropped_files(ui.ctx(), &local.intake);
     }
@@ -1863,10 +1915,13 @@ fn resources(
         w::error(ui, err);
         ui.add_space(space::SM);
     }
-    let held: Vec<&Held> = local.uploading.iter().chain(&local.uploads).collect();
-    let going_up: Vec<(String, egui::TextureHandle)> =
-        held.iter().filter_map(|h| Some((h.name.clone(), h.preview.clone()?))).collect();
-    let unseen = held.len() - going_up.len() + local.intake.working();
+    // This task's files still on their way up, from the app-wide queue.
+    let (held_n, going_up): (usize, Vec<(String, egui::TextureHandle)>) = QUEUE.with(|q| {
+        let q = q.borrow();
+        let mine: Vec<&Held> = q.current.iter().chain(&q.waiting).filter(|(t, _)| t == task_id).map(|(_, h)| h).collect();
+        (mine.len(), mine.iter().filter_map(|h| Some((h.name.clone(), h.preview.clone()?))).collect())
+    });
+    let unseen = held_n - going_up.len() + local.intake.working();
     if unseen > 0 {
         w::caption(ui, &format!("Uploading {}\u{2026}", plural(unseen as i64, "file")));
         ui.add_space(space::SM);
@@ -2385,32 +2440,6 @@ pub(super) fn dropped_files(ctx: &egui::Context, intake: &Intake) {
     if !dropped.is_empty() {
         intake.spawn(ctx, move |ctx| upload_bodies(ctx, &dropped));
     }
-}
-
-const UPLOAD_KEY: &str = "task:upload";
-
-/// One upload at a time: fold in the reply, then send the next queued file.
-fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_id: &str, local: &mut Local) {
-    if let Some(name) = local.uploading.as_ref().map(|h| h.name.clone()) {
-        if net.is_loading(UPLOAD_KEY) {
-            return;
-        }
-        match net.peek(UPLOAD_KEY) {
-            Some(Ok(_)) => w::toast(ctx, format!("Attached {name}."), false),
-            Some(Err(e)) => local.resource_error = Some(format!("{name}: {e}")),
-            None => {}
-        }
-        local.uploading = None;
-        net.invalidate(TASK_KEY);
-    }
-    if local.uploads.is_empty() {
-        return;
-    }
-    let mut next = local.uploads.remove(0);
-    let body = std::mem::take(&mut next.body);
-    local.uploading = Some(next);
-    net.invalidate(UPLOAD_KEY);
-    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), body);
 }
 
 /// One hue per kind, so a list of five resources is scannable rather than read.
