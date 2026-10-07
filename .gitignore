@@ -6,3 +6,4 @@ __pycache__/
 
 # Database dumps from deploy/backup.sh.
 backups/
+.dev-home/
