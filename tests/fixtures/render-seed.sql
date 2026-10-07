@@ -22,6 +22,11 @@ DECLARE
   t_screens uuid := '22222222-0000-0000-0000-000000000005';
   bot uuid;
   q4 uuid; revenue uuid; growth uuid; platform uuid; security uuid;
+  long_p uuid := '11111111-0000-0000-0000-000000000006';
+  ph_long uuid;
+  t_long uuid := '22222222-0000-0000-0000-000000000006';
+  t_long_agent uuid := '22222222-0000-0000-0000-000000000007';
+  venkat uuid; cx uuid;
 BEGIN
   INSERT INTO person (email, name, role, department) VALUES
     ('anmol.srivastava@airtribe.live', 'Anmol', 'admin', 'backend') RETURNING id INTO anmol;
@@ -193,4 +198,48 @@ Errors return `{ok:false, reason}`.$md$, 'UTF8')), convert_to($md$# Totals contr
 - coupon breakdown per line
 
 Errors return `{ok:false, reason}`.$md$, 'UTF8'), NULL, NULL, anmol, now() - interval '1 day');
+
+  -- Long everything: names, titles, descriptions, links and notes, so a
+  -- render shows where text wraps, truncates or runs into its neighbours.
+  INSERT INTO person (email, name, role, department) VALUES
+    ('venkata.subramanian@airtribe.live', 'Venkata Subramanian Raghunathan-Iyer', 'member', 'frontend') RETURNING id INTO venkat;
+  INSERT INTO label (name, colour) VALUES ('customer-experience-q4-initiative', 'blue') RETURNING id INTO cx;
+  INSERT INTO project (id, key, name, description, status, priority, start_date, target_date, created_at) VALUES
+    (long_p, 'learner-onboarding-payments-reconciliation', 'Learner onboarding, payments reconciliation and the cohort-start communications overhaul',
+     E'Every learner who pays in instalments, transfers between cohorts or gets a partial refund ends up with an enrolment record that finance cannot reconcile against the Razorpay settlement report without a spreadsheet and an afternoon.\n\nThe working doc lives at https://www.notion.so/airtribe/Learner-onboarding-payments-reconciliation-and-cohort-start-communications-overhaul-9f3c2ab7e1d44c0f8a6b and the settlement exports are in the finance drive.',
+     'active', 0, current_date - 14, current_date + 30, now() - interval '14 days');
+  INSERT INTO project_label VALUES (long_p, cx), (long_p, revenue), (long_p, q4), (long_p, growth);
+  INSERT INTO phase (project_id, position, name, status) VALUES (long_p, 0, 'Work', 'active') RETURNING id INTO ph_long;
+  INSERT INTO task (id, phase_id, title, body, status, priority, assignee_kind, assignee_person_id, created_at, updated_at) VALUES
+    (t_long, ph_long, 'Reconcile Razorpay settlement reports against cohort enrolments when a learner pays in instalments across two billing cycles and switches cohorts midway',
+     E'Finance exports the settlement report every Monday and matches it against enrolments by hand. Instalment plans break that match: the second payment lands against a cohort the learner has already left, and the carry-forward credit is invisible to the report.\n\nThe matcher needs to:\n- follow a learner across a cohort transfer, keeping the original enrolment id as the anchor\n- treat a partial refund as a negative instalment, not a separate order\n- flag anything it cannot match instead of guessing\n\nThe current helper is reconcileSettlementAgainstEnrolmentWithInstalmentCarryForwardAndCohortTransfer() in api/services/finance/settlement-reconciliation/instalment-carry-forward.js, and the sample export is at https://drive.google.com/file/d/1aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX3yZ4/view?usp=sharing_eil_se_dm&ts=66f1a2b3.',
+     'in_progress', 0, 'human', venkat, now() - interval '9 days', now() - interval '3 hours'),
+    (t_long_agent, ph_long, 'Send the cohort-start reminder sequence in the learner''s own timezone, including the 48-hour, 24-hour and one-hour nudges',
+     'Reminders go out in IST today, so a learner in Toronto gets the one-hour nudge at half past ten the night before.',
+     'in_progress', 1, 'human', anmol, now() - interval '5 days', now() - interval '1 hour');
+  INSERT INTO task (phase_id, title, body, status, priority, assignee_kind, assignee_person_id, created_at, updated_at) VALUES
+    (ph_long, 'Partial refunds as negative instalments', '', 'open', 1, 'human', venkat, now() - interval '6 days', now() - interval '6 days'),
+    (ph_long, 'Settlement export importer with duplicate-row detection and a dry-run mode that writes nothing', '', 'blocked', 2, 'human', dhaval, now() - interval '7 days', now() - interval '2 days');
+  INSERT INTO artifact (parent_type, parent_id, kind, url, title, added_by, created_at) VALUES
+    ('task', t_long, 'pr', 'https://github.com/airtribe/mycohort-api/pull/4907', 'Settlement reconciliation: follow cohort transfers and carry instalment credit forward', venkat, now() - interval '1 day'),
+    ('task', t_long, 'doc', 'https://www.notion.so/airtribe/Settlement-reconciliation-rules-for-instalments-transfers-and-partial-refunds-4c1d9e', 'Settlement reconciliation rules for instalments, transfers and partial refunds', dhaval, now() - interval '5 days'),
+    ('task', t_long, 'link', 'https://dashboard.razorpay.com/app/settlements/setl_NfZq8xY2mK4pLr7a/transactions?count=100&skip=0&from=1727740800', 'Razorpay settlement setl_NfZq8xY2mK4pLr7a', venkat, now() - interval '4 days'),
+    ('project', long_p, 'doc', 'https://www.notion.so/airtribe/Learner-onboarding-payments-reconciliation-and-cohort-start-communications-overhaul-9f3c2ab7e1d44c0f8a6b', 'Learner onboarding, payments reconciliation and cohort-start communications: the working doc', anmol, now() - interval '13 days');
+  INSERT INTO note (task_id, author_id, body, created_at) VALUES
+    (t_long, dhaval, E'Two edge cases from last month''s close that the matcher has to handle before finance will trust it:\n\n1. A learner paid the first instalment for the March cohort, transferred to April, then asked for a partial refund of the difference. The refund shows up against April but the original payment is still on March.\n2. Settlement ids like setl_NfZq8xY2mK4pLr7aQwErTyUiOpAsDfGhJkLzXcVbNm come through the export without separators, and the spreadsheet splits them across two columns.', now() - interval '2 days'),
+    (t_long, venkat, 'Both are covered in the PR. The transfer case keeps the March enrolment as the anchor and moves the credit forward; the refund nets against it.', now() - interval '20 hours'),
+    (t_long, anmol, 'Looks right. Can we get a dry run against September before it touches anything?', now() - interval '3 hours');
+  UPDATE task SET delegate_agent_id = bot, agent_state = 'working', delegated_at = now() - interval '2 days',
+         plan_approved_at = now() - interval '1 day 20 hours',
+         agent_now = 'Rewriting the reminder scheduler to read each learner''s timezone from their profile and fall back to the cohort''s city when it is missing',
+         agent_now_at = now() - interval '6 minutes',
+         brief = E'Use the learner''s profile timezone first, then the cohort city, and only then IST. Do not move any reminder that has already been sent, and keep the template ids the same so the analytics dashboards keep working.'
+   WHERE id = t_long_agent;
+  INSERT INTO task_plan (task_id, agent_id, summary, plan, decision, decided_at, created_at) VALUES
+    (t_long_agent, bot, 'Schedule each reminder in the learner''s timezone, falling back to the cohort city and then IST, without touching reminders already sent.',
+     E'1. Add a timezone resolver to api/services/notifications/cohort-start-reminders.js\n2. Recompute pending reminder times on deploy\n3. Tests for Toronto, Dubai and a learner with no profile timezone',
+     'approved', now() - interval '1 day 20 hours', now() - interval '1 day 22 hours');
+  INSERT INTO note (task_id, agent_id, kind, body, created_at) VALUES
+    (t_long_agent, bot, 'progress', 'Found three places that build reminder times by hand: the cohort-start job, the manual resend in the admin panel and the calendar invite attachment.', now() - interval '1 day 4 hours'),
+    (t_long_agent, bot, 'progress', 'Timezone resolver written with tests for Toronto, Dubai and a learner with no profile timezone; all passing.', now() - interval '5 hours');
 END $$;

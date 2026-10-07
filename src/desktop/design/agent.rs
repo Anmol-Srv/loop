@@ -14,7 +14,7 @@
 //! * planning (picked up, not yet started) — three bright strands plait
 //!   around the turning sphere (`weaving`).
 //! * needs input — a slow wave rolls down the latitudes, as if listening;
-//!   the amber dot every "waiting on you" wears sits at the corner
+//!   the rose dot every "waiting on you" wears sits at the corner
 //!   (`listening`).
 //! * waiting for first contact — a constellation wires itself across the near
 //!   face, a packet running down each new edge (`connecting`).
@@ -241,7 +241,7 @@ fn face(ui: &mut Ui, seed: &str, side: f32, presence: Presence, name: &str, anim
         let rad = (side * 0.15).clamp(3.0, 5.0);
         let c = rect.right_top() + vec2(-rad * 0.3, rad * 0.3);
         p.circle_filled(c, rad + 1.5, colour::CANVAS());
-        p.circle_filled(c, rad, colour::WARN());
+        p.circle_filled(c, rad, colour::ASK());
     }
     response.on_hover_text(label)
 }

@@ -93,7 +93,7 @@ pub async fn team_capacity(state: &AppState) -> AppResult<Vec<Capacity>> {
     Ok(rows)
 }
 
-/// The sidebar's two numbers.
+/// The sidebar's numbers.
 ///
 /// Every page draws the sidebar, and it used to get these by fetching all of
 /// `/home` — the team rollup included — just to count two lists. Two counts
@@ -106,12 +106,15 @@ pub struct Counts {
     pub active_projects: i64,
     /// My tasks an intake agent filed that I have not accepted or dismissed.
     pub triage: i64,
+    pub waiting: i64,
 }
 
 pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
-    let (my_open, triage): (i64, i64) = sqlx::query_as(&format!(
+    let (my_open, triage, waiting): (i64, i64, i64) = sqlx::query_as(&format!(
         "SELECT count(*) FILTER (WHERE t.done_at IS NULL AND t.status NOT IN ('dropped', 'triage')),
-                count(*) FILTER (WHERE t.status = 'triage')
+                count(*) FILTER (WHERE t.status = 'triage'),
+                count(*) FILTER (WHERE t.done_at IS NULL AND t.status NOT IN ('dropped', 'triage')
+                                   AND t.agent_state IN ('needs_input', 'plan_review', 'in_review'))
            FROM task t
           WHERE t.assignee_person_id = $1 AND {}",
         crate::models::task::LIVE
@@ -126,7 +129,7 @@ pub async fn counts(state: &AppState, person_id: Uuid) -> AppResult<Counts> {
         sqlx::query_scalar("SELECT count(*) FROM project WHERE archived_at IS NULL")
         .fetch_one(&state.db)
         .await?;
-    Ok(Counts { my_open, active_projects, triage })
+    Ok(Counts { my_open, active_projects, triage, waiting })
 }
 
 pub async fn home(state: &AppState, person_id: Uuid) -> AppResult<Home> {

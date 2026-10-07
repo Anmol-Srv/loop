@@ -71,9 +71,6 @@ const NAME_MIN_W: f32 = 90.0;
 /// Two label chips on a row, then a "+N". Two is what fits beside a name
 /// without the name becoming an abbreviation.
 const MAX_LABEL_CHIPS: usize = 2;
-/// Half the most one badge may reserve beside a name; a longer label
-/// truncates inside its badge rather than squeezing the name away.
-const LABEL_CHIP_W: f32 = 52.0;
 /// The description's floor. Below this a one-liner is cut to nothing useful,
 /// so the table would rather squeeze the window than this column.
 const COL_DESCRIPTION: f32 = 200.0;
@@ -308,13 +305,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
             sort_projects(&mut rows, &flows);
             rows
         });
-        ui.label(
-            RichText::new(count_line(shown.len(), list.len()))
-                .size(text::SMALL)
-                .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                .color(colour::TEXT_MUTED()),
-        );
-        ui.add_space(space::SM);
+        if shown.len() < list.len() {
+            ui.label(
+                RichText::new(format!("{} of {} projects", shown.len(), list.len()))
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::MEDIUM.into()))
+                    .color(colour::TEXT_MUTED()),
+            );
+            ui.add_space(space::SM);
+        }
     }
     if let Some(err) = error {
         w::error(ui, &err);
@@ -351,17 +350,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
     if let Some(id) = open {
         app.project = Some(id);
-    }
-}
-
-/// "5 projects", or "2 of 5 projects" once a filter is hiding some. Over the
-/// table rather than in the toolbar, where it ran into the last filter at 820.
-fn count_line(shown: usize, total: usize) -> String {
-    let noun = if total == 1 { "project" } else { "projects" };
-    if shown == total {
-        format!("{total} {noun}")
-    } else {
-        format!("{shown} of {total} {noun}")
     }
 }
 
@@ -529,14 +517,14 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
 
     row.at(4, |ui| {
         let priority = num_at(p, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{priority}"), priority_tone(priority), false);
+        c::priority(ui, priority);
     });
 
     row.at(5, |ui| {
         if archived(p) {
             archived_chip(ui);
         } else {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
+            c::state(ui, status_label(status), c::status_tone(status));
         }
     });
 
@@ -555,18 +543,6 @@ fn project_row(row: &mut table::Cells<'_, '_, '_>, p: &Value, flow: Option<&Valu
     }
 
     row.muted(7, &age(p));
-}
-
-/// How loud a priority is allowed to be. Same vocabulary as the task tables —
-/// P0 and P1 get colour, below normal the pill recedes — because a project's
-/// priority and a task's priority are the same scale and must not read as two.
-pub(super) fn priority_tone(priority: i64) -> c::Tone {
-    match priority {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
 }
 
 /// A label colour as a badge draws it: `(hue, ink)`. The server's seven names
@@ -593,17 +569,23 @@ pub(super) fn label_colours(name: &str) -> (egui::Color32, egui::Color32) {
 /// recognisable, a clipped badge is not. Projects and every task table.
 pub(super) fn name_with_labels(ui: &mut egui::Ui, name: &str, ink: egui::Color32, labels: &[Value]) {
     ui.spacing_mut().item_spacing.x = space::XS;
-    let shown = labels.len().min(MAX_LABEL_CHIPS);
-    let extra = labels.len() - shown;
-    // What the badges will really take, measured the way a badge lays out.
     let badge_w = |s: &str| {
         ui.painter().layout_no_wrap(s.to_owned(), egui::FontId::proportional(text::SMALL), colour::TEXT()).size().x
             + space::SM * 2.0
             + space::XS
     };
-    let reserve: f32 = labels.iter().take(shown).map(|l| badge_w(str_at(l, "name")).min(LABEL_CHIP_W * 2.0)).sum::<f32>()
-        + if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
-    let width = (ui.available_width() - reserve).max(NAME_MIN_W);
+    let widths: Vec<f32> = labels.iter().take(MAX_LABEL_CHIPS).map(|l| badge_w(str_at(l, "name"))).collect();
+    let avail = ui.available_width();
+    let fits = |k: usize| {
+        let extra = labels.len() - k;
+        let plus = if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
+        NAME_MIN_W + widths[..k].iter().sum::<f32>() + plus <= avail
+    };
+    let shown = (0..=labels.len().min(MAX_LABEL_CHIPS)).rev().find(|&k| fits(k)).unwrap_or(0);
+    let extra = labels.len() - shown;
+    let reserve: f32 =
+        widths[..shown].iter().sum::<f32>() + if extra > 0 { badge_w(&format!("+{extra}")) } else { 0.0 };
+    let width = (avail - reserve).max(NAME_MIN_W);
     ui.allocate_ui(egui::vec2(width, table::ROW_H), |ui| {
         table::strong_label(ui, name, ink);
     });
@@ -990,7 +972,7 @@ fn row_input(ui: &mut egui::Ui, width: f32, hint: &str, value: &mut String) -> e
     ui.add_sized(
         [width, viz::HEIGHT],
         egui::TextEdit::singleline(value)
-            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+            .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
             .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
     )
 }

@@ -3,6 +3,8 @@
 //! egui has no shadcn, so this is ours. Every widget here takes tokens and
 //! nothing else — no view should be reaching for a raw colour or a bare number.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use egui::{Color32, Response, RichText, Sense, Ui, Vec2};
 
 use super::tokens::{colour, pad, radius, size, space, text};
@@ -55,17 +57,31 @@ pub fn mono_caption(ui: &mut Ui, s: &str) {
 }
 
 pub fn caption(ui: &mut Ui, s: &str) {
-    ui.label(RichText::new(s).size(text::CAPTION).color(colour::TEXT_MUTED()));
+    caption_label(ui, s);
+}
+
+fn caption_label(ui: &mut Ui, s: &str) -> Response {
+    ui.label(RichText::new(s).size(text::CAPTION).color(colour::TEXT_MUTED()))
 }
 
 /// A shortened id, monospaced, full value on hover. Full uuids are noise on
 /// screen but people still need to copy them.
 pub fn id(ui: &mut Ui, value: &str) -> Response {
     let short = value.get(..8).unwrap_or(value);
-    ui.add(egui::Label::new(
-        RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT()),
-    ))
-    .on_hover_text(value)
+    let response = ui.add(
+        egui::Label::new(RichText::new(short).monospace().size(text::CAPTION).color(colour::TEXT_FAINT()))
+            .selectable(false)
+            .sense(Sense::click()),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Copy ID {value}")));
+    let response = super::motion::operable_sm(ui, response)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("{value}\nClick to copy"));
+    if response.clicked() {
+        ui.ctx().copy_text(value.to_owned());
+        toast(ui.ctx(), "ID copied.", false);
+    }
+    response
 }
 
 // ---------------------------------------------------------------- status
@@ -401,7 +417,9 @@ fn button_with(
 
     // Every colour decided here, before a single draw call.
     let (fill, stroke, fg) = match (emphasis, enabled) {
-        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_DISABLED()),
+        (Emphasis::Primary, false) => (colour::ACCENT_SOFT(), Color32::TRANSPARENT, colour::TEXT_FAINT()),
+        (Emphasis::Secondary | Emphasis::Danger, false) => (Color32::TRANSPARENT, colour::LINE_SOFT(), colour::TEXT_FAINT()),
+        (_, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, colour::TEXT_FAINT()),
         (Emphasis::Primary, _) => {
             let f = if pressed {
                 colour::ACCENT()
@@ -577,15 +595,16 @@ pub fn switch(ui: &mut Ui, label: &str, detail: &str, on: &mut bool) -> Response
 /// read back. Making it explicit means forgetting it is a decision.
 pub fn field(ui: &mut Ui, label: &str, value: &mut String, secret: bool, hint: &str) -> Response {
     ui.vertical(|ui| {
-        caption(ui, label);
+        let name = caption_label(ui, label);
         ui.add_space(space::XXS);
-        ui.add_sized(
+        let response = ui.add_sized(
             [ui.available_width(), size::CONTROL],
             egui::TextEdit::singleline(value)
                 .password(secret)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
-        )
+        );
+        accessible_field(ui, response, Some(name.id), value, secret)
     })
     .inner
 }
@@ -602,20 +621,160 @@ pub fn field_multiline(
     ui.vertical(|ui| {
         // An unlabelled box (a comment box, an answer box) takes no caption
         // row: an empty one left a blank line above it.
-        if !label.is_empty() {
-            caption(ui, label);
+        let name = if label.is_empty() {
+            None
+        } else {
+            let name = caption_label(ui, label);
             ui.add_space(space::XXS);
-        }
-        ui.add_sized(
+            Some(name.id)
+        };
+        let response = ui.add_sized(
             [ui.available_width(), size::CONTROL * rows as f32],
             egui::TextEdit::multiline(value)
                 .desired_rows(rows)
-                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_DISABLED()))
+                .hint_text(RichText::new(hint).size(text::BODY).color(colour::TEXT_FAINT()))
                 .margin(egui::Margin::symmetric(pad::INPUT.0 as i8, pad::INPUT.1 as i8)),
-        )
+        );
+        accessible_field(ui, response, name, value, false)
     })
     .inner
 }
+
+const SECURE_INPUT: &str = "widgets:secure-input";
+static SECURE_INPUT_ON: AtomicBool = AtomicBool::new(false);
+
+fn accessible_field(ui: &mut Ui, response: Response, name: Option<egui::Id>, value: &mut String, secret: bool) -> Response {
+    let mut response = match name {
+        Some(name) => response.labelled_by(name),
+        None => response,
+    };
+    let set = ui.input(|i| {
+        i.accesskit_action_requests(response.id, egui::accesskit::Action::SetValue)
+            .filter_map(|r| match &r.data {
+                Some(egui::accesskit::ActionData::Value(v)) => Some(v.to_string()),
+                _ => None,
+            })
+            .last()
+    });
+    if let Some(set) = set {
+        *value = set;
+        response.mark_changed();
+        ui.ctx().request_repaint();
+    }
+    if secret && response.has_focus() && ui.input(|i| i.focused) {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(SECURE_INPUT), true));
+    }
+    let range = menu_selection(ui, &response);
+    if field_menu(&response, value, range, secret) {
+        response.mark_changed();
+    }
+    response
+}
+
+fn menu_selection(ui: &Ui, response: &Response) -> Option<egui::text_selection::CCursorRange> {
+    let ctx = ui.ctx();
+    let (last, menu) = (response.id.with("selection"), response.id.with("menu-selection"));
+    let right_click = response.hovered() && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    if right_click {
+        let before = ctx.data(|d| d.get_temp::<Option<egui::text_selection::CCursorRange>>(last)).flatten();
+        ctx.data_mut(|d| d.insert_temp(menu, before));
+    } else {
+        let now = egui::TextEdit::load_state(ctx, response.id).and_then(|s| s.cursor.char_range());
+        ctx.data_mut(|d| d.insert_temp(last, now));
+    }
+    ctx.data(|d| d.get_temp::<Option<egui::text_selection::CCursorRange>>(menu)).flatten()
+}
+
+fn select(ctx: &egui::Context, id: egui::Id, range: egui::text_selection::CCursorRange) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state.cursor.set_char_range(Some(range));
+        state.store(ctx, id);
+    }
+    ctx.memory_mut(|m| m.request_focus(id));
+}
+
+fn byte_range(value: &str, range: egui::text_selection::CCursorRange) -> std::ops::Range<usize> {
+    let chars = range.as_sorted_char_range();
+    let byte = |c: usize| value.char_indices().nth(c).map_or(value.len(), |(b, _)| b);
+    byte(chars.start.0)..byte(chars.end.0)
+}
+
+fn field_menu(
+    response: &Response,
+    value: &mut String,
+    range: Option<egui::text_selection::CCursorRange>,
+    secret: bool,
+) -> bool {
+    let (ctx, id) = (&response.ctx, response.id);
+    let selected = range.filter(|r| !r.is_empty());
+    let copy_why = if secret {
+        Some("Passwords can\u{2019}t be copied.")
+    } else if selected.is_none() {
+        Some("Select some text first.")
+    } else {
+        None
+    };
+    let mut changed = false;
+    super::viz::context_menu(response, |ui| {
+        let cut = super::viz::menu_item(ui, "Cut", false, copy_why);
+        let copy = super::viz::menu_item(ui, "Copy", false, copy_why);
+        if let Some(range) = selected.filter(|_| cut || copy) {
+            let bytes = byte_range(value, range);
+            ctx.copy_text(value[bytes.clone()].to_owned());
+            if cut {
+                value.replace_range(bytes, "");
+                let start = range.as_sorted_char_range().start;
+                select(ctx, id, egui::text_selection::CCursorRange::one(egui::text::CCursor::new(start)));
+                changed = true;
+            } else {
+                select(ctx, id, range);
+            }
+        }
+        if super::viz::menu_item(ui, "Paste", false, None) {
+            if let Some(range) = range {
+                select(ctx, id, range);
+            }
+            ctx.memory_mut(|m| m.request_focus(id));
+            crate::desktop::menu::paste();
+            ctx.request_repaint();
+        }
+        super::viz::menu_rule(ui);
+        if super::viz::menu_item(ui, "Select All", false, value.is_empty().then_some("Nothing to select.")) {
+            let all = egui::text_selection::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(value.chars().count()),
+            );
+            select(ctx, id, all);
+        }
+    });
+    changed
+}
+
+pub fn secure_input(ctx: &egui::Context) {
+    let wanted = ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new(SECURE_INPUT))).unwrap_or(false);
+    if SECURE_INPUT_ON.swap(wanted, Ordering::Relaxed) != wanted {
+        secure_event_input(wanted);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn secure_event_input(on: bool) {
+    #[link(name = "Carbon", kind = "framework")]
+    extern "C" {
+        fn EnableSecureEventInput() -> i32;
+        fn DisableSecureEventInput() -> i32;
+    }
+    unsafe {
+        if on {
+            EnableSecureEventInput();
+        } else {
+            DisableSecureEventInput();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn secure_event_input(_on: bool) {}
 
 // ---------------------------------------------------------------- states
 
@@ -633,7 +792,7 @@ pub fn empty(ui: &mut Ui, message: &str, detail: &str) {
             ui.label(
                 RichText::new(detail)
                     .size(text::CAPTION)
-                    .color(colour::TEXT_DISABLED()),
+                    .color(colour::TEXT_FAINT()),
             );
         }
     });
@@ -651,14 +810,34 @@ pub fn loading(ui: &mut Ui, what: &str) {
 }
 
 pub fn error(ui: &mut Ui, message: &str) {
+    error_box(ui, message, false);
+}
+
+pub fn error_retry(ui: &mut Ui, message: &str) -> bool {
+    error_box(ui, message, true)
+}
+
+fn error_box(ui: &mut Ui, message: &str, retry: bool) -> bool {
+    let mut retried = false;
     egui::Frame::new()
         .fill(colour::DANGER().gamma_multiply(0.06))
         .stroke(egui::Stroke::new(1.0, colour::DANGER().gamma_multiply(0.30)))
         .corner_radius(radius::SM)
         .inner_margin(egui::Margin::symmetric(pad::BUTTON.0 as i8, pad::BUTTON.1 as i8))
         .show(ui, |ui| {
-            ui.label(RichText::new(message).size(text::SMALL).color(colour::DANGER()));
+            let said = RichText::new(message).size(text::SMALL).color(colour::DANGER());
+            if !retry {
+                ui.label(said);
+                return;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                retried = secondary(ui, "Retry", true).clicked();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(said).wrap());
+                });
+            });
         });
+    retried
 }
 
 // ---------------------------------------------------------------- toast

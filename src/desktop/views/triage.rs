@@ -225,7 +225,7 @@ fn header(ui: &mut egui::Ui, src: &Value, readable: bool) {
                     Some(k) => format!("Open in {}", kind_word(k)),
                 };
                 if w::link(ui, &label).on_hover_text(url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    super::mrkdwn::open(ui.ctx(), url);
                 }
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -373,6 +373,7 @@ fn quoted(ui: &mut egui::Ui, rule: egui::Color32, add: impl FnOnce(&mut egui::Ui
 /// enough that three sit in a row of the prose column.
 const THUMB_W: f32 = 240.0;
 const THUMB_H: f32 = 180.0;
+pub(super) const THUMB: Vec2 = Vec2::new(THUMB_W, THUMB_H);
 /// The side a texture is kept at, past which it is scaled down on decode.
 const MAX_TEXTURE: u32 = 4096;
 const LIGHTBOX: &str = "source:lightbox";
@@ -624,7 +625,7 @@ pub(super) fn open_pending(ctx: &egui::Context, net: &Net) {
         Ok(path)
     });
     match written {
-        Ok(path) => ctx.open_url(egui::OpenUrl::new_tab(format!("file://{}", path.display()))),
+        Ok(path) => super::mrkdwn::open(ctx, &path.display().to_string()),
         Err(e) => w::toast(ctx, format!("Could not open {name}: {e}"), true),
     }
 }
@@ -953,10 +954,9 @@ pub fn page(app: &mut crate::desktop::App, ui: &mut egui::Ui) {
     shell::page_title(ui, "Triage", &subtitle, |_| {});
 
     if let Some(err) = error {
-        w::error(
-            ui,
-            &format!("Could not load triage. {err} Use Refresh in the sidebar to try again."),
-        );
+        if w::error_retry(ui, &format!("Could not load triage. {err}")) {
+            app.net.as_mut().unwrap().invalidate(super::mytasks::MINE);
+        }
         return;
     }
     if rows.is_empty() {

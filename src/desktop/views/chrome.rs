@@ -27,6 +27,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     }
 
     views::new_task::shortcut(app, ui.ctx());
+    views::new_task::intake(app, ui.ctx());
 
     // The counts ride on every tab, so they are their own small fetch rather
     // than a read of Home's payload, which every other tab would then wait on.
@@ -40,6 +41,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mine_open = count("myOpen");
     let projects_active = count("activeProjects");
     let triage = count("triage").max(0) as usize;
+    let waiting = count("waiting").max(0) as usize;
 
     let me = net.data("__me");
     let field = |k: &str| {
@@ -64,7 +66,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     let mut items = vec![
         (shell::NavItem::new(icon::HOUSE, "Home", sel(Tab::Home)), Tab::Home),
         (
-            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks)).count(mine_open.to_string()),
+            shell::NavItem::new(icon::LIST_CHECKS, "My Tasks", sel(Tab::MyTasks))
+                .count(mine_open.to_string())
+                .badge(waiting),
             Tab::MyTasks,
         ),
         (shell::NavItem::new(icon::LIST_BULLETS, "All Tasks", sel(Tab::AllTasks)), Tab::AllTasks),
@@ -233,7 +237,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
 /// This build's version, stamped by `scripts/bundle-mac.sh` (the release's
 /// date for a published build, "dev" otherwise) — what to compare against
 /// the latest release when someone asks whether they are up to date.
-const VERSION: &str = match option_env!("LOOP_VERSION") {
+pub const VERSION: &str = match option_env!("LOOP_VERSION") {
     Some(v) => v,
     None => "dev",
 };

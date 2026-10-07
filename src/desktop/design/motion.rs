@@ -7,13 +7,11 @@
 //! register is explicit that users are in a task and will not wait for
 //! choreography. There is no page-load sequence and there will not be one.
 //!
-//! **Reduced motion.** egui 0.36 does not surface the OS "reduce motion"
-//! setting, so there is nothing to read directly. What it does expose is its
-//! own `Style::animation_time`; setting it to zero disables every animation in
-//! the framework. Every helper here respects that knob, so turning motion off
-//! is one line in `theme.rs` and it genuinely turns everything off rather than
-//! leaving hand-rolled animations running. Wire it to the OS setting the day
-//! eframe surfaces one.
+//! **Reduced motion.** `theme::follow` reads macOS Reduce Motion (or
+//! `AIRTRIBE_REDUCE_MOTION`) and sets egui's `Style::animation_time` to zero,
+//! which disables every animation in the framework. Every helper here respects
+//! that knob, so it genuinely turns everything off rather than leaving
+//! hand-rolled animations running.
 
 use egui::{Color32, Id, Response, Ui};
 

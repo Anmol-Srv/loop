@@ -248,10 +248,12 @@ pub fn card(
         });
         ui.add_space(space::MD);
 
-        used = ui.scope(body).response.rect.height();
-        if used < min_body {
-            ui.add_space(min_body - used);
-        }
+        used = ui
+            .scope(|ui| {
+                ui.set_min_height(min_body);
+                ui.scope(body).response.rect.height()
+            })
+            .inner;
     });
     used
 }
@@ -365,7 +367,9 @@ pub fn filter(ui: &mut Ui, label: &str, active: bool, caret: bool) -> Response {
     // Never wider than the space it is given: in a narrow properties rail a
     // long project name must truncate, not push the rail past the window.
     let room = (ui.available_width() - space::MD * 2.0 - caret_w).max(space::XL);
-    let galley = truncated(ui, label, font, ink, MAX_LABEL_W.min(room));
+    let set = ui.spacing().interact_size.x;
+    let cap = if set >= size::PICKER_W { set - space::MD * 2.0 - caret_w } else { MAX_LABEL_W };
+    let galley = truncated(ui, label, font, ink, cap.min(room));
     // `interact_size.x` is egui's own "narrowest an interactive widget may
     // be". Honouring it is what lets a form make every control in a row one
     // width by setting a single value in its scope, instead of each control
@@ -1055,7 +1059,7 @@ fn action_row_with(
     let hot = enabled && (response.hovered() || response.has_focus());
     let fill = motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER());
     let ink = match (enabled, danger) {
-        (false, _) => colour::TEXT_DISABLED(),
+        (false, _) => colour::TEXT_FAINT(),
         (true, true) => colour::DANGER(),
         (true, false) if hot => colour::TEXT(),
         _ => colour::TEXT_2(),
@@ -1089,7 +1093,7 @@ fn action_row_with(
     }
     if chevron {
         let x = rect.right() - space::SM - CHEVRON;
-        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED() } else { colour::TEXT_DISABLED() });
+        let stroke = egui::Stroke::new(1.5, if enabled { colour::TEXT_MUTED() } else { colour::TEXT_FAINT() });
         p.line_segment([egui::pos2(x - CHEVRON / 2.0, rect.center().y - CHEVRON), egui::pos2(x + CHEVRON / 2.0, rect.center().y)], stroke);
         p.line_segment([egui::pos2(x + CHEVRON / 2.0, rect.center().y), egui::pos2(x - CHEVRON / 2.0, rect.center().y + CHEVRON)], stroke);
     }

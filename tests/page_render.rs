@@ -30,6 +30,9 @@ const TASK_IN_PROGRESS: &str = "22222222-0000-0000-0000-000000000001";
 const TASK_SHIPPED: &str = "22222222-0000-0000-0000-000000000003";
 const TASK_HANDOFF: &str = "22222222-0000-0000-0000-000000000005";
 const TASK_AGENT: &str = "22222222-0000-0000-0000-000000000004";
+const LONG_PROJECT: &str = "11111111-0000-0000-0000-000000000006";
+const TASK_LONG: &str = "22222222-0000-0000-0000-000000000006";
+const TASK_LONG_AGENT: &str = "22222222-0000-0000-0000-000000000007";
 
 const SHOTS: &[Shot] = &[
     Shot { name: "home", tab: Tab::Home, project: None, task: None, signed_in: true },
@@ -44,6 +47,13 @@ const SHOTS: &[Shot] = &[
     Shot { name: "task-shipped", tab: Tab::Home, project: None, task: Some(TASK_SHIPPED), signed_in: true },
     Shot { name: "task-agent", tab: Tab::Home, project: None, task: Some(TASK_AGENT), signed_in: true },
     Shot { name: "task-handoff", tab: Tab::Home, project: None, task: Some(TASK_HANDOFF), signed_in: true },
+    Shot { name: "long-task", tab: Tab::Home, project: None, task: Some(TASK_LONG), signed_in: true },
+    Shot { name: "long-agent", tab: Tab::Home, project: None, task: Some(TASK_LONG_AGENT), signed_in: true },
+    Shot { name: "long-project", tab: Tab::Projects, project: Some(LONG_PROJECT), task: None, signed_in: true },
+    Shot { name: "long-projects", tab: Tab::Projects, project: None, task: None, signed_in: true },
+    Shot { name: "long-mytasks", tab: Tab::AllTasks, project: None, task: None, signed_in: true },
+    Shot { name: "newtask", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
+    Shot { name: "newtask-held", tab: Tab::MyTasks, project: None, task: None, signed_in: true },
     Shot { name: "login", tab: Tab::Home, project: None, task: None, signed_in: false },
     Shot { name: "palette", tab: Tab::Home, project: None, task: None, signed_in: true },
     Shot { name: "login-error", tab: Tab::Home, project: None, task: None, signed_in: false },
@@ -81,11 +91,23 @@ fn interact(shot: &Shot, harness: &mut Harness<'_>) {
     let click = match shot.name {
         "mytasks-board" => harness.query_by_label("Board view"),
         "account-menu" => harness.query_by_label_contains("Account:"),
+        "newtask" | "newtask-held" => harness.query_by_label("New task"),
         _ => None,
     };
     if let Some(node) = click {
         node.click();
         for _ in 0..6 {
+            harness.step();
+        }
+    }
+    if shot.name == "newtask-held" {
+        harness
+            .get_by(|n| n.placeholder().is_some_and(|h| h.starts_with("e.g. Fix")))
+            .type_text("Checkout totals look wrong on saved cards");
+        let shot = std::path::PathBuf::from("docs/design-mocks/render/pages/task-wide.png");
+        harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot)));
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(25));
             harness.step();
         }
     }
@@ -95,6 +117,18 @@ fn interact(shot: &Shot, harness: &mut Harness<'_>) {
         for _ in 0..4 {
             harness.step();
         }
+    }
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
     }
 }
 

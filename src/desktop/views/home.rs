@@ -96,21 +96,20 @@ const BLOCKER_RESOLVED: [&str; 4] = ["handoff", "completed", "shipped", "dropped
 /// outcome you want. `dropped` is absent because the whole page excludes it.
 const DONUT: [&str; 7] = ["shipped", "handoff", "completed", "research", "in_progress", "blocked", "open"];
 
-/// Table geometry. Fixed so the columns line up with the header and with each
-/// other; the task column takes whatever is left. Alignment is declared here
-/// too, so "Updated" and the age beneath it cannot disagree.
-const COL_DOT: f32 = 22.0;
+// Table geometry. Fixed so the columns line up with the header and with each
+// other; the task column takes whatever is left. Alignment is declared here
+// too, so "Updated" and the age beneath it cannot disagree.
+
 /// "P0" plus chip padding, the same width the task tables use.
 const COL_PRIORITY: f32 = 52.0;
 const COL_DEPARTMENT: f32 = 88.0;
-const COL_STATUS: f32 = 104.0;
+const COL_STATUS: f32 = 120.0;
 const COL_PROJECT: f32 = 150.0;
 /// An avatar and a first name.
 const COL_OWNER: f32 = 110.0;
 const COL_UPDATED: f32 = 78.0;
 
-const COLS: [Col; 8] = [
-    Col::left("", COL_DOT),
+const COLS: [Col; 7] = [
     Col::fill("Task", COL_PROJECT),
     Col::left("Priority", COL_PRIORITY).rank(1),
     Col::left("Department", COL_DEPARTMENT).rank(2),
@@ -125,8 +124,8 @@ const COLS: [Col; 8] = [
 const COL_SIGNAL: f32 = 84.0;
 const ATTENTION_COLS: [Col; 3] = [
     Col::left("", COL_SIGNAL),
-    Col::fill("What", 140.0),
-    Col::fill("Why", 180.0),
+    Col::fill("", 140.0),
+    Col::fill("", 180.0),
 ];
 
 /// What the table is filtered to. Every field is "no filter" when unset, so
@@ -182,19 +181,14 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     };
     let rows = t.rows();
 
-    let mut subtitle = format!(
-        "{} across {}",
-        plural(d.live, "task"),
-        plural(d.project_count, "project")
-    );
-    let dropped = d.all.len() - d.live;
-    if dropped > 0 {
-        subtitle += &format!(" · {dropped} dropped, not counted");
-    }
-    shell::page_title(ui, "Overview", &subtitle, |_| {});
+    shell::page_title(ui, "Home", "", |_| {});
 
     if let Some(err) = &error {
-        w::error(ui, &format!("{err} Use Refresh in the sidebar to try again."));
+        if w::error_retry(ui, err) {
+            let net = app.net.as_mut().unwrap();
+            net.invalidate(HOME);
+            net.invalidate(TASKS);
+        }
         return;
     }
     if loading && d.all.is_empty() {
@@ -223,7 +217,7 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     );
 
     // ---- whose agents are holding what, right now
-    if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap()) {
+    if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap(), &my_person_id) {
         go = Some(Target::Task(id));
     }
 
@@ -311,7 +305,6 @@ struct Derived {
     all: Vec<Row>,
     /// How many of `all` are not dropped.
     live: usize,
-    project_count: usize,
     alerts: Vec<Alert>,
     status: StatusFigures,
     departments: Vec<(String, i64, i64)>,
@@ -389,7 +382,6 @@ fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
 
     Derived {
         live: live.len(),
-        project_count: projects.len(),
         alerts: attention(&home, &projects, &live, &by_id),
         status: status_figures(&live),
         departments: department_rollup(&projects),
@@ -448,8 +440,8 @@ fn attention(
     for (item, filed) in list(home, "needsAttention").into_iter().map(|i| (i, false)).chain(triage) {
         let kind = if filed { Some("triage") } else { str_at(item, "kind") };
         let (signal, tone, verb) = match kind {
-            Some("question") => ("Question", c::Tone::Running, "asks"),
-            Some("review") => ("Review", c::Tone::Agent, "submitted"),
+            Some("question") => ("Question", c::Tone::Ask, "asks"),
+            Some("review") => ("Review", c::Tone::Ask, "submitted"),
             Some("triage") => ("Triage", c::Tone::Info, "filed"),
             _ => continue,
         };
@@ -923,9 +915,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id
     let department = str_at(t, "discipline").unwrap_or_default();
     let mine = !my_person_id.is_empty() && str_at(t, "assigneePersonId") == Some(my_person_id);
 
-    row.at(0, |ui| w::dot(ui, status_colour(status)));
-
-    row.at(1, |ui| {
+    row.at(0, |ui| {
         let labels = t.get("labels").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
         super::projects::name_with_labels(ui, str_at(t, "title").unwrap_or_default(), super::board::title_ink(t), labels);
         // The blocker rides behind the title rather than in its own column:
@@ -938,16 +928,18 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id
         }
     });
 
-    row.at(2, |ui| {
+    row.at(1, |ui| {
         let p = num(t, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        c::priority(ui, p);
     });
+    if department.is_empty() {
+        row.muted(2, "");
+    } else {
+        row.at(2, |ui| {
+            c::discipline(ui, department);
+        });
+    }
     row.at(3, |ui| {
-        if !department.is_empty() {
-            c::chip(ui, department, c::discipline_tone(department), false);
-        }
-    });
-    row.at(4, |ui| {
         if super::board::archived(t) {
             super::board::archived_chip(ui);
         } else {
@@ -962,17 +954,17 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id
                 .and_then(|d| agent_status(d, mine));
             match agent {
                 Some((label, tone)) => {
-                    c::chip(ui, &label, tone, true).on_hover_text(status_label(status));
+                    c::state(ui, &label, tone).on_hover_text(status_label(status));
                 }
                 None => {
-                    c::chip(ui, status_label(status), c::status_tone(status), status != "blocked");
+                    c::state(ui, status_label(status), c::status_tone(status));
                 }
             }
         }
     });
-    row.muted(5, str_at(t, "projectName").unwrap_or_default());
+    row.muted(4, str_at(t, "projectName").unwrap_or_default());
 
-    row.at(6, |ui| match str_at(t, "assigneeName") {
+    row.at(5, |ui| match str_at(t, "assigneeName") {
         Some(name) => {
             avatar::small(ui, str_at(t, "assigneeEmail").unwrap_or(name), size::AVATAR_SM);
             ui.add_space(space::XS);
@@ -984,7 +976,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value, r: &Row, my_person_id
         }
     });
 
-    row.muted(7, &age(str_at(t, "updatedAt").unwrap_or_default()));
+    row.muted(6, &age(str_at(t, "updatedAt").unwrap_or_default()));
 }
 
 /// The small agent mark beside an owner whose task is with one of their
@@ -1015,22 +1007,11 @@ pub(super) fn agent_status(d: &Value, mine: bool) -> Option<(String, c::Tone)> {
                     .unwrap_or("the owner")
                     .to_owned()
             };
-            (format!("Waiting on {who}"), c::Tone::Running)
+            (format!("Waiting on {who}"), c::Tone::Ask)
         }
         "done" => ("Agent done".to_owned(), c::Tone::Quiet),
         other => (super::agents::state_words(other).to_owned(), c::Tone::Neutral),
     })
-}
-
-/// How loud a priority is allowed to be — the task tables' scale, so P1 is
-/// the same amber on every page. P0 and P1 are the only ones worth colour.
-fn priority_tone(priority: i64) -> c::Tone {
-    match priority {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
 }
 
 /// The first unresolved blocker, as "Cart totals API (Anmol)". Falls back to

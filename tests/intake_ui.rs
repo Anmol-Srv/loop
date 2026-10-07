@@ -323,8 +323,8 @@ fn my_tasks_leads_with_one_line_to_triage() {
     assert!(p.has("3 to triage"), "one line, not the group");
     assert!(!p.has(BUG_TITLE), "the filings live on the Triage tab");
     // Triage is not in the list below, which keeps the rest.
-    assert!(p.has("2 tasks"));
     assert!(p.has("Rate leads by role bucket"));
+    assert!(p.has("Payment sheet sync retries"));
     p.harness.get_by_label("3 to triage").click();
     p.steps(3);
     assert!(tab(&p) == Tab::Triage);
@@ -780,4 +780,24 @@ fn task_page_width_sweep() {
             .save(&path)
             .expect("png");
     }
+}
+
+#[test]
+fn a_failed_triage_load_offers_retry_and_retry_fetches_again() {
+    let f = base(me("anmol"));
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::Triage, None, (1440.0, 900.0), false);
+    app.borrow_mut().as_mut().unwrap().net.as_mut().unwrap().results.insert(
+        "mytasks:mine".into(),
+        Err("The server did not answer.".into()),
+    );
+    p.steps(2);
+    assert!(p.has_part("Could not load triage. The server did not answer."));
+    assert!(!p.has_part("Refresh in the sidebar"), "no pointer at a control that is gone");
+
+    p.button("Retry");
+    let a = app.borrow();
+    let net = a.as_ref().unwrap().net.as_ref().unwrap();
+    assert!(net.error("mytasks:mine").is_none(), "the failure is cleared");
+    assert!(net.is_loading("mytasks:mine"), "and the triage list is asked for again");
 }

@@ -15,7 +15,7 @@
 use egui::text::{LayoutJob, TextFormat};
 use egui::{FontFamily, FontId, RichText, Sense, Stroke};
 
-use crate::desktop::design::{colour, radius, space, text, theme, widgets as w};
+use crate::desktop::design::{colour, radius, shell, space, text, theme, widgets as w};
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct Style {
@@ -42,6 +42,7 @@ pub enum Block {
     /// A `>` line.
     Quote(Vec<Span>),
     Code(String),
+    Gap,
 }
 
 fn unescape(s: &str) -> String {
@@ -52,8 +53,16 @@ fn unescape(s: &str) -> String {
 pub fn parse(src: &str) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut lines = src.lines().peekable();
+    let mut gap = false;
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            gap |= !out.is_empty();
+            continue;
+        }
+        if std::mem::take(&mut gap) {
+            out.push(Block::Gap);
+        }
         if let Some(rest) = trimmed.strip_prefix("```") {
             // Everything to the closing fence, which may share a line with code.
             let mut code: Vec<String> = Vec::new();
@@ -80,9 +89,6 @@ pub fn parse(src: &str) -> Vec<Block> {
         }
         if let Some(q) = trimmed.strip_prefix("&gt;").or_else(|| trimmed.strip_prefix('>')) {
             out.push(Block::Quote(inline(q.trim_start())));
-            continue;
-        }
-        if trimmed.is_empty() {
             continue;
         }
         let spans = inline(line.trim_end());
@@ -131,6 +137,14 @@ fn spans(s: &str, style: Style, out: &mut Vec<Span>) {
         let (at, c) = chars[i];
         let prev = i.checked_sub(1).map(|p| chars[p].1);
         let next = chars.get(i + 1).map(|n| n.1);
+        if prev.is_none_or(|p| p.is_whitespace() || p == '(') {
+            if let Some((len, target)) = link_at(&s[at..]) {
+                flush(&mut plain, out);
+                out.push(Span { text: unescape(&s[at..at + len]), style, link: Some(unescape(&target)) });
+                i = chars.partition_point(|(b, _)| *b < at + len);
+                continue;
+            }
+        }
         match c {
             '<' => {
                 if let Some(end) = s[at..].find('>') {
@@ -168,20 +182,151 @@ fn spans(s: &str, style: Style, out: &mut Vec<Span>) {
                     continue;
                 }
             }
-            'h' if prev.is_none_or(char::is_whitespace) && (s[at..].starts_with("https://") || s[at..].starts_with("http://")) => {
-                let len = s[at..].find(char::is_whitespace).unwrap_or(s.len() - at);
-                let url = s[at..at + len].trim_end_matches(['.', ',', ')', '!', '?', ';', ':']);
-                flush(&mut plain, out);
-                out.push(Span { text: url.to_owned(), style, link: Some(unescape(url)) });
-                i = chars.partition_point(|(b, _)| *b < at + url.len());
-                continue;
-            }
             _ => {}
         }
         plain.push(c);
         i += 1;
     }
     flush(&mut plain, out);
+}
+
+const PATH_ROOTS: [&str; 7] = ["~/", "/Users/", "/Volumes/", "/tmp/", "/private/", "/Applications/", "/opt/"];
+const BARE_SCHEMES: [&str; 4] = ["mailto:", "tel:", "sms:", "facetime:"];
+
+fn link_at(s: &str) -> Option<(usize, String)> {
+    let word = &s[..s.find(char::is_whitespace).unwrap_or(s.len())];
+    let word = word.trim_end_matches(['.', ',', ')', '!', '?', ';', ':', '"', '\'']);
+    let target = if let Some((scheme, rest)) = word.split_once("://") {
+        if !is_scheme(scheme) || rest.is_empty() {
+            return None;
+        }
+        word.to_owned()
+    } else if BARE_SCHEMES.iter().any(|p| word.strip_prefix(p).is_some_and(|rest| !rest.is_empty())) {
+        word.to_owned()
+    } else if word.strip_prefix("www.").is_some_and(|rest| rest.contains('.')) {
+        format!("https://{word}")
+    } else if PATH_ROOTS.iter().any(|r| word.len() > r.len() && word.starts_with(r)) {
+        word.to_owned()
+    } else if is_email(word) {
+        format!("mailto:{word}")
+    } else {
+        return None;
+    };
+    allowed(&target).then_some((word.len(), target))
+}
+
+fn is_scheme(s: &str) -> bool {
+    s.len() >= 2
+        && s.starts_with(|c: char| c.is_ascii_alphabetic())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+fn is_email(word: &str) -> bool {
+    let Some((user, host)) = word.split_once('@') else { return false };
+    let tld = host.rsplit('.').next().unwrap_or_default();
+    !user.is_empty()
+        && user.chars().all(|c| c.is_ascii_alphanumeric() || "._%+-".contains(c))
+        && host.contains('.')
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
+        && tld.len() >= 2
+        && tld.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+#[cfg(target_os = "macos")]
+const OPENER: (&str, &[&str]) = ("open", &["--"]);
+#[cfg(not(target_os = "macos"))]
+const OPENER: (&str, &[&str]) = ("xdg-open", &[]);
+
+const APP_SCHEMES: [&str; 5] = ["figma", "slack", "notion", "linear", "zoommtg"];
+const DOCUMENTS: [&str; 30] = [
+    "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "svg", "md", "markdown", "txt", "csv", "tsv",
+    "json", "log", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "key", "numbers", "pages", "mov", "mp4", "mp3",
+];
+
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Web,
+    Open(String),
+    Reveal(String),
+    Missing(std::path::PathBuf),
+    Refused,
+}
+
+fn is_web(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn allowed(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    is_web(target)
+        || lower.starts_with("file:")
+        || target.starts_with('/')
+        || target.starts_with("~/")
+        || BARE_SCHEMES.iter().any(|p| lower.starts_with(p))
+        || lower.split_once("://").is_some_and(|(scheme, _)| APP_SCHEMES.contains(&scheme))
+}
+
+fn plan(target: &str) -> Plan {
+    if !allowed(target) {
+        return Plan::Refused;
+    }
+    if is_web(target) {
+        return Plan::Web;
+    }
+    match local_path(target) {
+        Some(path) => match std::fs::canonicalize(&path) {
+            Err(_) => Plan::Missing(path),
+            Ok(real) if opens_in_place(&real) => Plan::Open(real.display().to_string()),
+            Ok(real) => Plan::Reveal(real.display().to_string()),
+        },
+        None => Plan::Open(target.to_owned()),
+    }
+}
+
+pub fn open(ctx: &egui::Context, target: &str) {
+    if is_web(target) {
+        ctx.open_url(egui::OpenUrl::new_tab(target));
+        return;
+    }
+    let ctx = ctx.clone();
+    let target = target.to_owned();
+    std::thread::spawn(move || {
+        let failed = match plan(&target) {
+            Plan::Web | Plan::Refused => Some("Loop opens web, mail, file, Figma, Slack, Notion, Linear and Zoom links only.".to_owned()),
+            Plan::Missing(path) => Some(format!("{} isn\u{2019}t on this Mac.", path.display())),
+            Plan::Open(operand) => (!launch(false, &operand)).then(|| format!("Nothing on this Mac opens {target}.")),
+            Plan::Reveal(operand) => (!launch(true, &operand)).then(|| format!("Nothing on this Mac opens {target}.")),
+        };
+        if let Some(message) = failed {
+            w::toast(&ctx, message, true);
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn launch(reveal: bool, operand: &str) -> bool {
+    let (opener, end) = OPENER;
+    let args = reveal.then_some("-R").into_iter().chain(end.iter().copied());
+    std::process::Command::new(opener).args(args).arg(operand).status().is_ok_and(|s| s.success())
+}
+
+fn local_path(target: &str) -> Option<std::path::PathBuf> {
+    if target.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:")) {
+        return reqwest::Url::parse(target).ok()?.to_file_path().ok();
+    }
+    if let Some(rest) = target.strip_prefix("~/") {
+        return std::env::home_dir().map(|home| home.join(rest));
+    }
+    target.starts_with('/').then(|| target.into())
+}
+
+fn opens_in_place(path: &std::path::Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if path.is_dir() {
+        return ext.is_none();
+    }
+    ext.is_some_and(|e| DOCUMENTS.contains(&e.as_str()))
 }
 
 /// One `<…>`: a link, a mention, a channel or a special.
@@ -207,7 +352,7 @@ fn token(inner: &str, style: Style) -> Span {
         _ => {
             let url = unescape(target);
             let shown = label.map(unescape).unwrap_or_else(|| url.trim_start_matches("mailto:").to_owned());
-            Span { text: shown, style, link: Some(url) }
+            Span { text: shown, style, link: allowed(&url).then_some(url) }
         }
     }
 }
@@ -219,6 +364,7 @@ pub fn plain(src: &str) -> String {
         .map(|b| match b {
             Block::Para(s) | Block::Bullet(s) | Block::Quote(s) => s.into_iter().map(|s| s.text).collect(),
             Block::Code(c) => c,
+            Block::Gap => String::new(),
         })
         .collect::<Vec<String>>()
         .join(" ")
@@ -282,8 +428,7 @@ fn job(spans: &[Span], ink: egui::Color32, wrap: f32) -> (LayoutJob, Vec<(std::o
 fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
     let (job, links) = job(spans, ink, ui.available_width());
     let sense = if links.is_empty() { Sense::hover() } else { Sense::click() };
-    let (pos, galley, response) = egui::Label::new(job).sense(sense).selectable(false).layout_in_ui(ui);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text()));
+    let (pos, galley, response) = shell::selectable(ui, egui::Label::new(job).sense(sense));
     let under = |p: egui::Pos2| {
         let at = galley.cursor_from_pos(p - pos).index.0;
         // A char index into the text; the ranges are byte offsets.
@@ -294,10 +439,9 @@ fn paragraph(ui: &mut egui::Ui, spans: &[Span], ink: egui::Color32) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         response.clone().on_hover_text_at_pointer(url.clone());
         if response.clicked() {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+            open(ui.ctx(), &url);
         }
     }
-    ui.painter().galley(pos, galley, ink);
 }
 
 // -------------------------------------------------------------- slack links
@@ -336,7 +480,7 @@ fn slack_chip(ui: &mut egui::Ui, url: &str, channel: Option<&str>) {
     };
     let r = w::icon_button(ui, egui_phosphor::regular::SLACK_LOGO, &label, w::Emphasis::Secondary, true).on_hover_text(url);
     if r.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        open(ui.ctx(), url);
     }
 }
 
@@ -408,6 +552,7 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
         ui.spacing_mut().item_spacing.y = space::XS;
         for block in parse(src) {
             match block {
+                Block::Gap => ui.add_space(space::SM),
                 Block::Para(s) => body_lines(ui, &s, ink),
                 Block::Quote(s) => {
                     ui.horizontal_top(|ui| {
@@ -432,7 +577,10 @@ pub fn show(ui: &mut egui::Ui, src: &str, ink: egui::Color32) {
                         .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2()));
+                            shell::selectable(
+                                ui,
+                                egui::Label::new(RichText::new(code).monospace().size(text::SMALL).color(colour::TEXT_2())),
+                            );
                         });
                 }
             }
@@ -479,16 +627,93 @@ mod tests {
     }
 
     #[test]
+    fn links_of_every_kind() {
+        let n = Style::default();
+        let link = |src: &str| -> Vec<(String, Option<String>)> {
+            inline(src).into_iter().map(|s| (s.text, s.link)).collect()
+        };
+        for (src, target) in [
+            ("figma://file/aR7x", "figma://file/aR7x"),
+            ("slack://channel?team=T1&id=C2", "slack://channel?team=T1&id=C2"),
+            ("file:///Users/a/spec%20v2.pdf", "file:///Users/a/spec%20v2.pdf"),
+            ("~/Desktop/spec.pdf", "~/Desktop/spec.pdf"),
+            ("/Users/a/notes.md", "/Users/a/notes.md"),
+            ("mailto:dhaval@airtribe.live", "mailto:dhaval@airtribe.live"),
+            ("tel:+919800000000", "tel:+919800000000"),
+            ("dhaval@airtribe.live", "mailto:dhaval@airtribe.live"),
+            ("www.notion.so/airtribe/Spec", "https://www.notion.so/airtribe/Spec"),
+        ] {
+            assert_eq!(link(&format!("see {src}.")), vec![
+                ("see ".to_owned(), None),
+                (src.to_owned(), Some(target.to_owned())),
+                (".".to_owned(), None),
+            ], "{src}");
+        }
+        assert_eq!(texts(&inline("(https://x.test/a)")), vec![("(", n, None), ("https://x.test/a", n, Some("https://x.test/a")), (")", n, None)]);
+        for prose in ["GET /cart/totals", "std::fs::read", "localhost:8091", "a@b", "x/~/y", "www.", "http://", "vscode://file/x.rs", "shortcuts://run-shortcut?name=x"] {
+            assert!(inline(prose).iter().all(|s| s.link.is_none()), "{prose}");
+        }
+    }
+
+    #[test]
+    fn local_targets_resolve_and_scripts_are_revealed_not_run() {
+        assert_eq!(local_path("file:///Users/a/spec%20v2.pdf"), Some("/Users/a/spec v2.pdf".into()));
+        assert_eq!(local_path("file://localhost/tmp/x"), Some("/tmp/x".into()));
+        assert_eq!(local_path("FILE:///tmp/x"), Some("/tmp/x".into()), "the scheme is any case");
+        assert_eq!(local_path("file:/tmp/x"), Some("/tmp/x".into()), "and one slash is still a file");
+        assert_eq!(local_path("/Users/a/b"), Some("/Users/a/b".into()));
+        assert!(local_path("~/Desktop").is_some_and(|p| p.ends_with("Desktop") && p.is_absolute()));
+        assert_eq!(local_path("figma://file/x"), None);
+        assert_eq!(local_path("mailto:a@b.co"), None);
+
+        let dir = std::env::temp_dir().join(format!("loop-open-{}", std::process::id()));
+        let app = dir.join("Thing.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        let doc = dir.join("spec.pdf");
+        std::fs::write(&doc, "%PDF").unwrap();
+        let script = dir.join("payload");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        let disguised = dir.join("report.pdf");
+        let _ = std::fs::remove_file(&disguised);
+        std::os::unix::fs::symlink(&app, &disguised).unwrap();
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().display().to_string();
+
+        assert_eq!(plan(&doc.display().to_string()), Plan::Open(real(&doc)), "a document opens");
+        assert_eq!(plan(&dir.display().to_string()), Plan::Open(real(&dir)), "a plain folder opens");
+        for hostile in [
+            app.display().to_string(),
+            format!("{}/Contents/..", app.display()),
+            format!("file://{}/Contents/%2E%2E", app.display()),
+            format!("FILE://{}", app.display()),
+            disguised.display().to_string(),
+        ] {
+            assert_eq!(plan(&hostile), Plan::Reveal(real(&app)), "{hostile} is shown in Finder, not run");
+        }
+        assert_eq!(plan(&script.display().to_string()), Plan::Reveal(real(&script)), "no document type, no run");
+        assert!(matches!(plan("/no/such/file.pdf"), Plan::Missing(_)));
+
+        assert_eq!(plan("HTTPS://example.com"), Plan::Web);
+        assert_eq!(plan("mailto:a@b.co"), Plan::Open("mailto:a@b.co".into()));
+        assert_eq!(plan("figma://file/x"), Plan::Open("figma://file/x".into()));
+        for refused in ["shortcuts://run-shortcut?name=x", "x-man-page://ls", "smb://host/share", "-aCalculator", "vscode://ext"] {
+            assert_eq!(plan(refused), Plan::Refused, "{refused}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn blocks_keep_breaks_bullets_and_fences() {
         let src = "First line\nsecond line\n\nNew para\n\u{2022} one\n- two\n```\nlet x = 1;\n```\n&gt; quoted";
         let blocks = parse(src);
-        assert_eq!(blocks.len(), 6, "{blocks:?}");
+        assert_eq!(blocks.len(), 7, "{blocks:?}");
         assert!(matches!(&blocks[0], Block::Para(s) if s.iter().map(|s| s.text.as_str()).collect::<String>() == "First line\nsecond line"));
-        assert!(matches!(&blocks[1], Block::Para(s) if s[0].text == "New para"));
-        assert!(matches!(&blocks[2], Block::Bullet(s) if s[0].text == "one"));
-        assert!(matches!(&blocks[3], Block::Bullet(s) if s[0].text == "two"));
-        assert_eq!(blocks[4], Block::Code("let x = 1;".into()));
-        assert!(matches!(&blocks[5], Block::Quote(s) if s[0].text == "quoted"));
+        assert_eq!(blocks[1], Block::Gap, "a blank line is a paragraph break, not a line break");
+        assert!(matches!(&blocks[2], Block::Para(s) if s[0].text == "New para"));
+        assert!(matches!(&blocks[3], Block::Bullet(s) if s[0].text == "one"));
+        assert!(matches!(&blocks[4], Block::Bullet(s) if s[0].text == "two"));
+        assert_eq!(blocks[5], Block::Code("let x = 1;".into()));
+        assert!(matches!(&blocks[6], Block::Quote(s) if s[0].text == "quoted"));
+        assert!(!parse("\n\nlead\n\n").contains(&Block::Gap), "no gap before the first block or after the last");
         assert_eq!(parse("```one line```"), vec![Block::Code("one line".into())]);
         assert_eq!(plain("*Checkout* fails for <@U1|Priya>"), "Checkout fails for @Priya");
     }

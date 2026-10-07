@@ -156,13 +156,106 @@ pub fn follow(ctx: &egui::Context) {
         Mode::Dark => false,
         Mode::System => ctx.system_theme() == Some(egui::Theme::Light),
     };
-    let applied: Option<(bool, usize)> = ctx.data(|d| d.get_temp(store_id().with("applied")));
-    if applied == Some((light, a.accent)) {
-        return;
+    let sys = system();
+    let key = (light, a.accent, sys.contrast, sys.opaque);
+    let applied: Option<(bool, usize, bool, bool)> = ctx.data(|d| d.get_temp(store_id().with("applied")));
+    if applied != Some(key) {
+        colour::set(light, a.accent);
+        colour::set_system(sys.contrast, sys.opaque);
+        apply_visuals(ctx, light);
+        ctx.data_mut(|d| d.insert_temp(store_id().with("applied"), key));
     }
-    colour::set(light, a.accent);
-    apply_visuals(ctx, light);
-    ctx.data_mut(|d| d.insert_temp(store_id().with("applied"), (light, a.accent)));
+
+    let still = store_id().with("still");
+    if ctx.data(|d| d.get_temp::<bool>(still)).unwrap_or(false) != sys.reduce_motion {
+        let time = if sys.reduce_motion { 0.0 } else { egui::Style::default().animation_time };
+        ctx.all_styles_mut(|s| s.animation_time = time);
+        ctx.data_mut(|d| d.insert_temp(still, sys.reduce_motion));
+    }
+
+    let bars = store_id().with("scroll");
+    let scroll = scroll_style(ctx, sys.legacy_scrollers, sys.reduce_motion);
+    if ctx.data(|d| d.get_temp::<egui::style::ScrollStyle>(bars)) != Some(scroll) {
+        ctx.all_styles_mut(|s| s.spacing.scroll = scroll);
+        ctx.data_mut(|d| d.insert_temp(bars, scroll));
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct System {
+    reduce_motion: bool,
+    contrast: bool,
+    opaque: bool,
+    legacy_scrollers: bool,
+}
+
+fn system() -> System {
+    let forced = std::env::var_os("AIRTRIBE_REDUCE_MOTION").is_some();
+    let os = macos_settings().unwrap_or_default();
+    System { reduce_motion: os.reduce_motion || forced, ..os }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_settings() -> Option<System> {
+    use objc2_app_kit::{NSScroller, NSScrollerStyle, NSWorkspace};
+    let mtm = objc2::MainThreadMarker::new()?;
+    let ws = NSWorkspace::sharedWorkspace();
+    Some(System {
+        reduce_motion: ws.accessibilityDisplayShouldReduceMotion(),
+        contrast: ws.accessibilityDisplayShouldIncreaseContrast(),
+        opaque: ws.accessibilityDisplayShouldReduceTransparency(),
+        legacy_scrollers: NSScroller::preferredScrollerStyle(mtm) == NSScrollerStyle::Legacy,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_settings() -> Option<System> {
+    None
+}
+
+const BAR_RESTING: f32 = 0.2;
+const BAR_SCROLLING: f32 = 0.32;
+const BAR_HELD: f32 = 0.5;
+const TRACK: f32 = 0.04;
+const BAR_SHOWN_SECS: f64 = 0.8;
+const BAR_FADE_SECS: f64 = 0.25;
+
+fn scroll_style(ctx: &egui::Context, legacy: bool, instant: bool) -> egui::style::ScrollStyle {
+    let mut s = egui::style::ScrollStyle::floating();
+    s.foreground_color = true;
+    s.bar_width = space::SM;
+    s.floating_width = space::XS;
+    s.floating_allocated_width = 0.0;
+    s.bar_inner_margin = space::XXS;
+    s.bar_outer_margin = space::XXS;
+    s.dormant_background_opacity = 0.0;
+    s.active_background_opacity = 0.0;
+    s.interact_background_opacity = TRACK;
+    s.interact_handle_opacity = BAR_HELD;
+    let scrolling = BAR_SCROLLING * just_scrolled(ctx, instant);
+    let resting = if legacy { BAR_RESTING } else { 0.0 };
+    s.dormant_handle_opacity = resting;
+    s.active_handle_opacity = resting.max(scrolling);
+    s
+}
+
+fn just_scrolled(ctx: &egui::Context, instant: bool) -> f32 {
+    let id = store_id().with("scrolled");
+    let (now, moving) = ctx.input(|i| (i.time, i.is_scrolling() || i.smooth_scroll_delta() != egui::Vec2::ZERO));
+    if moving {
+        ctx.data_mut(|d| d.insert_temp(id, now));
+    }
+    let Some(at) = ctx.data(|d| d.get_temp::<f64>(id)) else { return 0.0 };
+    let since = now - at;
+    if since < BAR_SHOWN_SECS {
+        ctx.request_repaint_after_secs((BAR_SHOWN_SECS - since) as f32);
+        return 1.0;
+    }
+    if instant || since >= BAR_SHOWN_SECS + BAR_FADE_SECS {
+        return 0.0;
+    }
+    ctx.request_repaint();
+    (1.0 - (since - BAR_SHOWN_SECS) / BAR_FADE_SECS) as f32
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -242,36 +335,10 @@ fn apply_visuals(ctx: &egui::Context, light: bool) {
 
 fn install_style(ctx: &egui::Context) {
     ctx.all_styles_mut(|s| {
-        // egui surfaces no OS reduce-motion flag (see motion.rs), but its own
-        // animation_time turns every animation off — including the hand-rolled
-        // ones, which all read the knob. An env override makes that reachable
-        // until eframe exposes the system setting.
-        if std::env::var_os("AIRTRIBE_REDUCE_MOTION").is_some() {
-            s.animation_time = 0.0;
-        }
         s.spacing.item_spacing = egui::vec2(space::SM, space::SM);
         s.spacing.menu_margin = egui::Margin::same(space::XS as i8);
         s.spacing.button_padding = egui::vec2(super::tokens::pad::BUTTON.0, super::tokens::pad::BUTTON.1);
         s.spacing.interact_size.y = super::tokens::size::CONTROL;
-        // Scrollbars overlay rather than reserve a gutter, and they are the
-        // same greys as every other line in the app. The default is an opaque
-        // near-white bar that laid itself across whatever it scrolled past.
-        s.spacing.scroll = egui::style::ScrollStyle::floating();
-        s.spacing.scroll.floating_width = space::XS;
-        s.spacing.scroll.floating_allocated_width = 0.0;
-        s.spacing.scroll.bar_inner_margin = space::XXS;
-        s.spacing.scroll.bar_outer_margin = 0.0;
-        // No scrollbar at all: no track, no handle, in any state. Scrolling
-        // still works — the trackpad is the affordance on a Mac — the bar
-        // just never paints. Opacity is the only knob egui exposes here.
-        s.spacing.scroll.foreground_color = true;
-        s.spacing.scroll.dormant_background_opacity = 0.0;
-        s.spacing.scroll.active_background_opacity = 0.0;
-        s.spacing.scroll.interact_background_opacity = 0.0;
-        s.spacing.scroll.dormant_handle_opacity = 0.0;
-        s.spacing.scroll.active_handle_opacity = 0.0;
-        s.spacing.scroll.interact_handle_opacity = 0.0;
-
         use egui::{FontId, TextStyle};
         s.text_styles = [
             (TextStyle::Heading, FontId::proportional(text::TITLE)),

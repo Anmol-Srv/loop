@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use super::menus::{project_items, task_items, Pick, Viewer};
 use super::projects::{
-    health, label_badge, label_picker, owned, parse_date, priority_tone, relative_day, Health,
+    health, label_badge, label_picker, owned, parse_date, relative_day, Health,
     DEFAULT_PRIORITY, LABELS_KEY, PEOPLE_KEY, PRIORITIES, PROJECTS_KEY, PROJECT_STATUSES, PROSE_W,
 };
 use crate::desktop::design::table::{self, Col};
@@ -194,7 +194,7 @@ impl DateSlot {
     }
 }
 
-/// The open "+ Add" form under Resources.
+/// The open "+ Add link" form under Resources.
 #[derive(Default)]
 struct Attach {
     /// `viz::select`'s slot. `None` is the resting kind, the first of `KINDS`.
@@ -213,20 +213,6 @@ const KINDS: [(&str, &str, &str); 4] = [
     ("figma", "Figma link", "https://figma.com/file/\u{2026}"),
     ("link", "Link", "https://\u{2026}"),
 ];
-
-fn kind_label(kind: &str) -> &'static str {
-    KINDS.iter().find(|(k, _, _)| *k == kind).map_or("Link", |(_, l, _)| l)
-}
-
-/// Same hue per kind as the task page, so a PR reads as a PR on both.
-fn kind_tone(kind: &str) -> c::Tone {
-    match kind {
-        "pr" => c::Tone::Info,
-        "commit" => c::Tone::Ok,
-        "figma" => c::Tone::Agent,
-        _ => c::Tone::Quiet,
-    }
-}
 
 /// The task table's three slices. Open work is the default: it is what someone
 /// opening a project is there to chase.
@@ -378,12 +364,11 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
     let mut requests: Vec<Request> = Vec::new();
     let repo_busy = net.is_loading(&keys.repo);
 
-    if shell::back(ui, "Projects").clicked() {
-        back = true;
-    }
-
     let fallback = Value::Null;
     let head = detail.as_deref().or(flow.as_deref()).unwrap_or(&fallback);
+    if shell::crumbs(ui, "Projects", str_at(head, "name")) {
+        back = true;
+    }
 
     // A label made from the rail: it exists now, so it joins the set.
     if let Some(label) = net.data(&keys.new_label).cloned() {
@@ -448,12 +433,6 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
             if let Some(err) = &flow_error {
                 ui.add_space(space::XL);
                 w::error(ui, err);
-            } else if let Some(f) = flow.as_ref().filter(|f| !flow_columns(f).is_empty()) {
-                // The same sentence as the rail's progress, broken down by
-                // department. A project whose tasks have no department yet
-                // draws nothing, and the spacing goes with it.
-                ui.add_space(space::MD);
-                flow_strip(ui, f);
             }
 
             shell::divider(ui);
@@ -558,6 +537,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, project_id: &str) {
                 &all_labels,
                 label_error.as_deref(),
                 (done, total),
+                flow.as_deref(),
                 can_write,
                 requests,
             );
@@ -773,32 +753,28 @@ fn headline(
     }
 
     let mut edit = false;
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut pick = None;
-            viz::more(ui, |ui| pick = project_items(ui, head, can_write, false));
-            if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked()
-            {
-                edit = true;
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let title = ui.add(
-                    egui::Label::new(
-                        RichText::new(name)
-                            .size(text::TITLE)
-                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT()),
-                    )
-                    .truncate()
-                    .sense(egui::Sense::click()),
-                );
-                viz::context_menu(&title, |ui| pick = project_items(ui, head, can_write, false));
-            });
-            if let Some(Pick::Act(act)) = pick {
-                *ask = Some(project_ask(head, act));
-            }
-        });
+    let mut pick = None;
+    shell::toolbar_trailing(ui, |ui| {
+        viz::more(ui, |ui| pick = project_items(ui, head, can_write, false));
+        if can_write && w::ghost(ui, "Edit").on_hover_text("Edit name and description").clicked() {
+            edit = true;
+        }
     });
+    let title = ui.add(
+        egui::Label::new(
+            RichText::new(name)
+                .size(text::TITLE)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT()),
+        )
+        .wrap()
+        .sense(egui::Sense::click()),
+    );
+    shell::title_seen(ui, title.rect);
+    viz::context_menu(&title, |ui| pick = project_items(ui, head, can_write, false));
+    if let Some(Pick::Act(act)) = pick {
+        *ask = Some(project_ask(head, act));
+    }
     if edit {
         let description = str_at(head, "description");
         page.editing = Some(Draft {
@@ -809,7 +785,7 @@ fn headline(
             updated_at: Some(str_at(head, "updatedAt").to_owned()).filter(|a| !a.is_empty()),
         });
     }
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
     description(ui, str_at(head, "description"));
 }
 
@@ -826,6 +802,7 @@ fn rail(
     all_labels: &[Value],
     label_error: Option<&str>,
     (done, total): (i64, i64),
+    flow: Option<&Value>,
     can_write: bool,
     requests: &mut Vec<Request>,
 ) {
@@ -849,7 +826,7 @@ fn rail(
     let priority = num_at(head, "priority").clamp(0, 4);
     shell::property(ui, "Priority", |ui| {
         if !can_write {
-            c::chip(ui, &format!("P{priority}"), priority_tone(priority), false);
+            c::priority(ui, priority);
             return;
         }
         let current = PRIORITIES[priority as usize];
@@ -903,38 +880,59 @@ fn rail(
             faint(ui, "No tasks yet");
             return;
         }
-        ui.spacing_mut().item_spacing.x = space::SM;
-        w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT());
-        value(ui, &format!("{done} of {total} done"));
+        let split = flow.map(flow_columns).unwrap_or_default();
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = space::XXS;
+            ui.horizontal(|ui| {
+                ui.set_min_height(size::CONTROL);
+                ui.spacing_mut().item_spacing.x = space::SM;
+                w::progress(ui, fraction(done, total), RAIL_BAR_W, colour::ACCENT());
+                value(ui, &format!("{done} of {total} done"));
+            });
+            if split.len() > 1 {
+                for d in &split {
+                    let name = str_at(d, "discipline");
+                    let font = egui::FontId::proportional(text::SMALL);
+                    let mut line = egui::text::LayoutJob::default();
+                    line.append(name, 0.0, egui::TextFormat::simple(font.clone(), discipline_colour(name)));
+                    line.append(
+                        &format!("{} of {}", num_at(d, "done"), num_at(d, "total")),
+                        space::XS,
+                        egui::TextFormat::simple(font, colour::TEXT_MUTED()),
+                    );
+                    ui.label(line);
+                }
+            }
+        });
     });
 
     // One row per person holding work here, busiest first. A stack of
     // overlapping faces made the initials collide into one smear; a name and
     // what they still have open is what the row is for.
-    let mut people: Vec<(&str, usize)> = Vec::new();
+    let mut people: Vec<(&str, &str, usize)> = Vec::new();
     for t in tasks {
         let who = str_at(t, "assigneeName");
         if who.is_empty() {
             continue;
         }
         let open = usize::from(!is_finished(t));
-        match people.iter_mut().find(|(n, _)| *n == who) {
-            Some((_, n)) => *n += open,
-            None => people.push((who, open)),
+        match people.iter_mut().find(|(n, _, _)| *n == who) {
+            Some((_, _, n)) => *n += open,
+            None => people.push((who, email_or(t, who), open)),
         }
     }
-    people.sort_by(|a, b| b.1.cmp(&a.1));
+    people.sort_by(|a, b| b.2.cmp(&a.2));
     shell::property(ui, "People", |ui| {
         if people.is_empty() {
             faint(ui, "Nobody yet");
             return;
         }
         ui.vertical(|ui| {
-            for (who, open) in &people {
+            for (who, seed, open) in &people {
                 ui.horizontal(|ui| {
                     ui.set_min_height(size::CONTROL);
                     ui.spacing_mut().item_spacing.x = space::XS;
-                    avatar::small(ui, who, size::AVATAR_SM);
+                    avatar::small(ui, seed, size::AVATAR_SM);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let note = if *open == 0 { "all done".to_owned() } else { format!("{open} open") };
                         faint(ui, &note);
@@ -954,7 +952,10 @@ fn rail(
 
     let key = str_at(head, "key");
     if !key.is_empty() {
-        shell::property(ui, "Key", |ui| w::mono_caption(ui, key));
+        shell::property(ui, "Key", |ui| {
+            ui.add(egui::Label::new(RichText::new(key).monospace().size(text::CAPTION).color(colour::TEXT_FAINT())).truncate())
+                .on_hover_text(key);
+        });
     }
     if let Some((relative, absolute)) = created(str_at(head, "createdAt")) {
         shell::property(ui, "Created", |ui| {
@@ -1048,7 +1049,7 @@ fn resources(
 ) {
     let mut add = false;
     shell::section_count_with(ui, "Resources", rows.map_or(0, <[Value]>::len), |ui| {
-        if can_write && page.attach.is_none() && w::ghost(ui, "+ Add").clicked() {
+        if can_write && page.attach.is_none() && w::ghost(ui, "+ Add link").clicked() {
             add = true;
         }
     });
@@ -1084,96 +1085,10 @@ fn resources(
         return;
     }
 
-    w::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                ui.add_space(space::SM);
-            }
-            resource_row(ui, row, page, can_write, requests);
-        }
-    });
-}
-
-fn resource_row(
-    ui: &mut egui::Ui,
-    row: &Value,
-    page: &mut Page,
-    can_write: bool,
-    requests: &mut Vec<Request>,
-) {
-    let id = str_at(row, "id");
-    let kind = str_at(row, "kind");
-    let url = str_at(row, "url");
-    let title = str_at(row, "title").trim();
-    let where_ = host_path(url);
-    let confirming = page.removing.as_deref() == Some(id);
-
-    ui.horizontal(|ui| {
-        ui.set_min_height(size::CONTROL);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = space::XS;
-            // Only whoever added it may remove it; the server says who that is.
-            if can_write && row["canRemove"].as_bool() == Some(true) {
-                // Destructive, so it asks first — inline, where the eye already is.
-                if confirming {
-                    if w::ghost(ui, "Keep").clicked() {
-                        page.removing = None;
-                    }
-                    if w::danger(ui, "Remove", true).clicked() {
-                        requests.push(Request::Remove(id.to_owned()));
-                    }
-                    faint(ui, "Remove this link?");
-                } else if w::ghost(ui, "Remove").clicked() {
-                    page.removing = Some(id.to_owned());
-                }
-            }
-            if !confirming {
-                if let Some(who) = added_by(row) {
-                    faint(ui, &who);
-                }
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                c::chip(ui, kind_label(kind), kind_tone(kind), false);
-                let short = super::task::link_label(url);
-                let name = if !title.is_empty() {
-                    title
-                } else {
-                    short.as_deref().unwrap_or(where_)
-                };
-                // Half the row at most, so the address beside it still shows
-                // where the link goes.
-                let room = if title.is_empty() { ui.available_width() } else { ui.available_width() * 0.55 };
-                let r = ui.add(
-                    egui::Label::new(
-                        RichText::new(elide(ui, name, room))
-                            .size(text::SMALL)
-                            .color(colour::TEXT()),
-                    )
-                    .sense(egui::Sense::click())
-                    .selectable(false),
-                );
-                let r = motion::operable(ui, r, radius::SM as f32);
-                if r.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if r.on_hover_text(url).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                }
-                if !title.is_empty() {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(short.as_deref().unwrap_or(where_))
-                                .size(text::SMALL)
-                                .color(colour::TEXT_MUTED()),
-                        )
-                        .truncate(),
-                    );
-                }
-            });
-        });
-    });
+    let links: Vec<&Value> = rows.iter().collect();
+    if let Some(id) = super::task::link_tiles(ui, &links, can_write, &mut page.removing, false) {
+        requests.push(Request::Remove(id));
+    }
 }
 
 /// "github.com/org/repo/pull/12" from the full URL: the scheme is noise, the
@@ -1401,7 +1316,7 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if link.on_hover_text(url).clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(web));
+                        super::mrkdwn::open(ui.ctx(), &web);
                     }
                 } else {
                     link.on_hover_text(url);
@@ -1429,7 +1344,7 @@ fn repo_row(ui: &mut egui::Ui, row: &Value, page: &mut Page, can_write: bool, bu
                     .hint_text(
                         RichText::new("Not set \u{2014} choose or paste this repo's folder")
                             .size(text::BODY)
-                            .color(colour::TEXT_DISABLED()),
+                            .color(colour::TEXT_FAINT()),
                     )
                     .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
@@ -1572,12 +1487,7 @@ fn description(ui: &mut egui::Ui, body: &str) {
     }
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
-            if i > 0 {
-                ui.add_space(space::MD);
-            }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
-        }
+        super::mrkdwn::show(ui, body, colour::TEXT_2());
     });
 }
 
@@ -1596,36 +1506,6 @@ fn flow_columns(flow: &Value) -> Vec<&Value> {
             .unwrap_or(FLOW_ORDER.len())
     });
     columns
-}
-
-/// The per-discipline split, as one line of facts.
-///
-/// This was a labelled progress bar per discipline. The bar was a figure's
-/// worth of ink for a fraction that is 0/1 or 1/1 on a project this size, and
-/// the meta line above already carries the total — what is left worth saying
-/// is the split, in the same label/value vocabulary as the line it sits under.
-///
-/// It reports, it does not gate: no arrow between the disciplines, because
-/// frontend and backend can and do run before design has finished.
-fn flow_strip(ui: &mut egui::Ui, flow: &Value) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        for (i, d) in flow_columns(flow).iter().enumerate() {
-            if i > 0 {
-                ui.add_space(space::XL);
-            }
-            let name = str_at(d, "discipline");
-            // The discipline's own colour carries the name, so the split is
-            // scannable without a legend or a swatch beside it.
-            ui.label(
-                RichText::new(name)
-                    .size(text::SMALL)
-                    .family(egui::FontFamily::Name(theme::MEDIUM.into()))
-                    .color(discipline_colour(name)),
-            );
-            value(ui, &format!("{}/{}", num_at(d, "done"), num_at(d, "total")));
-        }
-    });
 }
 
 // --------------------------------------------------------------------- table
@@ -1673,7 +1553,7 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
         // waits on someone else is not in progress, and the chip beside its
         // title is what says so.
         if blocked {
-            c::chip(ui, "blocked", c::Tone::Blocked, false);
+            c::blocked(ui);
         }
     });
 
@@ -1688,21 +1568,21 @@ fn task_row(row: &mut table::Cells<'_, '_, '_>, t: &Value) {
             return;
         }
         ui.spacing_mut().item_spacing.x = space::XS;
-        avatar::small(ui, who, size::AVATAR_SM);
+        avatar::small(ui, email_or(t, who), size::AVATAR_SM);
         ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_2()));
         super::home::agent_marker(ui, t);
     });
 
     row.at(3, |ui| {
         let p = num_at(t, "priority").clamp(0, 4);
-        c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+        c::priority(ui, p);
     });
 
     row.at(4, |ui| {
         if archived(t) {
             archived_chip(ui);
         } else {
-            c::chip(ui, status_label(status), c::status_tone(status), true);
+            c::state(ui, status_label(status), c::status_tone(status));
         }
     });
 
@@ -1832,6 +1712,10 @@ pub(super) fn array(v: Option<&Value>) -> Vec<Value> {
 
 pub(super) fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn email_or<'a>(t: &'a Value, name: &'a str) -> &'a str {
+    Some(str_at(t, "assigneeEmail")).filter(|e| !e.is_empty()).unwrap_or(name)
 }
 
 /// "Added by Dhaval", or "Attached by Hermes" when an agent did — whose

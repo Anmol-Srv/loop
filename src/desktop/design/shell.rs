@@ -5,6 +5,8 @@
 //! height and content width, and a new view is a `NavItem` plus a match arm
 //! rather than a new layout.
 
+use std::cell::{Cell, RefCell};
+
 use egui::{Align, Layout, Response, RichText, Ui};
 
 use super::tokens::{colour, pad, radius, size, space, text};
@@ -342,6 +344,7 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
     response.widget_info(|| {
         let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Button, true, item.label);
         info.selected = Some(item.selected);
+        info.value = (item.badge > 0).then_some(item.badge as f64);
         info
     });
     let response = super::motion::operable(ui, response, radius::SM as f32);
@@ -467,95 +470,300 @@ fn nav_item(ui: &mut Ui, item: &NavItem<'_>, narrow: bool) -> Response {
     response
 }
 
-/// The content area. No header strip: gutters and scrolling applied once, then
-/// the view owns everything inside. Each view carries its own heading and back
-/// control, so a shared header would only repeat them.
+struct Bar {
+    lead: Ui,
+    trail: Ui,
+}
+
+thread_local! {
+    static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+    static SIDE: RefCell<Option<Ui>> = const { RefCell::new(None) };
+    static WANTS_SIDE: Cell<bool> = const { Cell::new(false) };
+    static TITLE_SEEN: Cell<Option<bool>> = const { Cell::new(None) };
+    static ROOMY: Cell<bool> = const { Cell::new(false) };
+}
+
+const SIDE_KEY: &str = "shell:side";
+const TRAIL_KEY: &str = "shell:trail-w";
+const TITLE_KEY: &str = "shell:title-seen";
+const SIDE_W: f32 = size::RAIL_W + 2.0 * space::LG;
+
+fn column(main: egui::Rect) -> egui::Rangef {
+    let inner = main.width() - 2.0 * space::XXL;
+    let side = ((inner - size::CONTENT_MAX) / 2.0).max(0.0);
+    let left = main.left() + space::XXL + side;
+    egui::Rangef::new(left, left + inner.min(size::CONTENT_MAX))
+}
+
 pub fn content(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(colour::CANVAS())
-                .inner_margin(egui::Margin::symmetric(space::XXL as i8, pad::PAGE.1 as i8)),
-        )
+        .frame(egui::Frame::new().fill(colour::CANVAS()))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // Cap the measure and centre it: past ~1080px the cards just
-                // stretch, and a task title 1400px wide is unreadable.
-                let avail = ui.available_width();
-                if avail > size::CONTENT_MAX {
-                    let side = (avail - size::CONTENT_MAX) / 2.0;
-                    ui.horizontal(|ui| {
-                        ui.add_space(side);
-                        ui.vertical(|ui| {
-                            ui.set_max_width(size::CONTENT_MAX);
-                            body(ui);
+            let ctx = ui.ctx().clone();
+            let full = ui.max_rect();
+            let roomy = full.width() >= RAIL_AT + 2.0 * space::XXL;
+            ROOMY.set(roomy);
+            let side_on = roomy && ctx.data(|d| d.get_temp::<bool>(egui::Id::new(SIDE_KEY))).unwrap_or(false);
+            let main = if side_on { full.with_max_x(full.right() - SIDE_W) } else { full };
+
+            let bar = egui::Rect::from_min_size(main.min, egui::vec2(main.width(), size::TOOLBAR));
+            let drag = ui.interact(bar, egui::Id::new("shell:toolbar"), egui::Sense::click_and_drag());
+            if drag.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if drag.double_clicked() {
+                let zoomed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!zoomed));
+            }
+
+            let row = egui::Rect::from_x_y_ranges(column(main), bar.y_range());
+            let trail_w = ctx.data(|d| d.get_temp::<f32>(egui::Id::new(TRAIL_KEY))).unwrap_or(0.0);
+            let lead_right = row.right() - if trail_w > 0.0 { trail_w + space::LG } else { 0.0 };
+            let mut slot = |salt: &str, rect: egui::Rect, layout: Layout| {
+                let mut child = ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(rect).layout(layout));
+                child.spacing_mut().item_spacing.x = space::SM;
+                child
+            };
+            let lead = slot("shell:lead", row.with_max_x(lead_right.max(row.left())), Layout::left_to_right(Align::Center));
+            let trail = slot("shell:trail", row, Layout::right_to_left(Align::Center));
+            BAR.set(Some(Bar { lead, trail }));
+
+            if side_on {
+                let pane = full.with_min_x(main.right());
+                ui.painter().rect_filled(pane, 0.0, colour::CHROME());
+                ui.painter().vline(pane.left() + 0.5, pane.y_range(), egui::Stroke::new(1.0, colour::LINE_SOFT()));
+                let inner = pane.with_min_x(pane.left() + 1.0);
+                SIDE.set(Some(ui.new_child(egui::UiBuilder::new().id_salt(SIDE_KEY).max_rect(inner).layout(Layout::top_down(Align::Min)))));
+            }
+
+            let below = egui::Rect::from_min_max(egui::pos2(main.left(), bar.bottom()), main.max);
+            let mut scroller = ui.new_child(egui::UiBuilder::new().id_salt("shell:body").max_rect(below).layout(Layout::top_down(Align::Min)));
+            let out = egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .content_margin(egui::Margin {
+                    left: space::XXL as i8,
+                    right: space::XXL as i8,
+                    top: space::MD as i8,
+                    bottom: space::XXL as i8,
+                })
+                .show(&mut scroller, |ui| {
+                    let avail = ui.available_width();
+                    if avail > size::CONTENT_MAX {
+                        let side = (avail - size::CONTENT_MAX) / 2.0;
+                        ui.horizontal(|ui| {
+                            ui.add_space(side);
+                            ui.vertical(|ui| {
+                                ui.set_max_width(size::CONTENT_MAX);
+                                body(ui);
+                            });
                         });
-                    });
-                } else {
-                    body(ui);
+                    } else {
+                        body(ui);
+                    }
+                    edge_scroll(ui);
+                });
+            let line = if out.state.offset.y > 0.5 { colour::LINE() } else { colour::LINE_SOFT() };
+            ui.painter().hline(main.x_range(), bar.bottom() - 0.5, egui::Stroke::new(1.0, line));
+
+            let mut discard = false;
+            if let Some(Bar { trail, .. }) = BAR.take() {
+                let used = (row.right() - trail.min_rect().left()).max(0.0);
+                discard |= (used - trail_w).abs() > 0.5;
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(TRAIL_KEY), used));
+            }
+            SIDE.take();
+            let wants = WANTS_SIDE.replace(false);
+            discard |= roomy && wants != side_on;
+            ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new(SIDE_KEY), wants);
+                match TITLE_SEEN.take() {
+                    Some(seen) => {
+                        d.insert_temp(egui::Id::new(TITLE_KEY), seen);
+                    }
+                    None => {
+                        d.remove::<bool>(egui::Id::new(TITLE_KEY));
+                    }
                 }
             });
+            if discard {
+                ctx.request_discard("shell layout");
+            }
         });
 }
 
-/// The top of a page: title, optional subtitle, optional trailing control.
-///
-/// Six panes each drew their own, landing on four different gaps under the
-/// same rank of element and two different title weights. `shell::content`
-/// deliberately owns no header strip — but that left the one element present
-/// on every screen as the one element with no shared implementation.
+pub fn side_fits() -> bool {
+    ROOMY.get()
+}
+
+fn in_bar<R>(ui: &mut Ui, trailing: bool, f: impl FnOnce(&mut Ui) -> R) -> R {
+    match BAR.take() {
+        Some(mut bar) => {
+            let r = f(if trailing { &mut bar.trail } else { &mut bar.lead });
+            BAR.set(Some(bar));
+            r
+        }
+        None if trailing => ui.with_layout(Layout::right_to_left(Align::Center), f).inner,
+        None => ui.horizontal(f).inner,
+    }
+}
+
+pub fn toolbar<R>(ui: &mut Ui, f: impl FnOnce(&mut Ui) -> R) -> R {
+    in_bar(ui, false, f)
+}
+
+pub fn toolbar_trailing<R>(ui: &mut Ui, f: impl FnOnce(&mut Ui) -> R) -> R {
+    in_bar(ui, true, f)
+}
+
+pub fn title_seen(ui: &Ui, title: egui::Rect) {
+    TITLE_SEEN.set(Some(title.bottom() > ui.clip_rect().top() + space::XS));
+}
+
+pub fn crumbs(ui: &mut Ui, back: &str, current: &str) -> bool {
+    let seen = ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new(TITLE_KEY))).unwrap_or(false);
+    toolbar(ui, |ui| {
+        let clicked = back_button(ui, back).clicked();
+        let t = super::motion::to(ui, egui::Id::new("shell:crumb-title"), !seen, super::motion::BASE);
+        if t > 0.001 && !current.is_empty() {
+            ui.label(RichText::new("/").size(text::BODY).color(colour::TEXT_FAINT().gamma_multiply(t)));
+            ui.add(
+                egui::Label::new(
+                    RichText::new(current)
+                        .size(text::BODY)
+                        .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
+                        .color(colour::TEXT().gamma_multiply(t)),
+                )
+                .truncate()
+                .selectable(false),
+            );
+        }
+        clicked
+    })
+}
+
+fn back_button(ui: &mut Ui, label: &str) -> Response {
+    let font = egui::FontId::proportional(text::BODY);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, colour::TEXT_MUTED());
+    let w = space::XS + size::ICON_COL + galley.size().x + space::SM;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, size::CONTROL), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let response = super::motion::operable(ui, response, radius::SM as f32);
+    let hot = response.hovered() || response.has_focus();
+    let fill = super::motion::hover_fill(ui, response.id.with("fill"), hot, colour::TRANSPARENT(), colour::SURFACE_HOVER());
+    let ink = if hot { colour::TEXT() } else { colour::TEXT_MUTED() };
+    let p = ui.painter();
+    if fill != colour::TRANSPARENT() {
+        p.rect_filled(rect, radius::SM as f32, fill);
+    }
+    p.text(
+        egui::pos2(rect.left() + space::XS + size::ICON_COL / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::CARET_LEFT,
+        egui::FontId::proportional(text::HEADING),
+        ink,
+    );
+    p.galley(egui::pos2(rect.left() + space::XS + size::ICON_COL, rect.center().y - galley.size().y / 2.0), galley, ink);
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+const EDGE_SCROLL_GAIN: f32 = 10.0;
+const EDGE_SCROLL_MIN: f32 = 120.0;
+const EDGE_SCROLL_MAX: f32 = 3000.0;
+
+pub fn edge_scroll(ui: &Ui) {
+    let ctx = ui.ctx();
+    if !drag_selecting(ctx) {
+        return;
+    }
+    let Some(pointer) = ctx.input(|i| i.pointer.latest_pos()) else { return };
+    let view = ui.clip_rect();
+    let past = if pointer.y < view.top() {
+        pointer.y - view.top()
+    } else if pointer.y > view.bottom() {
+        pointer.y - view.bottom()
+    } else {
+        0.0
+    };
+    let wheel = if view.contains(pointer) {
+        ctx.input_mut(|i| std::mem::take(&mut i.smooth_scroll_delta.y))
+    } else {
+        0.0
+    };
+    let edge = if past == 0.0 {
+        0.0
+    } else {
+        let speed = (past.abs() * EDGE_SCROLL_GAIN).clamp(EDGE_SCROLL_MIN, EDGE_SCROLL_MAX);
+        -past.signum() * speed * ctx.input(|i| i.stable_dt)
+    };
+    if edge + wheel != 0.0 {
+        ui.scroll_with_delta_animation(egui::vec2(0.0, edge + wheel), egui::style::ScrollAnimation::none());
+    }
+}
+
+fn drag_selecting(ctx: &egui::Context) -> bool {
+    let Some(dragged) = ctx.dragged_id() else { return false };
+    let labels = ctx
+        .plugin_opt::<egui::text_selection::LabelSelectionState>()
+        .is_some_and(|p| p.lock().has_selection());
+    labels || (ctx.text_edit_focused() && ctx.memory(|m| m.focused()) == Some(dragged))
+}
+
+pub fn selectable(ui: &mut Ui, label: egui::Label) -> (egui::Pos2, std::sync::Arc<egui::Galley>, Response) {
+    let (pos, galley, response) = label.selectable(true).layout_in_ui(ui);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text()));
+    let view = ui.clip_rect();
+    let unreached = ui.ctx().pointer_interact_pos().is_some_and(|p| {
+        (p.y > view.bottom() && response.rect.top() > p.y) || (p.y < view.top() && response.rect.bottom() < p.y)
+    });
+    if !unreached {
+        egui::text_selection::LabelSelectionState::label_text_selection(
+            ui,
+            &response,
+            pos,
+            galley.clone(),
+            ui.visuals().text_color(),
+            egui::Stroke::NONE,
+        );
+    }
+    (pos, galley, response)
+}
+
 pub fn page_title(
     ui: &mut Ui,
     title: &str,
     subtitle: &str,
     trailing: impl FnOnce(&mut Ui),
 ) {
-    ui.horizontal(|ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            trailing(ui);
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(title)
-                            .size(text::TITLE)
-                            .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
-                            .color(colour::TEXT()),
-                    )
-                    .truncate(),
-                );
-            });
-        });
-    });
-    if !subtitle.is_empty() {
-        ui.add_space(space::XXS);
-        ui.label(
-            RichText::new(subtitle)
-                .size(text::SMALL)
-                .color(colour::TEXT_MUTED()),
+    toolbar(ui, |ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(title)
+                    .size(text::CARD)
+                    .family(egui::FontFamily::Name(super::theme::SEMIBOLD.into()))
+                    .color(colour::TEXT()),
+            )
+            .truncate()
+            .selectable(false),
         );
-    }
-    ui.add_space(space::LG);
-}
-
-/// A back control above a page title. One spelling, so the two panes that have
-/// one stop disagreeing about the gap beneath it.
-pub fn back(ui: &mut Ui, label: &str) -> egui::Response {
-    let response = super::widgets::icon_button(
-        ui,
-        egui_phosphor::regular::ARROW_LEFT,
-        label,
-        super::widgets::Emphasis::Link,
-        true,
-    );
-    ui.add_space(space::XS);
-    response
+        if !subtitle.is_empty() {
+            ui.add(
+                egui::Label::new(RichText::new(subtitle).size(text::SMALL).color(colour::TEXT_MUTED()))
+                    .truncate()
+                    .selectable(false),
+            );
+        }
+    });
+    toolbar_trailing(ui, trailing);
 }
 
 /// A section heading with something trailing on the right — a count, a live
 /// pill, an action. The task view rebuilt this inline because `section` takes
 /// a label and nothing else.
 pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
-    ui.add_space(space::XL);
+    ui.add_space(space::LG);
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(label)
@@ -565,7 +773,7 @@ pub fn section_with(ui: &mut Ui, label: &str, trailing: impl FnOnce(&mut Ui)) {
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
 }
 
 /// A section heading with a count beside it, the count a shade fainter.
@@ -589,7 +797,7 @@ pub fn section_count_with(
     count: usize,
     trailing: impl FnOnce(&mut Ui),
 ) {
-    ui.add_space(space::XL);
+    ui.add_space(space::LG);
     ui.horizontal(|ui| {
         // The count belongs to its label; at the page's default spacing the
         // two drifted apart and read as a heading and a stray number.
@@ -607,7 +815,7 @@ pub fn section_count_with(
         );
         ui.with_layout(Layout::right_to_left(Align::Center), trailing);
     });
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
 }
 
 /// A section heading inside a page body.
@@ -617,7 +825,7 @@ pub fn section_count_with(
 /// sections down one column at the same weight read as one long column with
 /// words in it. The rule is what says "this is a different thing".
 pub fn divider(ui: &mut Ui) {
-    ui.add_space(space::XL);
+    ui.add_space(space::LG);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), 1.0),
         egui::Sense::hover(),
@@ -654,35 +862,33 @@ pub fn with_rail(
     mut content: impl FnMut(&mut Ui, Part),
     rail: impl FnOnce(&mut Ui),
 ) {
-    if ui.available_width() < RAIL_AT {
-        content(ui, Part::Header);
-        ui.add_space(space::LG);
-        rail_surface(ui, rail);
-        content(ui, Part::Body);
-        return;
+    WANTS_SIDE.set(true);
+    match SIDE.take() {
+        Some(mut side) => {
+            content(ui, Part::Header);
+            content(ui, Part::Body);
+            egui::ScrollArea::vertical()
+                .id_salt(SIDE_KEY)
+                .auto_shrink(false)
+                .content_margin(egui::Margin {
+                    left: space::LG as i8,
+                    right: space::LG as i8,
+                    top: ((size::TOOLBAR - size::CONTROL) / 2.0) as i8,
+                    bottom: space::LG as i8,
+                })
+                .show(&mut side, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().interact_size.x = size::PICKER_W;
+                    rail(ui);
+                });
+        }
+        None => {
+            content(ui, Part::Header);
+            ui.add_space(space::LG);
+            rail_surface(ui, rail);
+            content(ui, Part::Body);
+        }
     }
-
-    let full = ui.available_width();
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XXL;
-        ui.allocate_ui_with_layout(
-            egui::vec2(full - size::RAIL_W - space::XXL, 0.0),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.set_width(ui.available_width());
-                content(ui, Part::Header);
-                content(ui, Part::Body);
-            },
-        );
-        ui.allocate_ui_with_layout(
-            egui::vec2(size::RAIL_W, 0.0),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.set_width(size::RAIL_W);
-                rail_surface(ui, rail);
-            },
-        );
-    });
 }
 
 /// Content width at which the properties rail sits beside the content rather
@@ -734,12 +940,12 @@ pub fn property(ui: &mut Ui, label: &str, value: impl FnOnce(&mut Ui)) {
 const PROPERTY_LABEL_W: f32 = 82.0;
 
 pub fn section(ui: &mut Ui, label: &str) {
-    ui.add_space(space::XL);
+    ui.add_space(space::LG);
     ui.label(
         RichText::new(label)
             .size(text::SMALL)
             .family(egui::FontFamily::Name(super::theme::MEDIUM.into()))
             .color(colour::TEXT_MUTED()),
     );
-    ui.add_space(space::MD);
+    ui.add_space(space::SM);
 }

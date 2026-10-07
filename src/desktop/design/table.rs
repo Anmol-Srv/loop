@@ -222,6 +222,7 @@ fn show_inner(
     mut row: impl FnMut(&mut Cells<'_, '_, '_>, usize),
     mut menu: Option<&mut dyn FnMut(&mut Ui, usize)>,
 ) -> Option<usize> {
+    let header = header && cols.iter().any(|c| !c.label.is_empty());
     // Drop the least important column until the rest fit. The gaps go with
     // them, so this converges rather than shaving one column short.
     let mut visible = vec![true; cols.len()];

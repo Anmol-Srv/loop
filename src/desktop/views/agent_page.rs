@@ -17,7 +17,7 @@ use chrono::{DateTime, NaiveDate};
 use egui::{pos2, vec2, RichText};
 use serde_json::Value;
 
-use super::agent_session::{entry, prose, short_name, Mark, Node};
+use super::agent_session::{entry, short_name, Mark, Node};
 use super::agents::{
     has, role_chips, role_items, runtime_label, setup_checks, state_tone, state_words,
     status_words, Opened, Role,
@@ -45,9 +45,6 @@ pub(super) enum CardAsk {
     Revoke,
 }
 
-/// Below this the rail's facts fold into a line under the header. The
-/// shell's own rail breakpoint.
-const NARROW: f32 = 760.0;
 const TABS: [&str; 4] = ["Activity", "Tasks", "Runs", "Logs"];
 /// The chart's bars, and how tall the tallest day stands.
 const CHART_H: f32 = 64.0;
@@ -94,7 +91,8 @@ pub(super) fn show(
     } else {
         "All agents"
     };
-    if shell::back(ui, back_label).clicked() {
+    let name = str_of(&agent, "name").unwrap_or("Agent").to_owned();
+    if shell::crumbs(ui, back_label, &name) {
         ask = Some(Ask::Back);
     }
     if let Some(err) = net.error(&key).filter(|_| overview.is_none()) {
@@ -107,13 +105,12 @@ pub(super) fn show(
         return ask;
     }
 
-    let name = str_of(&agent, "name").unwrap_or("Agent").to_owned();
     let short = short_name(&name).to_owned();
     let tab = &mut opened.tab;
     let mut from_rail = None;
     // Narrow, the rail's facts would stand a screen tall between the header
     // and the figures; they fold into one wrapped line instead.
-    if ui.available_width() < NARROW {
+    if !shell::side_fits() {
         if let Some(a) = header(ui, &agent, owned, &name, &short) {
             ask = Some(a);
         }
@@ -182,7 +179,6 @@ fn header(
     let agent_seed = str_of(a, "id").unwrap_or(name);
     let mut ask = None;
 
-    ui.add_space(space::SM);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::LG;
         match status {
@@ -198,7 +194,7 @@ fn header(
         };
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if owned {
-                viz::more(ui, |ui| {
+                shell::toolbar_trailing(ui, |ui| viz::more(ui, |ui| {
                     if status == "waiting" && viz::menu_item(ui, "Continue setup", false, None) {
                         ask = Some(Ask::Card(name.to_owned(), CardAsk::Continue));
                     }
@@ -219,11 +215,11 @@ fn header(
                             ask = Some(Ask::Card(name.to_owned(), CardAsk::Revoke));
                         }
                     }
-                });
+                }));
             }
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.y = space::XXS;
-                ui.add(
+                let title = ui.add(
                     egui::Label::new(
                         RichText::new(name)
                             .size(text::TITLE)
@@ -232,6 +228,7 @@ fn header(
                     )
                     .truncate(),
                 );
+                shell::title_seen(ui, title.rect);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = space::XS;
                     w::mono_caption(ui, str_of(a, "handle").unwrap_or_default());
@@ -296,8 +293,8 @@ fn now_line(
                     Some(n) if working => n.to_owned(),
                     _ => state_words(state).to_owned(),
                 };
-                let ink = if matches!(state, "needs_input" | "plan_review") {
-                    colour::WARN()
+                let ink = if matches!(state, "needs_input" | "plan_review" | "in_review") {
+                    colour::ASK()
                 } else {
                     colour::TEXT_2()
                 };
@@ -907,7 +904,7 @@ fn activity(
                 open = str_of(r, "taskId").map(str::to_owned);
             }
             if shows_text {
-                prose(ui, &one_line(text_body, 280), colour::TEXT_2());
+                super::mrkdwn::show(ui, &one_line(text_body, 280), colour::TEXT_2());
             }
         }));
         ui.add_space(space::MD);

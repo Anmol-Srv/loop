@@ -4,6 +4,7 @@
 //!   cargo build --features app --bin acp-app
 
 pub mod design;
+pub mod menu;
 pub mod net;
 pub mod views;
 
@@ -39,6 +40,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         design::theme::install(&cc.egui_ctx);
+        menu::install(&cc.egui_ctx, views::chrome::VERSION);
         // The type scale is tuned for a comfortable reading size on a Mac's
         // scaled display, where egui's default points come out small. This is
         // one knob instead of nudging every token.
@@ -84,6 +86,7 @@ impl App {
         self.scopes.clear();
         self.project = None;
         self.task = None;
+        self.board = views::board::State::default();
         // Reset the whole login screen, error text included, so the next sign-in
         // does not open on the last one's failure.
         self.login = views::login::State::default();
@@ -129,10 +132,35 @@ impl App {
         self.scopes.clear();
         self.project = None;
         self.task = None;
+        self.board = views::board::State::default();
         let mut login = views::login::State::default();
         login.server.clear();
         login.adding = true;
         self.login = login;
+    }
+
+    fn guard_close(&self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        let dialog = ctx.memory(|m| m.top_modal_layer().is_some());
+        let attaching = views::task::attaching() || views::new_task::attaching(self);
+        if !dialog && !attaching {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        if dialog {
+            let escape = |pressed| egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            ctx.input_mut(|i| i.events.extend([escape(true), escape(false)]));
+        } else {
+            design::widgets::toast(ctx, "Loop is still attaching files. Close it once they\u{2019}re up.", true);
+        }
     }
 
     fn absorb_identity(&mut self) {
@@ -161,7 +189,13 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        menu::deliver(ui.ctx());
         self.frame(ui);
+        design::widgets::secure_input(ui.ctx());
+    }
+
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        menu::route(raw_input);
     }
 }
 
@@ -170,6 +204,7 @@ impl App {
     /// the real app — real views, real fetches against a real server —
     /// without an `eframe::Frame`, which only a native window can make.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
+        self.guard_close(ui.ctx());
         design::theme::follow(ui.ctx());
         if let Some(net) = self.net.as_mut() {
             net.pump();

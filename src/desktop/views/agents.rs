@@ -79,13 +79,12 @@ pub fn state_words(state: &str) -> &str {
     }
 }
 
-/// Amber where the agent is waiting on you — a question or a plan — purple
-/// while it waits on your review, the task table's colours otherwise.
+/// Its own tone wherever the agent waits on a person (a question, a plan, a
+/// report to review), the task table's colours otherwise.
 pub fn state_tone(state: &str) -> c::Tone {
     match state {
         "working" => c::Tone::Info,
-        "needs_input" | "plan_review" => c::Tone::Running,
-        "in_review" => c::Tone::Agent,
+        "needs_input" | "plan_review" | "in_review" => c::Tone::Ask,
         "done" => c::Tone::Ok,
         "stopped" => c::Tone::Quiet,
         _ => c::Tone::Neutral,

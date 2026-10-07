@@ -1,12 +1,12 @@
 //! An agent at work, as the rest of the app sees it: the task page's "Agent
 //! session" section, and Home's "Agents at work" strip.
 //!
-//! The session reads top to bottom the way the work went: who holds it and
-//! where it is (avatar, stepper), what it is doing right now (the now line),
-//! what it has said — quiet single lines for the small stuff, a real block
-//! for a report, question, answer or note — the report it handed in (a card
-//! with its evidence and the review), and — for the owner only — a private
-//! line to the agent and its step log.
+//! The session reads top to bottom the way the work went: where it is (the
+//! stepper), what it is doing right now (the now line), what it has said —
+//! quiet single lines for the small stuff, a real block for a report,
+//! question, answer or note — and, for the owner only, a private line to the
+//! agent and its step log. What waits on the owner (a question, a plan, the
+//! report it handed in) is pinned under the task's title.
 //!
 //! What is private is decided by the server (`canSeeAgentPrivate`, the notes
 //! query, the logs endpoint's 403). This view also leaves those parts out for
@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 use egui::{pos2, vec2, RichText};
 use serde_json::Value;
 
-use super::agents::{runtime_label, state_words};
+use super::agents::state_words;
 use super::projects::PROSE_W;
-use super::task::{ago, day_label, elide, exact};
+use super::task::{ago, day_label, day_time, elide, exact};
 use crate::desktop::design::agent::{self as face, Presence, Step};
 use crate::desktop::design::{
     avatar, cards as c, colour, glyph, motion, pad, radius, shell, size, space, status_label, text, theme, widgets as w,
@@ -133,70 +133,23 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     let short = short_name(agent);
     let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
     let owner_first = first_name(owner);
-    // The agent's own id for its globe, so two agents one person owns never
-    // wear the same one.
-    let agent_seed = str_of(d, "id").unwrap_or(agent);
-    let presence = Presence::of(state, str_of(d, "lastSeenAt"));
     let held = !matches!(state, "done" | "stopped");
     let mut ask = None;
 
     shell::divider(ui);
     shell::section(ui, "Agent session");
 
-    // ---- who, and since when
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
-        face::avatar(ui, agent_seed, face::MD, presence, agent);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            let name = RichText::new(agent)
-                .size(text::BODY)
-                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                .color(colour::TEXT());
-            // The agent's page is its owner's (and admins'), so only they get
-            // a way into it.
-            match str_of(d, "id").filter(|_| s.private) {
-                Some(id) => {
-                    let r = ui
-                        .add(egui::Label::new(name).sense(egui::Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(format!("Open {short}\u{2019}s page"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, format!("Open {agent}")));
-                    if r.clicked() {
-                        super::agents::open(id);
-                    }
-                }
-                None => {
-                    ui.label(name);
-                }
-            }
-            let mut who = format!("{owner_first}\u{2019}s agent");
-            if let Some(rt) = str_of(d, "runtime") {
-                who += &format!(" \u{00B7} {}", runtime_label(rt));
-            }
-            ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_MUTED()));
-        });
-        if let Some(at) = str_of(d, "delegatedAt") {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(format!("Started {}", ago(at))).size(text::SMALL).color(colour::TEXT_MUTED()))
-                    .on_hover_text(exact(at));
-            });
-        }
-    });
-    ui.add_space(space::MD);
-
     // ---- where it is
     let (steps, current, complete) = stages(state, s, owner_first);
     let tone = match state {
-        "needs_input" | "plan_review" => colour::WARN(),
-        "in_review" => colour::AGENT(),
+        "needs_input" | "plan_review" | "in_review" => colour::ASK(),
         _ => colour::INFO(),
     };
     face::stepper(ui, &steps, current, complete, tone);
-    ui.add_space(space::MD);
-
-    // ---- what it is doing now
-    now_line(ui, d, state, s.mine, owner_first, short);
+    if !matches!(state, "needs_input" | "plan_review" | "in_review") {
+        ui.add_space(space::MD);
+        now_line(ui, d, state, short);
+    }
     if let Some(repo) = s.unset_repo.filter(|_| s.mine && held) {
         ui.add_space(space::SM);
         ui.horizontal_wrapped(|ui| {
@@ -232,9 +185,41 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
         });
     }
 
-    // ---- what waits on the owner, pinned: a plan to approve, a question to
-    // answer, a report to review. Everything else is in Activity, newest first.
-    plan_section(ui, s, st, short, &mut ask);
+    if !s.private {
+        plan_section(ui, s, st, short, &mut ask);
+    }
+
+    // ---- a private line to the agent
+    if s.mine && held {
+        ui.add_space(space::LG);
+        if let Some(a) = composer(ui, st, short, s.busy) {
+            ask = Some(a);
+        }
+    }
+
+    // ---- the step log
+    if s.private {
+        ui.add_space(space::MD);
+        logs(ui, net, s.task_id, matches!(state, "working" | "acknowledged"), st);
+    }
+    ask
+}
+
+/// What waits on the owner, pinned: a plan to approve, a question to answer,
+/// a report to review. Everything else is in Activity, newest first.
+pub(super) fn pinned(ui: &mut egui::Ui, s: &Session, st: &mut State) -> Option<Ask> {
+    let d = s.delegate;
+    let state = str_of(d, "state").unwrap_or("handed_off");
+    let agent = str_of(d, "name").unwrap_or("The agent");
+    let short = short_name(agent);
+    let owner = str_of(d, "ownerName").or_else(|| str_of(s.task, "assigneeName")).unwrap_or("its owner");
+    let owner_first = first_name(owner);
+    let agent_seed = str_of(d, "id").unwrap_or(agent);
+    let mut ask = None;
+
+    if s.private {
+        plan_section(ui, s, st, short, &mut ask);
+    }
     let visible: Vec<&Value> = s
         .notes
         .iter()
@@ -245,7 +230,7 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
     if state == "needs_input" {
         if let Some(q) = last_of("question") {
             ui.add_space(space::MD);
-            pinned_card(ui, colour::WARN(), |ui| {
+            pinned_card(ui, colour::ASK(), |ui| {
                 let at = str_of(q, "createdAt");
                 let body_id = egui::Id::new(("session:pinned", s.task_id, str_of(q, "id").unwrap_or_default()));
                 substantive(ui, Node::Agent(agent_seed), short, "asks", at, private_kind("question") && s.private, body_id,
@@ -265,20 +250,6 @@ pub(super) fn show(ui: &mut egui::Ui, net: &mut Net, s: &Session, st: &mut State
             ui.add_space(space::MD);
             report(ui, s, st, sub, short, owner_first, state, &mut ask);
         }
-    }
-
-    // ---- a private line to the agent
-    if s.mine && held {
-        ui.add_space(space::LG);
-        if let Some(a) = composer(ui, st, short, s.busy) {
-            ask = Some(a);
-        }
-    }
-
-    // ---- the step log
-    if s.private {
-        ui.add_space(space::MD);
-        logs(ui, net, s.task_id, matches!(state, "working" | "acknowledged"), st);
     }
     ask
 }
@@ -318,111 +289,105 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
     }
 
     ui.add_space(space::MD);
-    egui::Frame::new()
-        .fill(colour::SURFACE())
-        .stroke(egui::Stroke::new(1.0, colour::LINE()))
-        .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = space::SM;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new("Plan")
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                let (label, tone) = match decision {
-                    Some("approved") => ("Approved", c::Tone::Ok),
-                    Some("changes_requested") => ("Changes requested", c::Tone::Running),
-                    _ => ("Waiting for your review", c::Tone::Running),
-                };
-                c::chip(ui, label, tone, true);
-                if let Some(at) = str_of(current, "createdAt") {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                    });
-                }
-            });
-            ui.scope(|ui| {
-                ui.set_max_width(PROSE_W.min(ui.available_width()));
-                super::mrkdwn::show(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
-                if decision == Some("changes_requested") {
-                    if let Some(note) = str_of(current, "changesNote") {
-                        ui.add_space(space::XS);
-                        w::muted(ui, &format!("You asked: {note}"));
-                    }
-                }
-            });
-
-            let plan_id = egui::Id::new(("session:plan", s.task_id));
-            face::disclosure(ui, plan_id, "Full plan", None, &mut st.plan_open);
-            if st.plan_open {
-                ui.scope(|ui| {
-                    ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2());
+    pinned_card(ui, colour::ASK(), |ui| {
+        ui.spacing_mut().item_spacing.y = space::SM;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            ui.label(
+                RichText::new("Plan")
+                    .size(text::SMALL)
+                    .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                    .color(colour::TEXT()),
+            );
+            let (label, tone) = match decision {
+                Some("approved") => ("Approved", c::Tone::Ok),
+                Some("changes_requested") => ("Changes requested", c::Tone::Running),
+                _ => ("Waiting for your review", c::Tone::Ask),
+            };
+            c::chip(ui, label, tone, true);
+            if let Some(at) = str_of(current, "createdAt") {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
                 });
             }
-            let earlier = &s.plans[1..];
-            if !earlier.is_empty() {
-                let history_id = egui::Id::new(("session:plan:history", s.task_id));
-                face::disclosure(ui, history_id, "Earlier plans", Some(earlier.len()), &mut st.plan_history_open);
-                if st.plan_history_open {
-                    for p in earlier {
-                        ui.add_space(space::XS);
-                        ui.scope(|ui| {
-                            ui.set_max_width(PROSE_W.min(ui.available_width()));
-                            super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
-                        });
-                    }
+        });
+        ui.scope(|ui| {
+            ui.set_max_width(PROSE_W.min(ui.available_width()));
+            super::mrkdwn::show(ui, str_of(current, "summary").unwrap_or_default(), colour::TEXT());
+            if decision == Some("changes_requested") {
+                if let Some(note) = str_of(current, "changesNote") {
+                    ui.add_space(space::XS);
+                    w::muted(ui, &format!("You asked: {note}"));
                 }
             }
+        });
 
-            if decision.is_some() {
-                return;
+        let plan_id = egui::Id::new(("session:plan", s.task_id));
+        face::disclosure(ui, plan_id, "Full plan", None, &mut st.plan_open);
+        if st.plan_open {
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                super::mrkdwn::show(ui, str_of(current, "plan").unwrap_or_default(), colour::TEXT_2());
+            });
+        }
+        let earlier = &s.plans[1..];
+        if !earlier.is_empty() {
+            let history_id = egui::Id::new(("session:plan:history", s.task_id));
+            face::disclosure(ui, history_id, "Earlier plans", Some(earlier.len()), &mut st.plan_history_open);
+            if st.plan_history_open {
+                for p in earlier {
+                    ui.add_space(space::XS);
+                    ui.scope(|ui| {
+                        ui.set_max_width(PROSE_W.min(ui.available_width()));
+                        super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT_MUTED());
+                    });
+                }
             }
-            ui.add_space(space::XS);
-            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+        }
+
+        if decision.is_some() {
+            return;
+        }
+        ui.add_space(space::XS);
+        let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+        if st.plan_changes_open {
+            let field = w::field_multiline(
+                ui,
+                "",
+                &mut st.plan_changes,
+                2,
+                &format!("What should {short} change?  Cmd+Enter to send"),
+            );
+            let ready = !st.plan_changes.trim().is_empty() && !s.busy;
+            if ready && submit_key(ui, &field) {
+                *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
             if st.plan_changes_open {
-                let field = w::field_multiline(
-                    ui,
-                    "",
-                    &mut st.plan_changes,
-                    2,
-                    &format!("What should {short} change?  Cmd+Enter to send"),
-                );
                 let ready = !st.plan_changes.trim().is_empty() && !s.busy;
-                if ready && submit_key(ui, &field) {
+                let r = w::primary(ui, "Send back", ready);
+                if st.plan_changes.trim().is_empty() {
+                    r.clone().on_disabled_hover_text("Say what needs to change first.");
+                }
+                if r.clicked() {
                     *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                if st.plan_changes_open {
-                    let ready = !st.plan_changes.trim().is_empty() && !s.busy;
-                    let r = w::primary(ui, "Send back", ready);
-                    if st.plan_changes.trim().is_empty() {
-                        r.clone().on_disabled_hover_text("Say what needs to change first.");
-                    }
-                    if r.clicked() {
-                        *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
-                    }
-                    if w::ghost(ui, "Cancel").clicked() {
-                        st.plan_changes_open = false;
-                    }
-                } else {
-                    if w::primary(ui, "Approve plan", !s.busy).clicked() {
-                        *ask = Some(Ask::ApprovePlan);
-                    }
-                    if w::secondary(ui, "Ask for changes", !s.busy).clicked() {
-                        st.plan_changes_open = true;
-                    }
+                if w::ghost(ui, "Cancel").clicked() {
+                    st.plan_changes_open = false;
                 }
-            });
+            } else {
+                if w::primary(ui, "Approve plan", !s.busy).clicked() {
+                    *ask = Some(Ask::ApprovePlan);
+                }
+                if w::secondary(ui, "Ask for changes", !s.busy).clicked() {
+                    st.plan_changes_open = true;
+                }
+            }
         });
+    });
 }
 
 /// A card for something waiting on the owner, edged in the colour of what it
@@ -444,7 +409,7 @@ fn pinned_card(ui: &mut egui::Ui, edge: egui::Color32, add: impl FnOnce(&mut egu
 /// Everything that happened on a task, newest first, in one list: the hand-off,
 /// each plan and its decision, the agent's updates, questions and reports, the
 /// owner's answers and instructions, and the team's notes. Read-only — what
-/// needs acting on is pinned in the agent panel above.
+/// needs acting on is pinned under the page's header.
 pub(super) struct Feed<'a> {
     pub task_id: &'a str,
     pub task: &'a Value,
@@ -479,17 +444,18 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
         .and_then(|d| str_of(d, "ownerName"))
         .or_else(|| str_of(f.task, "assigneeName"))
         .unwrap_or("Someone");
-    let owner_seed = owner.to_owned();
+    let owner_seed = f
+        .delegate
+        .and_then(|d| str_of(d, "ownerEmail"))
+        .or_else(|| str_of(f.task, "assigneeEmail"))
+        .unwrap_or(owner)
+        .to_owned();
 
     let notes: Vec<&Value> = f
         .notes
         .iter()
         .filter(|n| f.private || !str_of(n, "kind").is_some_and(private_kind))
         .collect();
-    // A review approved the work when nothing was submitted after it and the
-    // session ended — the note carries no decision of its own.
-    let last_submission = notes.iter().rposition(|n| str_of(n, "kind") == Some("submission"));
-    let last_review = notes.iter().rposition(|n| str_of(n, "kind") == Some("review"));
 
     let mut items: Vec<(i64, Item)> = Vec::new();
     if let Some(at) = f.delegate.and_then(|d| str_of(d, "delegatedAt")) {
@@ -553,7 +519,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                     let (label, tone) = match str_of(p, "decision") {
                         Some("approved") => ("Approved", c::Tone::Ok),
                         Some(_) => ("Changes requested", c::Tone::Running),
-                        None => ("Waiting for review", c::Tone::Running),
+                        None => ("Waiting for review", c::Tone::Ask),
                     };
                     c::chip(ui, label, tone, true);
                     super::mrkdwn::show(ui, str_of(p, "summary").unwrap_or_default(), colour::TEXT());
@@ -580,7 +546,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                 let node = match note_agent {
                     Some(a) => Node::Agent(str_of(a, "id").unwrap_or(agent_seed)),
                     None => {
-                        seed_owned = author.to_owned();
+                        seed_owned = str_of(n, "authorEmail").unwrap_or(author).to_owned();
                         Node::Person(&seed_owned)
                     }
                 };
@@ -595,8 +561,7 @@ pub(super) fn feed(ui: &mut egui::Ui, f: &Feed) {
                         prev_minor = true;
                     }
                     "review" => {
-                        let approved = state == "done" && pos == last_review && last_submission.is_none_or(|s| Some(s) < pos);
-                        let (mark, verb) = if approved {
+                        let (mark, verb) = if pos.is_some_and(|at| approved(&notes, at, state)) {
                             (Mark::Approved, "approved the work")
                         } else {
                             (Mark::Changes, "asked for changes")
@@ -751,7 +716,7 @@ fn stages(state: &str, s: &Session, owner_first: &str) -> (Vec<Step>, usize, boo
 
 /// The line under the stepper. While the agent works, what it says it is doing
 /// and how fresh that is; otherwise whose move it is, in words.
-fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: &str, short: &str) {
+fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, short: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
         let words = match state {
@@ -759,10 +724,14 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
                 face::spinner(ui, text::BODY);
                 match str_of(d, "now").map(str::trim).filter(|n| !n.is_empty()) {
                     Some(now) => {
-                        let shown = ui.add(egui::Label::new(RichText::new(now).size(text::BODY).color(colour::TEXT_2())).truncate());
+                        let at = str_of(d, "nowAt");
+                        let when = at.map(|a| ui.painter().layout_no_wrap(ago(a), egui::FontId::proportional(text::SMALL), colour::TEXT_FAINT()));
+                        let room = ui.available_width() - when.as_ref().map_or(0.0, |g| g.size().x + space::SM);
+                        let line = w::truncated(ui, now, egui::FontId::proportional(text::BODY), colour::TEXT_2(), room.max(0.0));
+                        let shown = ui.add(egui::Label::new(line));
                         shown.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, now));
-                        if let Some(at) = str_of(d, "nowAt") {
-                            ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                        if let (Some(a), Some(g)) = (at, when) {
+                            ui.add(egui::Label::new(g)).on_hover_text(exact(a));
                         }
                         return;
                     }
@@ -771,18 +740,11 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
                 }
             }
             "handed_off" => format!("Waiting for {short} to pick this up"),
-            "needs_input" if mine => "Waiting on your answer".to_owned(),
-            "needs_input" => format!("Waiting on {owner_first}\u{2019}s answer"),
-            "plan_review" if mine => "Waiting on your plan review".to_owned(),
-            "plan_review" => format!("Waiting on {owner_first}\u{2019}s plan review"),
-            "in_review" if mine => "Waiting on your review".to_owned(),
-            "in_review" => format!("Waiting on {owner_first}\u{2019}s review"),
             "done" => "Finished \u{2014} the review approved it".to_owned(),
             "stopped" => format!("Taken back from {short}"),
             other => state_words(other).to_owned(),
         };
-        let ink = if matches!(state, "needs_input" | "plan_review") { colour::WARN() } else { colour::TEXT_MUTED() };
-        ui.label(RichText::new(words).size(text::SMALL).color(ink));
+        ui.label(RichText::new(words).size(text::SMALL).color(colour::TEXT_MUTED()));
     });
 }
 
@@ -792,8 +754,6 @@ fn now_line(ui: &mut egui::Ui, d: &Value, state: &str, mine: bool, owner_first: 
 pub(super) enum Node<'a> {
     /// A person's disc: their answers, instructions, the hand-off.
     Person(&'a str),
-    /// The agent's globe, still — the header already carries the one live
-    /// copy, so every mention of the agent elsewhere shows its still frame.
     Agent(&'a str),
     Mark(Mark),
 }
@@ -829,25 +789,27 @@ pub(super) fn entry(
         ui.vertical(|ui| {
             ui.set_max_width(PROSE_W.min(ui.available_width()));
             ui.spacing_mut().item_spacing.y = space::XS;
-            ui.horizontal(|ui| {
-                ui.set_min_height(NODE);
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new(who)
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                if !verb.is_empty() {
-                    ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
-                }
-                if let Some(at) = at {
-                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                }
-                if private {
-                    ui.add_space(space::XS);
-                    face::private_label(ui);
-                }
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = NODE;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    ui.label(
+                        RichText::new(who)
+                            .size(text::SMALL)
+                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                            .color(colour::TEXT()),
+                    );
+                    if !verb.is_empty() {
+                        ui.label(RichText::new(verb).size(text::SMALL).color(colour::TEXT_MUTED()));
+                    }
+                    if let Some(at) = at {
+                        ui.label(RichText::new(day_time(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                    }
+                    if private {
+                        ui.add_space(space::XS);
+                        face::private_label(ui);
+                    }
+                });
             });
             body(ui);
         });
@@ -867,7 +829,7 @@ fn paint_node(ui: &mut egui::Ui, r: egui::Rect, node: &Node) {
         Node::Mark(mark) => {
             let (ink, fill) = match mark {
                 Mark::Progress => (colour::TEXT_MUTED(), colour::SURFACE()),
-                Mark::Question => (colour::WARN(), colour::WARN_BG()),
+                Mark::Question => (colour::ASK(), colour::ASK_BG()),
                 Mark::Submitted => (colour::AGENT(), colour::AGENT_BG()),
                 Mark::Approved => (colour::OK(), colour::OK_BG()),
                 Mark::Changes => (colour::WARN(), colour::WARN_BG()),
@@ -909,17 +871,18 @@ fn day_marker(ui: &mut egui::Ui, label: &str) {
 fn mark_day(ui: &mut egui::Ui, at: Option<&str>, day: &mut String, drawn: &mut bool, prev_minor: &mut bool) {
     let Some(label) = at.map(day_label).filter(|l| !l.is_empty() && l.as_str() != day.as_str()) else { return };
     if *drawn {
-        ui.add_space(space::MD);
+        ui.add_space(space::XL);
     }
     day_marker(ui, &label);
     ui.add_space(space::XS);
     *day = label;
-    *drawn = true;
+    *drawn = false;
     *prev_minor = false;
 }
 
-/// The vertical gap before the next timeline item: none before the first,
-/// tight between two minor lines, roomier whenever a block is involved.
+/// The vertical gap before the next timeline item: none before the first or
+/// right under a day heading, tight between two minor lines, roomier
+/// whenever a block is involved.
 fn timeline_gap(drawn: bool, prev_minor: bool, minor: bool) -> f32 {
     if !drawn {
         0.0
@@ -973,7 +936,7 @@ fn minor_line(ui: &mut egui::Ui, node: Node, who: &str, rest: &str, at: Option<&
     // Measured up front so the rest of the line truncates around it rather
     // than running under it — the same order `entry`'s row reads in, just
     // painted by hand instead of laid out by egui.
-    let time = at.map(|a| p.layout_no_wrap(ago(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT()));
+    let time = at.map(|a| p.layout_no_wrap(day_time(a), egui::FontId::proportional(text::CAPTION), colour::TEXT_FAINT()));
     if !rest.is_empty() {
         x += space::XS;
         let time_w = time.as_ref().map_or(0.0, |g| g.size().x + space::SM);
@@ -1025,44 +988,10 @@ fn substantive(
     body: &str,
     extra: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = space::MD;
-        let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(face::SM), egui::Sense::hover());
-        paint_node(ui, r, &node);
-        ui.vertical(|ui| {
-            ui.set_max_width(PROSE_W.min(ui.available_width()));
-            ui.spacing_mut().item_spacing.y = space::XS;
-            ui.horizontal(|ui| {
-                ui.set_min_height(face::SM);
-                ui.spacing_mut().item_spacing.x = space::XS;
-                ui.label(
-                    RichText::new(author)
-                        .size(text::SMALL)
-                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                        .color(colour::TEXT()),
-                );
-                ui.label(RichText::new(kind_label).size(text::SMALL).color(colour::TEXT_MUTED()));
-                if let Some(at) = at {
-                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                }
-                if private {
-                    ui.add_space(space::XS);
-                    face::private_label(ui);
-                }
-            });
-            clamped_body(ui, body_id, body, colour::TEXT_2());
-            extra(ui);
-        });
+    entry(ui, node, author, kind_label, at, private, |ui| {
+        clamped_body(ui, body_id, body, colour::TEXT_2());
+        extra(ui);
     });
-}
-
-pub(super) fn prose(ui: &mut egui::Ui, body: &str, ink: egui::Color32) {
-    for (i, para) in body.split("\n\n").map(str::trim).filter(|p| !p.is_empty()).enumerate() {
-        if i > 0 {
-            ui.add_space(space::XS);
-        }
-        ui.label(RichText::new(para).size(text::BODY).color(ink));
-    }
 }
 
 /// Cmd+Enter in a focused box. Read off the key event itself, which carries
@@ -1127,66 +1056,60 @@ fn report(
         let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(NODE), egui::Sense::hover());
         paint_node(ui, r, &Node::Mark(Mark::Submitted));
         // A frame takes its parent's layout; the card reads top to bottom.
-        ui.vertical(|ui| egui::Frame::new()
-            .fill(colour::SURFACE())
-            .stroke(egui::Stroke::new(1.0, colour::LINE()))
-            .corner_radius(radius::LG)
-            .inner_margin(egui::Margin::symmetric(pad::CARD.0 as i8, pad::CARD.1 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = space::SM;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::XS;
-                    ui.label(
-                        RichText::new("Report")
-                            .size(text::SMALL)
-                            .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
-                            .color(colour::TEXT()),
-                    );
-                    ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED()));
-                    if let Some(at) = str_of(note, "createdAt") {
-                        ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
-                    }
-                });
-                ui.scope(|ui| {
-                    ui.set_max_width(PROSE_W.min(ui.available_width()));
-                    let body_id = egui::Id::new(("session:body", s.task_id, str_of(note, "id").unwrap_or_default()));
-                    clamped_body(ui, body_id, str_of(note, "body").unwrap_or_default(), colour::TEXT());
-                });
+        ui.vertical(|ui| pinned_card(ui, colour::ASK(), |ui| {
+            ui.spacing_mut().item_spacing.y = space::SM;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                ui.label(
+                    RichText::new("Report")
+                        .size(text::SMALL)
+                        .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                        .color(colour::TEXT()),
+                );
+                ui.label(RichText::new(format!("\u{00B7} {short} submitted this for review")).size(text::SMALL).color(colour::TEXT_MUTED()));
+                if let Some(at) = str_of(note, "createdAt") {
+                    ui.label(RichText::new(ago(at)).size(text::SMALL).color(colour::TEXT_FAINT())).on_hover_text(exact(at));
+                }
+            });
+            ui.scope(|ui| {
+                ui.set_max_width(PROSE_W.min(ui.available_width()));
+                let body_id = egui::Id::new(("session:body", s.task_id, str_of(note, "id").unwrap_or_default()));
+                clamped_body(ui, body_id, str_of(note, "body").unwrap_or_default(), colour::TEXT());
+            });
 
-                let evidence: Vec<&Value> =
-                    s.evidence.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect();
-                ui.add_space(space::XS);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
-                    if evidence.is_empty() {
-                        ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT()));
-                    }
-                    for row in &evidence {
-                        evidence_chip(ui, row);
-                    }
-                });
-                let target = str_of(s.task, "reviewTarget").unwrap_or("completed");
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = space::SM;
-                    w::muted(ui, if state == "in_review" { "Approving moves it to" } else { "Asked to move it to" });
-                    c::chip(ui, status_label(target), c::status_tone(target), true);
-                });
+            let evidence: Vec<&Value> =
+                s.evidence.iter().filter(|r| matches!(str_of(r, "kind"), Some("pr" | "commit" | "figma"))).collect();
+            ui.add_space(space::XS);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
+                if evidence.is_empty() {
+                    ui.label(RichText::new("No evidence attached").size(text::SMALL).color(colour::TEXT_FAINT()));
+                }
+                for row in &evidence {
+                    evidence_chip(ui, row);
+                }
+            });
+            let target = str_of(s.task, "reviewTarget").unwrap_or("completed");
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                w::muted(ui, if state == "in_review" { "Approving moves it to" } else { "Asked to move it to" });
+                c::chip(ui, status_label(target), c::status_tone(target), true);
+            });
 
-                if state != "in_review" {
-                    return;
-                }
-                if !s.mine {
-                    w::caption(ui, &format!("Waiting on {owner_first}\u{2019}s review."));
-                    return;
-                }
-                ui.add_space(space::XS);
-                let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
-                ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
-                if let Some(a) = review_controls(ui, st, short, s.busy) {
-                    *ask = Some(a);
-                }
-            }));
+            if state != "in_review" {
+                return;
+            }
+            if !s.mine {
+                w::caption(ui, &format!("Waiting on {owner_first}\u{2019}s review."));
+                return;
+            }
+            ui.add_space(space::XS);
+            let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter().hline(rule.x_range(), rule.center().y, egui::Stroke::new(1.0, colour::LINE()));
+            if let Some(a) = review_controls(ui, st, short, s.busy) {
+                *ask = Some(a);
+            }
+        }));
     });
 }
 
@@ -1264,7 +1187,7 @@ fn evidence_chip(ui: &mut egui::Ui, row: &Value) {
     }
     let response = response.on_hover_text(url);
     if response.clicked() && kind != "commit" && !url.is_empty() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        super::mrkdwn::open(ui.ctx(), url);
     }
 }
 
@@ -1392,13 +1315,20 @@ fn logs(ui: &mut egui::Ui, net: &mut Net, task_id: &str, live: bool, st: &mut St
                     ui.spacing_mut().item_spacing.y = space::XXS;
                     for (seq, line) in &st.lines {
                         ui.horizontal_top(|ui| {
-                            ui.label(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()));
+                            ui.add(
+                                egui::Label::new(RichText::new(format!("{seq:>gutter$}")).monospace().size(text::SMALL).color(colour::LOG_SEQ()))
+                                    .selectable(false),
+                            );
                             ui.add_space(space::SM);
                             // Wrapped to what is left of the row: a long step
                             // (a path, a command) ran off the window.
-                            ui.add(egui::Label::new(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT())).wrap());
+                            shell::selectable(
+                                ui,
+                                egui::Label::new(RichText::new(line).monospace().size(text::SMALL).color(colour::LOG_TEXT())).wrap(),
+                            );
                         });
                     }
+                    shell::edge_scroll(ui);
                 });
         });
 }
@@ -1411,7 +1341,7 @@ pub(super) const ACTIVE_KEY: &str = "agents:active";
 /// Home's "Agents at work": one compact row per agent holding a task. Absent
 /// when there are none — and when the server does not have the endpoint yet,
 /// rather than an error on the dashboard. Returns a task to open.
-pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
+pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net, me: &str) -> Option<String> {
     net.get_once(ACTIVE_KEY, "/api/user/agents/active");
     let rows = net.shared(ACTIVE_KEY)?;
     let rows = rows.as_array().filter(|r| !r.is_empty())?;
@@ -1421,7 +1351,7 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 0.0;
         for row in rows {
-            if active_row(ui, row) {
+            if active_row(ui, row, me) {
                 open = row.get("task").and_then(|t| str_of(t, "id")).map(str::to_owned);
             }
         }
@@ -1429,7 +1359,7 @@ pub(super) fn at_work(ui: &mut egui::Ui, net: &mut Net) -> Option<String> {
     open
 }
 
-fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
+fn active_row(ui: &mut egui::Ui, row: &Value, me: &str) -> bool {
     let empty = Value::Null;
     let agent = row.get("agent").unwrap_or(&empty);
     let owner = row.get("owner").unwrap_or(&empty);
@@ -1471,9 +1401,10 @@ fn active_row(ui: &mut egui::Ui, row: &Value) -> bool {
         fixed(ui, rest, |ui| {
             let (words, ink) = match (state, now) {
                 ("working" | "acknowledged", Some(now)) => (now.to_owned(), colour::TEXT_MUTED()),
-                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::WARN()),
-                ("plan_review", _) => ("Plan review".to_owned(), colour::WARN()),
-                ("in_review", _) => ("In review".to_owned(), colour::AGENT()),
+                ("needs_input", _) if !me.is_empty() && str_of(owner, "id") == Some(me) => ("Waiting on you".to_owned(), colour::ASK()),
+                ("needs_input", _) => (format!("Waiting on {owner_first}"), colour::ASK()),
+                ("plan_review", _) => ("Plan review".to_owned(), colour::ASK()),
+                ("in_review", _) => ("In review".to_owned(), colour::ASK()),
                 ("acknowledged", None) => ("Picked up".to_owned(), colour::TEXT_MUTED()),
                 _ => (state_words(state).to_owned(), colour::TEXT_MUTED()),
             };
@@ -1507,6 +1438,13 @@ fn elapsed(raw: &str) -> String {
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
+}
+
+/// A review approved the work when nothing was submitted after it and the
+/// session ended — the note carries no decision of its own.
+fn approved(notes: &[&Value], at: usize, state: &str) -> bool {
+    let last = |kind: &str| notes.iter().rposition(|n| str_of(n, "kind") == Some(kind));
+    state == "done" && last("review") == Some(at) && last("submission").is_none_or(|s| s < at)
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ use egui::RichText;
 use serde_json::{json, Value};
 
 use super::agent_session::{self as session, Session};
-use super::agents::{state_tone, state_words, AGENTS_KEY};
+use super::agents::AGENTS_KEY;
 use super::menus::{task_items, Pick, Viewer};
 use super::projects::{label_badge, label_picker, person_option, LABELS_KEY, PEOPLE_KEY, PROSE_W};
 use crate::desktop::design::agent::{self as face, Presence};
@@ -242,9 +242,10 @@ struct Local {
     /// the title where the move notices live.
     resource_error: Option<String>,
     /// Files picked or dropped, waiting to go up one at a time.
-    uploads: Vec<Value>,
-    /// The name of the file going up now.
-    uploading: Option<String>,
+    uploads: Vec<Held>,
+    intake: Intake,
+    /// The file going up now.
+    uploading: Option<Held>,
     /// The agent action in flight — its past tense, for the notice.
     agent_busy: Option<String>,
     /// A pick from the title's menu, acted on once the page is drawn.
@@ -256,11 +257,6 @@ struct Local {
     /// The labels just picked, shown until the save lands and the task is
     /// read again.
     labels: Option<Vec<String>>,
-    /// The hand-off modal, open on the agent it was opened for.
-    handoff_modal: Option<HandoffModal>,
-    /// The header's agent pill was clicked: jump to the Agent session
-    /// section on this frame, once the body starts drawing it.
-    jump_to_session: bool,
 }
 
 impl Local {
@@ -281,27 +277,25 @@ impl Local {
             removing: false,
             resource_error: None,
             uploads: Vec::new(),
+            intake: Intake::default(),
             uploading: None,
             agent_busy: None,
             pick: None,
             archiving: false,
             deciding: false,
             labels: None,
-            handoff_modal: None,
-            jump_to_session: false,
         }
     }
 }
 
-/// The hand-off modal's own draft: which agent, and the optional brief.
-struct HandoffModal {
-    agent_id: String,
-    agent_name: String,
-    brief: String,
-}
-
 thread_local! {
     static LOCAL: RefCell<Option<Local>> = const { RefCell::new(None) };
+}
+
+pub fn attaching() -> bool {
+    LOCAL.with(|cell| {
+        cell.borrow().as_ref().is_some_and(|l| !l.uploads.is_empty() || l.uploading.is_some() || l.intake.working() > 0)
+    })
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -329,6 +323,10 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let me = me_str(app, "personId");
     let admin = me_str(app, "role") == "admin";
     let can_write = app.can_write();
+    if can_write {
+        pasted_files(ui.ctx(), &local.intake);
+        local.uploads.extend(local.intake.take());
+    }
 
     local.archiving = app.board.tasks.busy();
     local.deciding = app.board.tasks.deciding.as_deref() == Some(task_id);
@@ -357,42 +355,27 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         net.get_once(AGENTS_KEY, "/api/user/agents");
     }
 
-    // A breadcrumb, not an id: "22222222" told nobody anything, the project
-    // name tells you where you are and is the likeliest place to go next.
-    let mut leave = false;
+    let title = task.as_ref().and_then(|t| str_of(t, "title")).unwrap_or_default().to_owned();
+    let back = match app.tab {
+        Tab::Projects if app.project.is_some() => task
+            .as_ref()
+            .filter(|t| str_of(t, "projectId") == app.project.as_deref())
+            .and_then(|t| str_of(t, "projectName"))
+            .unwrap_or("Project")
+            .to_owned(),
+        Tab::Home => "Home".to_owned(),
+        Tab::MyTasks => "My Tasks".to_owned(),
+        Tab::AllTasks => "All Tasks".to_owned(),
+        Tab::Triage => "Triage".to_owned(),
+        Tab::Projects => "Projects".to_owned(),
+        Tab::Agents => "Agents".to_owned(),
+        Tab::Settings => "Back".to_owned(),
+    };
+    if shell::crumbs(ui, &back, &title) {
+        app.task = None;
+        return;
+    }
     let mut open_project: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        if shell::back(ui, "Back").clicked() {
-            leave = true;
-        }
-        let project = task.as_ref().and_then(|t| {
-            Some((
-                str_of(t, "projectName").filter(|n| !n.is_empty())?,
-                str_of(t, "projectId")?,
-            ))
-        });
-        if let Some((name, id)) = project {
-            faint(ui, "\u{00B7}");
-            if w::link(ui, name).clicked() {
-                open_project = Some(id.to_owned());
-            }
-        } else if task.is_some() {
-            faint(ui, "\u{00B7}");
-            faint(ui, "No project");
-        }
-    });
-    if leave {
-        app.task = None;
-        return;
-    }
-    if let Some(project_id) = open_project {
-        app.task = None;
-        app.project = Some(project_id);
-        app.tab = Tab::Projects;
-        return;
-    }
-    ui.add_space(space::XS);
 
     let net = app.net.as_mut().expect("net is live whenever a view runs");
     let Some(task) = task else {
@@ -521,6 +504,31 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let plans = net.shared(PLANS_KEY);
     let plans_loaded = plans.is_some() || net.error(PLANS_KEY).is_some();
 
+    let notes = net.shared(NOTES_KEY);
+    let evidence = net.shared(ARTIFACTS_KEY);
+    let panel = delegate.map(|d| Session {
+        task_id,
+        task: &task,
+        delegate: d,
+        notes: notes
+            .as_deref()
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice),
+        evidence: evidence
+            .as_deref()
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice),
+        mine,
+        private,
+        busy: local.agent_busy.is_some(),
+        unset_repo: unset_repo.as_deref(),
+        plans: plans
+            .as_deref()
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice),
+        plans_loaded,
+    });
+
     let mut editing = false;
     shell::with_rail(
         ui,
@@ -528,8 +536,13 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
             shell::Part::Header => {
                 editing = headline(
                     ui, net, task_id, &task, &status, track, &moves, can_act, can_write,
-                    &handoff, &viewer, delegate, local,
+                    &handoff, &viewer, local,
                 );
+                if let Some(s) = &panel {
+                    if let Some(ask) = session::pinned(ui, s, &mut local.session) {
+                        agent_action(net, task_id, ask, local);
+                    }
+                }
             }
             shell::Part::Body => {
                 if !editing {
@@ -539,37 +552,9 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                 super::triage::source_card(ui, net, &task);
                 resources(ui, net, task_id, &task, &me, admin, can_write, local);
 
-                if let Some(d) = delegate {
-                    // The header's agent pill asked to jump here.
-                    if std::mem::take(&mut local.jump_to_session) {
-                        ui.scroll_to_cursor(Some(egui::Align::TOP));
-                    }
-                    let notes = net.shared(NOTES_KEY);
-                    let evidence = net.shared(ARTIFACTS_KEY);
-                    let s = Session {
-                        task_id,
-                        task: &task,
-                        delegate: d,
-                        notes: notes
-                            .as_deref()
-                            .and_then(Value::as_array)
-                            .map_or(&[], Vec::as_slice),
-                        evidence: evidence
-                            .as_deref()
-                            .and_then(Value::as_array)
-                            .map_or(&[], Vec::as_slice),
-                        mine,
-                        private,
-                        busy: local.agent_busy.is_some(),
-                        unset_repo: unset_repo.as_deref(),
-                        plans: plans
-                            .as_deref()
-                            .and_then(Value::as_array)
-                            .map_or(&[], Vec::as_slice),
-                        plans_loaded,
-                    };
-                    if let Some(ask) = session::show(ui, net, &s, &mut local.session) {
-                        agent_action(net, task_id, ask.into(), local);
+                if let Some(s) = &panel {
+                    if let Some(ask) = session::show(ui, net, s, &mut local.session) {
+                        agent_action(net, task_id, ask, local);
                     }
                     hint_open |= std::mem::take(&mut local.session.open_project);
                 }
@@ -600,6 +585,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
                     .as_deref()
                     .and_then(Value::as_array)
                     .map_or(&[], Vec::as_slice),
+                private,
             };
             from_rail = rail(ui, &task, &ctx, &mut open_project);
         },
@@ -640,13 +626,10 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         local.labels = Some(ids);
         save_details(net, task_id, body, false, local);
     }
-    // The page's own hand-off and details edits say how they went where
-    // they always have; archive and delete share every other menu's dialog.
+    // The page's own details edits say how they went where they always
+    // have; hand-off, take-back, archive and delete share every other menu's
+    // dialog.
     match local.pick.take() {
-        Some(Pick::Handoff(id, name)) => {
-            agent_action(net, task_id, AgentAsk::Handoff(id, name, None), local)
-        }
-        Some(Pick::TakeBack) => agent_action(net, task_id, AgentAsk::TakeBack, local),
         Some(Pick::Priority(p)) => {
             let mut body = json!({ "priority": p });
             if let Some(at) = &updated_at {
@@ -701,7 +684,6 @@ fn headline(
     can_write: bool,
     handoff: &Handoff,
     viewer: &Viewer,
-    delegate: Option<&Value>,
     local: &mut Local,
 ) -> bool {
     let busy = local.patching
@@ -710,7 +692,8 @@ fn headline(
         || local.agent_busy.is_some()
         || local.archiving;
     let action = primary_move(track, status)
-        .filter(|(_, next)| moves.contains(next) && (can_act || anyone_may(next)));
+        .filter(|(_, next)| moves.contains(next) && (can_act || anyone_may(next)))
+        .filter(|_| !handoff.delegated);
 
     // The draft lives in egui's temp store under the task id, not in a local:
     // leave for the project and come back, and the half-written words are
@@ -784,36 +767,28 @@ fn headline(
     } else {
         let mut edit = false;
         let mut pick: Option<Pick> = None;
-        // Its own row, right-aligned: with the title able to wrap to
-        // whatever it needs, these can no longer share a line with it and
-        // squeeze it into what is left over.
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
-                if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
-                    pick = super::triage::page_actions(ui, task);
+        shell::toolbar_trailing(ui, |ui| {
+            viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
+            if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
+                pick = super::triage::page_actions(ui, task);
+            }
+            if let Some((copy, next)) = action {
+                if w::primary(ui, copy, !busy).clicked() {
+                    go = Some(next);
                 }
-                if let Some((copy, next)) = action {
-                    if w::primary(ui, copy, !busy).clicked() {
-                        go = Some(next);
-                    }
+            }
+            if status != "triage" {
+                if let Some(p) = handoff_control(ui, handoff, busy) {
+                    pick = Some(p);
                 }
-                // Not before it is accepted: triage is a yes or a no first.
-                if status != "triage" {
-                    if let Some(ask) = handoff_control(ui, handoff, busy, local) {
-                        agent_action(net, task_id, ask, local);
-                    }
-                }
-                if can_write && w::ghost(ui, "Edit").clicked() {
-                    edit = true;
-                }
-                if busy {
-                    ui.add(egui::Spinner::new().size(text::BODY));
-                }
-            });
+            }
+            if can_write && w::ghost(ui, "Edit").clicked() {
+                edit = true;
+            }
+            if busy {
+                ui.add(egui::Spinner::new().size(text::BODY));
+            }
         });
-        ui.add_space(space::SM);
 
         // ---- the title, wrapped in full rather than cut off: a prose
         // measure keeps a long one readable instead of a single edge-to-edge
@@ -843,24 +818,11 @@ fn headline(
                     .wrap()
                     .sense(egui::Sense::click()),
                 );
+                shell::title_seen(ui, title.rect);
                 viz::context_menu(&title, |ui| pick = task_items(ui, task, viewer, false));
             });
         });
         local.pick = pick;
-
-        // ---- its PRs, and — delegated — who is on it and how that is going
-        let artifacts = net.shared(ARTIFACTS_KEY);
-        let artifacts: &[Value] = artifacts
-            .as_deref()
-            .and_then(Value::as_array)
-            .map_or(&[], Vec::as_slice);
-        pr_chips(ui, artifacts);
-        if let Some(d) = delegate {
-            ui.add_space(space::SM);
-            if agent_pill(ui, task_id, d, handoff.mine, task).clicked() {
-                local.jump_to_session = true;
-            }
-        }
 
         if edit {
             let title = str_of(task, "title").unwrap_or_default().to_owned();
@@ -926,147 +888,13 @@ fn headline(
         }
     }
 
-    if let Some(ask) = handoff_dialog(&ui.ctx().clone(), local, busy) {
-        agent_action(net, task_id, ask, local);
-    }
     editing
-}
-
-/// The task's PRs, as compact chips under the title — a click opens each in
-/// the browser, and the full URL is the hover text since the label already
-/// says which repo and number. Everything else stays in Resources.
-fn pr_chips(ui: &mut egui::Ui, artifacts: &[Value]) {
-    let prs: Vec<&Value> = artifacts
-        .iter()
-        .filter(|a| str_of(a, "kind") == Some("pr"))
-        .collect();
-    if prs.is_empty() {
-        return;
-    }
-    ui.add_space(space::XS);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        for pr in prs {
-            pr_chip(ui, pr);
-        }
-    });
-}
-
-/// One PR chip: the GitHub mark, "repo #1531", and — once the artifact's
-/// metadata carries one (nothing fetches it; this only ever reads what is
-/// already there) — a small dot for its open, merged or closed state.
-fn pr_chip(ui: &mut egui::Ui, artifact: &Value) -> egui::Response {
-    let url = str_of(artifact, "url").unwrap_or_default();
-    let label = link_label(url)
-        .or_else(|| str_of(artifact, "title").map(str::to_owned))
-        .unwrap_or_else(|| host_path(url).to_owned());
-    let dot = artifact
-        .get("metadata")
-        .and_then(|m| m.get("state"))
-        .and_then(Value::as_str)
-        .and_then(|s| match s {
-            "open" => Some(colour::OK()),
-            "merged" => Some(colour::AGENT()),
-            "closed" => Some(colour::DANGER()),
-            _ => None,
-        });
-
-    let fg = colour::INFO();
-    let font = egui::FontId::proportional(text::SMALL);
-    let icon = ui
-        .painter()
-        .layout_no_wrap(egui_phosphor::regular::GIT_PULL_REQUEST.to_owned(), font.clone(), fg);
-    let name = ui.painter().layout_no_wrap(label.clone(), font, fg);
-    let pad_x = space::SM;
-    let gap = space::XXS;
-    let dot_w = if dot.is_some() { space::SM } else { 0.0 };
-    let height = 20.0;
-    let width = icon.size().x + gap + name.size().x + dot_w + pad_x * 2.0;
-
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    let response = motion::operable(ui, response, radius::SM as f32);
-    let hovered = response.hovered() || response.has_focus();
-    let fill = motion::hover_fill(
-        ui,
-        response.id.with("fill"),
-        hovered,
-        colour::INFO_BG(),
-        colour::INFO_BG().lerp_to_gamma(fg, 0.35),
-    );
-
-    let p = ui.painter();
-    p.rect_filled(rect, radius::SM as f32, fill);
-    let mut x = rect.left() + pad_x;
-    p.galley(egui::pos2(x, rect.center().y - icon.size().y / 2.0), icon.clone(), fg);
-    x += icon.size().x + gap;
-    p.galley(egui::pos2(x, rect.center().y - name.size().y / 2.0), name, fg);
-    if let Some(c) = dot {
-        p.circle_filled(egui::pos2(rect.right() - pad_x - 2.5, rect.center().y), 2.5, c);
-    }
-
-    if hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if response.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-    }
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &label));
-    response.on_hover_text(url)
-}
-
-/// The header's agent pill: the delegate's globe, its name, and the same
-/// state a viewer already reads elsewhere — clicking it jumps to the Agent
-/// session section below.
-fn agent_pill(ui: &mut egui::Ui, task_id: &str, d: &Value, mine: bool, task: &Value) -> egui::Response {
-    let name = str_of(d, "name").unwrap_or("Agent");
-    let short = session::short_name(name);
-    let state = str_of(d, "state").unwrap_or("handed_off");
-    // The agent's own id, not its owner's, so its globe is its own colour.
-    let seed = str_of(d, "id").unwrap_or(name);
-    let presence = Presence::of(state, str_of(d, "lastSeenAt"));
-    let owner_first = str_of(task, "assigneeName")
-        .and_then(|n| n.split_whitespace().next())
-        .unwrap_or("its owner");
-    let (label, tone) = pill_state(state, mine, owner_first);
-
-    let group = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XS;
-        face::avatar_still(ui, seed, face::SM, presence, name);
-        ui.label(RichText::new(short).size(text::SMALL).color(colour::TEXT()));
-        c::chip(ui, &label, tone, true);
-    });
-    let id = egui::Id::new(("task:agent-pill", task_id));
-    let response = ui.interact(group.response.rect, id, egui::Sense::click());
-    let response = motion::operable(ui, response, radius::SM as f32);
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let hint = format!("Open the Agent session with {short}");
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, &hint));
-    response.on_hover_text(hint)
-}
-
-/// The pill's words: the same tinted chip the rail's "Agent state" row
-/// already shows everyone, except plan review — "Plan review" alone does not
-/// say whose, so the owner reads "your" and everyone else the owner's name,
-/// the same split `agent_session::now_line` already draws elsewhere.
-fn pill_state(state: &str, mine: bool, owner_first: &str) -> (String, c::Tone) {
-    if state == "plan_review" {
-        let words = if mine {
-            "Waiting for your plan review".to_owned()
-        } else {
-            format!("Waiting for {owner_first}\u{2019}s plan review")
-        };
-        return (words, state_tone(state));
-    }
-    (state_words(state).to_owned(), state_tone(state))
 }
 
 /// The task's own words, at a prose measure. Paragraphs split on a blank line,
 /// because that is how whoever filed it typed them.
 fn description(ui: &mut egui::Ui, task: &Value) {
-    shell::section(ui, "Description");
+    ui.add_space(space::MD);
     let body = str_of(task, "body").unwrap_or("").trim();
     if body.is_empty() {
         w::caption(ui, "No description");
@@ -1074,17 +902,7 @@ fn description(ui: &mut egui::Ui, task: &Value) {
     }
     ui.scope(|ui| {
         ui.set_max_width(PROSE_W.min(ui.available_width()));
-        for (i, para) in body
-            .split("\n\n")
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .enumerate()
-        {
-            if i > 0 {
-                ui.add_space(space::MD);
-            }
-            ui.label(RichText::new(para).size(text::BODY).color(colour::TEXT_2()));
-        }
+        super::mrkdwn::show(ui, body, colour::TEXT_2());
     });
 }
 
@@ -1121,45 +939,17 @@ struct Handoff<'a> {
     agents: &'a [(String, String)],
 }
 
-/// An agent action to send.
-enum AgentAsk {
-    /// Agent id, name, and the owner's optional note.
-    Handoff(String, String, Option<String>),
-    TakeBack,
-    Answer(String),
-    Approve,
-    Changes(String),
-    Instruct(String),
-    ApprovePlan,
-    PlanChanges(String),
-}
-
-impl From<session::Ask> for AgentAsk {
-    fn from(a: session::Ask) -> Self {
-        match a {
-            session::Ask::Answer(b) => AgentAsk::Answer(b),
-            session::Ask::Approve => AgentAsk::Approve,
-            session::Ask::Changes(b) => AgentAsk::Changes(b),
-            session::Ask::Instruct(b) => AgentAsk::Instruct(b),
-            session::Ask::ApprovePlan => AgentAsk::ApprovePlan,
-            session::Ask::PlanChanges(b) => AgentAsk::PlanChanges(b),
-        }
-    }
-}
-
 /// The hand-off control in the title's actions: "Take back" while an agent
 /// holds the task, otherwise "Hand off to …" — a button for one agent, a
-/// picker for several, either opening the hand-off modal (`handoff_dialog`)
-/// rather than sending straight away. Nothing at all for anyone but the
-/// assignee, or for an assignee with no agent to hand to.
-fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool, local: &mut Local) -> Option<AgentAsk> {
+/// picker for several. Either is the same pick the task's menu makes, so the
+/// hand-off dialog and the take-back confirm are the menu's. Nothing at all
+/// for anyone but the assignee, or for an assignee with no agent to hand to.
+fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool) -> Option<Pick> {
     if !h.mine {
         return None;
     }
     if h.delegated {
-        return w::secondary(ui, "Take back", !busy)
-            .clicked()
-            .then_some(AgentAsk::TakeBack);
+        return w::secondary(ui, "Take back", !busy).clicked().then_some(Pick::TakeBack);
     }
     match h.agents {
         [] => None,
@@ -1173,117 +963,56 @@ fn handoff_control(ui: &mut egui::Ui, h: &Handoff, busy: bool, local: &mut Local
             );
             None
         }
-        [(id, name)] => {
-            if w::secondary(ui, &format!("Hand off to {name}"), !busy).clicked() {
-                local.handoff_modal = Some(HandoffModal {
-                    agent_id: id.clone(),
-                    agent_name: name.clone(),
-                    brief: String::new(),
-                });
-            }
-            None
-        }
+        [(id, name)] => w::secondary(ui, &format!("Hand off to {name}"), !busy)
+            .clicked()
+            .then(|| Pick::Handoff(id.clone(), name.clone())),
         many => {
             let options: Vec<(String, String)> = many.to_vec();
             let mut slot: Option<String> = None;
             ui.add_enabled_ui(!busy, |ui| {
                 viz::select(ui, "Hand off to\u{2026}", &options, &mut slot);
             });
-            if let Some(id) = slot {
-                let name = many
-                    .iter()
-                    .find(|(i, _)| *i == id)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_default();
-                local.handoff_modal = Some(HandoffModal { agent_id: id, agent_name: name, brief: String::new() });
-            }
-            None
+            let id = slot?;
+            let name = many.iter().find(|(i, _)| *i == id).map(|(_, n)| n.clone()).unwrap_or_default();
+            Some(Pick::Handoff(id, name))
         }
     }
-}
-
-/// "Explain the task (optional)", agent already chosen: Cancel or Hand off,
-/// Cmd+Enter to submit. Nothing while no hand-off is being asked for.
-fn handoff_dialog(ctx: &egui::Context, local: &mut Local, busy: bool) -> Option<AgentAsk> {
-    let m = local.handoff_modal.as_mut()?;
-    let (mut go, mut close) = (false, false);
-    let modal = super::agents::dialog(ctx, "task:handoff", super::agents::DIALOG_W, |ui| {
-        super::agents::heading(ui, &format!("Hand off to {}", m.agent_name));
-        ui.add_space(space::MD);
-        let field = w::field_multiline(
-            ui,
-            "Explain the task (optional)",
-            &mut m.brief,
-            4,
-            "Anything the task doesn't say \u{2014} context, constraints, what done looks like.",
-        );
-        if field.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) {
-            go = true;
-        }
-        ui.add_space(space::SM);
-        w::caption(ui, &format!("{} will send a plan for your approval before it builds.", m.agent_name));
-        ui.add_space(space::LG);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = space::SM;
-            go |= w::primary(ui, "Hand off", !busy).clicked();
-            close = w::ghost(ui, "Cancel").clicked();
-        });
-    });
-    if go {
-        let m = local.handoff_modal.take().expect("checked above");
-        let brief = m.brief.trim().to_owned();
-        return Some(AgentAsk::Handoff(m.agent_id, m.agent_name, (!brief.is_empty()).then_some(brief)));
-    }
-    if close || modal.should_close() {
-        local.handoff_modal = None;
-    }
-    None
 }
 
 fn agent_action(
     net: &mut crate::desktop::net::Net,
     task_id: &str,
-    ask: AgentAsk,
+    ask: session::Ask,
     local: &mut Local,
 ) {
     let base = format!("/api/user/tasks/{task_id}");
     let (path, body, done) = match ask {
-        AgentAsk::Handoff(id, name, brief) => (
-            format!("{base}/handoff"),
-            json!({ "agentId": id, "brief": brief }),
-            format!("Handed off to {name}."),
-        ),
-        AgentAsk::TakeBack => (
-            format!("{base}/takeback"),
-            json!({}),
-            "Taken back \u{2014} the agent no longer has this task.".to_owned(),
-        ),
-        AgentAsk::Answer(body) => (
+        session::Ask::Answer(body) => (
             format!("{base}/answer"),
             json!({ "body": body }),
             "Answer sent.".to_owned(),
         ),
-        AgentAsk::Approve => (
+        session::Ask::Approve => (
             format!("{base}/review"),
             json!({ "decision": "approve" }),
             "Approved.".to_owned(),
         ),
-        AgentAsk::Changes(body) => (
+        session::Ask::Changes(body) => (
             format!("{base}/review"),
             json!({ "decision": "changes", "body": body }),
             "Changes requested.".to_owned(),
         ),
-        AgentAsk::Instruct(body) => (
+        session::Ask::Instruct(body) => (
             format!("{base}/instruct"),
             json!({ "body": body }),
             "Sent \u{2014} the agent hears it at its next step.".to_owned(),
         ),
-        AgentAsk::ApprovePlan => (
+        session::Ask::ApprovePlan => (
             format!("{base}/plan/approve"),
             json!({}),
             "Plan approved.".to_owned(),
         ),
-        AgentAsk::PlanChanges(body) => (
+        session::Ask::PlanChanges(body) => (
             format!("{base}/plan/changes"),
             json!({ "body": body }),
             "Changes requested.".to_owned(),
@@ -1344,6 +1073,7 @@ struct Rail<'a> {
     label_error: Option<&'a str>,
     /// The viewer's own folders, for the picker a project-less task offers.
     folders: &'a [Value],
+    private: bool,
 }
 
 /// The ids of the labels a task wears.
@@ -1399,7 +1129,7 @@ fn rail(
         if !r.can_write || r.busy {
             match priority {
                 Some(p) => {
-                    c::chip(ui, &format!("P{p}"), priority_tone(p), false);
+                    c::priority(ui, p);
                 }
                 None => faint(ui, "\u{2014}"),
             }
@@ -1504,24 +1234,26 @@ fn rail(
         shell::property(ui, "Delegate", |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             let name = str_of(d, "name").unwrap_or("Agent");
-            // The agent's own id, not its owner's — two of one person's
-            // agents must not wear the same globe.
             let seed = str_of(d, "id").unwrap_or(name);
-            // Still: the session's header carries the one moving ring.
-            face::avatar_still(
-                ui,
-                seed,
-                face::SM,
-                Presence::of(state, str_of(d, "lastSeenAt")),
-                name,
-            );
-            ui.add(
-                egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT()))
-                    .truncate(),
-            );
-        });
-        shell::property(ui, "Agent state", |ui| {
-            c::chip(ui, state_words(state), state_tone(state), true);
+            face::avatar(ui, seed, face::SM, Presence::of(state, str_of(d, "lastSeenAt")), name);
+            let owner = str_of(d, "ownerName").or_else(|| str_of(task, "assigneeName")).unwrap_or("its owner");
+            let mut who = format!("{}\u{2019}s agent", owner.split_whitespace().next().unwrap_or(owner));
+            if let Some(rt) = str_of(d, "runtime") {
+                who += &format!(" \u{00B7} {}", super::agents::runtime_label(rt));
+            }
+            let label = egui::Label::new(RichText::new(name).size(text::SMALL).color(colour::TEXT())).truncate();
+            match str_of(d, "id").filter(|_| r.private) {
+                Some(id) => {
+                    let link = ui.add(label.sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(who);
+                    link.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, format!("Open {name}")));
+                    if link.clicked() {
+                        super::agents::open(id);
+                    }
+                }
+                None => {
+                    ui.add(label).on_hover_text(who);
+                }
+            }
         });
         shell::property(ui, "Last seen", |ui| match str_of(d, "lastSeenAt") {
             Some(at) => {
@@ -1702,17 +1434,6 @@ fn rail(
 /// The assignee menu's "nobody" row, and the project menu's "No project". Not
 /// a uuid, so it cannot collide with one.
 const UNASSIGN: &str = "none";
-
-/// P0 shouts and P4 whispers, in the same chip vocabulary as status — the rail
-/// should read as one column of tokens, not two competing systems.
-fn priority_tone(p: i64) -> c::Tone {
-    match p {
-        0 => c::Tone::Blocked,
-        1 => c::Tone::Running,
-        2 => c::Tone::Neutral,
-        _ => c::Tone::Quiet,
-    }
-}
 
 fn value(ui: &mut egui::Ui, s: &str) -> egui::Response {
     ui.label(RichText::new(s).size(text::SMALL).color(colour::TEXT()))
@@ -2102,7 +1823,7 @@ fn resources(
     }
     settle_upload(ui.ctx(), net, task_id, local);
     if can_write {
-        take_dropped(ui.ctx(), local);
+        dropped_files(ui.ctx(), &local.intake);
     }
 
     let rows = net.shared(ARTIFACTS_KEY);
@@ -2116,10 +1837,10 @@ fn resources(
     shell::section_count_with(ui, "Resources", links.len() + files.len(), |ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         if can_write {
-            if w::ghost(ui, "Upload").on_hover_text("Screenshots, PDFs or .md files \u{2014} or drop them on the page").clicked() {
+            if w::ghost(ui, "Upload file").on_hover_text("Screenshots, PDFs or .md files \u{2014} or drop them on the page").clicked() {
                 pick = true;
             }
-            if w::ghost(ui, "+ Link").clicked() {
+            if w::ghost(ui, "+ Add link").clicked() {
                 add = true;
             }
         }
@@ -2133,7 +1854,7 @@ fn resources(
             .add_filter("Screenshots, PDFs and docs", &["png", "jpg", "jpeg", "gif", "webp", "pdf", "md", "markdown", "txt"])
             .pick_files()
         {
-            queue_paths(ui.ctx(), local, &paths);
+            local.intake.spawn(ui.ctx(), move |ctx| upload_bodies(ctx, &paths));
         }
     }
     prompt_panel(ui, net, task_id, local);
@@ -2142,8 +1863,12 @@ fn resources(
         w::error(ui, err);
         ui.add_space(space::SM);
     }
-    if let Some(n) = local.uploading.as_ref().map(|_| local.uploads.len() + 1) {
-        w::caption(ui, &format!("Uploading {}\u{2026}", plural(n as i64, "file")));
+    let held: Vec<&Held> = local.uploading.iter().chain(&local.uploads).collect();
+    let going_up: Vec<(String, egui::TextureHandle)> =
+        held.iter().filter_map(|h| Some((h.name.clone(), h.preview.clone()?))).collect();
+    let unseen = held.len() - going_up.len() + local.intake.working();
+    if unseen > 0 {
+        w::caption(ui, &format!("Uploading {}\u{2026}", plural(unseen as i64, "file")));
         ui.add_space(space::SM);
     }
     if let Some(err) = net.error(ARTIFACTS_KEY) {
@@ -2154,7 +1879,7 @@ fn resources(
         w::loading(ui, "Loading resources");
         return;
     }
-    if links.is_empty() && files.is_empty() {
+    if links.is_empty() && files.is_empty() && going_up.is_empty() && unseen == 0 {
         let dragging = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
         w::caption(
             ui,
@@ -2168,34 +1893,18 @@ fn resources(
     }
 
     // ---- links, as tiles two to a row (one when the column is narrow)
-    let mut remove: Option<String> = None;
-    if !links.is_empty() {
-        let width = ui.available_width().min(PROSE_W + 160.0);
-        let per_row = if width > 560.0 { 2 } else { 1 };
-        let tile_w = (width - space::SM * (per_row as f32 - 1.0)) / per_row as f32;
-        for chunk in links.chunks(per_row) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::SM;
-                for row in chunk {
-                    if let Some(id) = link_tile(ui, row, tile_w, can_write, local) {
-                        remove = Some(id);
-                    }
-                }
-            });
-            ui.add_space(space::SM);
-        }
-    }
+    let remove = link_tiles(ui, &links, can_write, &mut local.confirm_remove, local.removing);
 
     // ---- files people attached
     let mut drop_file: Option<String> = None;
-    if !files.is_empty() {
+    if !files.is_empty() || !going_up.is_empty() {
         if !links.is_empty() {
             ui.add_space(space::XS);
         }
         let (images, docs): (Vec<&Value>, Vec<&Value>) =
             files.iter().partition(|f| str_of(f, "mime").is_some_and(|m| m.starts_with("image/")));
         let may_remove = |f: &Value| can_write && (admin || str_of(f, "addedById") == Some(me));
-        if !images.is_empty() {
+        if !images.is_empty() || !going_up.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(space::SM, space::SM);
                 for f in &images {
@@ -2209,6 +1918,14 @@ fn resources(
                                 drop_file = str_of(f, "id").map(str::to_owned);
                             }
                         });
+                    });
+                }
+                for (name, tex) in &going_up {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = space::XXS;
+                        ui.multiply_opacity(0.55);
+                        preview(ui, tex, super::triage::THUMB, name);
+                        faint(ui, "Uploading\u{2026}");
                     });
                 }
             });
@@ -2259,7 +1976,7 @@ const TILE_H: f32 = 52.0;
 const REMOVE_W: f32 = 28.0;
 
 /// A tile's remove control: a small ×, named for screen readers and on hover.
-fn remove_x(ui: &mut egui::Ui) -> egui::Response {
+pub(super) fn remove_x(ui: &mut egui::Ui) -> egui::Response {
     let r = ui.add(
         egui::Button::new(RichText::new(egui_phosphor::regular::X).size(text::SMALL).color(colour::TEXT_MUTED()))
             .frame(false)
@@ -2269,11 +1986,36 @@ fn remove_x(ui: &mut egui::Ui) -> egui::Response {
     r.on_hover_text("Remove")
 }
 
+pub(super) fn link_tiles(
+    ui: &mut egui::Ui,
+    links: &[&Value],
+    can_write: bool,
+    confirm: &mut Option<String>,
+    busy: bool,
+) -> Option<String> {
+    let mut remove = None;
+    let width = ui.available_width().min(PROSE_W + 160.0);
+    let per_row = if width > 560.0 { 2 } else { 1 };
+    let tile_w = (width - space::SM * (per_row as f32 - 1.0)) / per_row as f32;
+    for chunk in links.chunks(per_row) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            for row in chunk {
+                if let Some(id) = link_tile(ui, row, tile_w, can_write, confirm, busy) {
+                    remove = Some(id);
+                }
+            }
+        });
+        ui.add_space(space::SM);
+    }
+    remove
+}
+
 /// One link as a tile: its kind's mark in a tinted well, the name, and under
 /// it the kind, where it goes and who added it. The whole tile opens it; a
 /// commit has nowhere to go, so its tile is still. Returns the id to remove
 /// once "Remove" has been confirmed.
-fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local: &mut Local) -> Option<String> {
+fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, confirm: &mut Option<String>, busy: bool) -> Option<String> {
     let id = str_of(row, "id").unwrap_or_default().to_owned();
     let kind = str_of(row, "kind").unwrap_or("link");
     let url = str_of(row, "url").unwrap_or_default();
@@ -2285,7 +2027,7 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
     };
     let name = title.map(str::to_owned).unwrap_or_else(|| place.clone());
     let opens = kind != "commit" && !url.is_empty();
-    let confirming = local.confirm_remove.as_deref() == Some(id.as_str());
+    let confirming = confirm.as_deref() == Some(id.as_str());
     let removable = can_write && row["canRemove"].as_bool() == Some(true);
 
     let (rect, response) = ui.allocate_exact_size(
@@ -2325,14 +2067,14 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
         {
             ui.spacing_mut().item_spacing.x = space::XS;
             if confirming {
-                if w::danger(ui, "Remove", !local.removing).clicked() {
+                if w::danger(ui, "Remove", !busy).clicked() {
                     removed = Some(id.clone());
                 }
                 if w::ghost(ui, "Keep").clicked() {
-                    local.confirm_remove = None;
+                    *confirm = None;
                 }
             } else if remove_x(ui).clicked() {
-                local.confirm_remove = Some(id.clone());
+                *confirm = Some(id.clone());
             }
         }
     }
@@ -2365,7 +2107,7 @@ fn link_tile(ui: &mut egui::Ui, row: &Value, width: f32, can_write: bool, local:
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if opens && response.clicked() && removed.is_none() && !confirming {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        super::mrkdwn::open(ui.ctx(), url);
     }
     removed
 }
@@ -2451,6 +2193,7 @@ fn doc_viewer(ctx: &egui::Context, net: &crate::desktop::net::Net) {
             Some(Ok(bytes)) => {
                 egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.65).show(ui, |ui| {
                     super::mrkdwn::show(ui, &String::from_utf8_lossy(bytes), colour::TEXT());
+                    shell::edge_scroll(ui);
                 });
             }
             Some(Err(e)) => w::error(ui, e),
@@ -2477,35 +2220,170 @@ fn mime_of(path: &std::path::Path) -> Option<&'static str> {
     })
 }
 
-/// Read picked or dropped files into the upload queue, refusing what the
+/// Read picked, dropped or pasted files for upload, refusing what the
 /// server would refuse anyway with a sentence now rather than a 415 later.
-fn queue_paths(ctx: &egui::Context, local: &mut Local, paths: &[std::path::PathBuf]) {
-    use base64::Engine;
+pub(super) fn upload_bodies(ctx: &egui::Context, paths: &[std::path::PathBuf]) -> Vec<Held> {
+    let mut out = Vec::new();
     for path in paths {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_owned();
         let Some(mime) = mime_of(path) else {
             w::toast(ctx, format!("{name} can\u{2019}t be attached \u{2014} images, PDFs and .md or .txt files only."), true);
             continue;
         };
+        if std::fs::metadata(path).is_ok_and(|m| over_cap(ctx, &name, m.len())) {
+            continue;
+        }
         match std::fs::read(path) {
-            Ok(bytes) if bytes.len() > 8 * 1024 * 1024 => {
-                w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
-            }
-            Ok(bytes) => local.uploads.push(json!({
-                "name": name,
-                "mime": mime,
-                "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
-            })),
+            Ok(bytes) => out.extend(upload_body(ctx, name, mime, &bytes, None)),
             Err(e) => w::toast(ctx, format!("Could not read {name}: {e}"), true),
+        }
+    }
+    out
+}
+
+pub(super) struct Held {
+    pub(super) name: String,
+    pub(super) body: Value,
+    pub(super) preview: Option<egui::TextureHandle>,
+}
+
+const MAX_UPLOAD: u64 = 8 * 1024 * 1024;
+
+fn over_cap(ctx: &egui::Context, name: &str, len: u64) -> bool {
+    let over = len > MAX_UPLOAD;
+    if over {
+        w::toast(ctx, format!("{name} is over 8 MB; link it instead."), true);
+    }
+    over
+}
+
+fn upload_body(ctx: &egui::Context, name: String, mime: &str, bytes: &[u8], image: Option<image::DynamicImage>) -> Option<Held> {
+    use base64::Engine;
+    if over_cap(ctx, &name, bytes.len() as u64) {
+        return None;
+    }
+    let image = image.or_else(|| mime.starts_with("image/").then(|| decode(bytes)).flatten());
+    let preview = image.map(|img| thumb(ctx, &name, img));
+    let body = json!({
+        "name": name,
+        "mime": mime,
+        "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    });
+    Some(Held { name, body, preview })
+}
+
+const PREVIEW_PX: u32 = 480;
+const DECODE_MAX_ALLOC: u64 = 256 * 1024 * 1024;
+
+fn decode(bytes: &[u8]) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+fn thumb(ctx: &egui::Context, name: &str, img: image::DynamicImage) -> egui::TextureHandle {
+    let img = if img.width().max(img.height()) > PREVIEW_PX { img.thumbnail(PREVIEW_PX, PREVIEW_PX) } else { img };
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    ctx.load_texture(format!("held:{name}"), egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()), egui::TextureOptions::LINEAR)
+}
+
+pub(super) fn preview(ui: &mut egui::Ui, tex: &egui::TextureHandle, max: egui::Vec2, name: &str) -> egui::Response {
+    let natural = tex.size_vec2();
+    let shown = (natural * (max.x / natural.x).min(max.y / natural.y).min(1.0)).max(egui::Vec2::splat(space::XXL));
+    let (rect, response) = ui.allocate_exact_size(shown, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, name));
+    egui::Image::new((tex.id(), shown)).corner_radius(radius::MD).paint_at(ui, rect);
+    ui.painter().rect_stroke(rect, radius::MD as f32, egui::Stroke::new(1.0, colour::LINE_SOFT()), egui::StrokeKind::Inside);
+    response.on_hover_text(name)
+}
+
+#[derive(Clone, Default)]
+pub(super) struct Intake(std::sync::Arc<std::sync::Mutex<Prepared>>);
+
+#[derive(Default)]
+struct Prepared {
+    ready: Vec<Held>,
+    working: usize,
+}
+
+impl Intake {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Prepared> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn take(&self) -> Vec<Held> {
+        std::mem::take(&mut self.lock().ready)
+    }
+
+    pub(super) fn working(&self) -> usize {
+        self.lock().working
+    }
+
+    pub(super) fn spawn(&self, ctx: &egui::Context, job: impl FnOnce(&egui::Context) -> Vec<Held> + Send + 'static) {
+        self.lock().working += 1;
+        let (intake, ctx) = (self.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let held = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&ctx))).unwrap_or_else(|_| {
+                w::toast(&ctx, "Could not add that file.", true);
+                Vec::new()
+            });
+            let mut prepared = intake.lock();
+            prepared.working -= 1;
+            prepared.ready.extend(held);
+            drop(prepared);
+            ctx.request_repaint();
+        });
+    }
+}
+
+pub(super) fn pasted_files(ctx: &egui::Context, intake: &Intake) {
+    let pasted_text = |e: &egui::Event| matches!(e, egui::Event::Paste(_));
+    let asked = crate::desktop::menu::pasted(ctx) || ctx.input(|i| i.events.iter().any(pasted_text));
+    if !asked {
+        return;
+    }
+    let Ok(mut clip) = arboard::Clipboard::new() else { return };
+    let files = clip.get().file_list().unwrap_or_default();
+    if !files.is_empty() {
+        intake.spawn(ctx, move |ctx| upload_bodies(ctx, &files));
+    } else if ctx.text_edit_focused() && clip.get_text().is_ok_and(|t| !t.trim().is_empty()) {
+        return;
+    } else if let Ok(image) = clip.get_image() {
+        let image = arboard::ImageData { width: image.width, height: image.height, bytes: image.bytes.into_owned().into() };
+        intake.spawn(ctx, move |ctx| pasted_image(ctx, image));
+    } else {
+        return;
+    }
+    ctx.input_mut(|i| i.events.retain(|e| !pasted_text(e)));
+}
+
+fn pasted_image(ctx: &egui::Context, image: arboard::ImageData<'static>) -> Vec<Held> {
+    let name = format!("Pasted image {}.png", chrono::Local::now().format("%H.%M.%S"));
+    match png(image) {
+        Ok((bytes, rgba)) => upload_body(ctx, name, "image/png", &bytes, Some(image::DynamicImage::ImageRgba8(rgba))).into_iter().collect(),
+        Err(e) => {
+            w::toast(ctx, format!("Could not paste the image: {e}"), true);
+            Vec::new()
         }
     }
 }
 
-/// Files dropped on the window while this task is open join the queue.
-fn take_dropped(ctx: &egui::Context, local: &mut Local) {
+fn png(image: arboard::ImageData<'_>) -> Result<(Vec<u8>, image::RgbaImage), String> {
+    let rgba = image::RgbaImage::from_raw(image.width as u32, image.height as u32, image.bytes.into_owned())
+        .ok_or("the clipboard image is malformed")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    rgba.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok((out.into_inner(), rgba))
+}
+
+pub(super) fn dropped_files(ctx: &egui::Context, intake: &Intake) {
     let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+    ctx.input_mut(|i| i.raw.dropped_files.clear());
     if !dropped.is_empty() {
-        queue_paths(ctx, local, &dropped);
+        intake.spawn(ctx, move |ctx| upload_bodies(ctx, &dropped));
     }
 }
 
@@ -2513,7 +2391,7 @@ const UPLOAD_KEY: &str = "task:upload";
 
 /// One upload at a time: fold in the reply, then send the next queued file.
 fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_id: &str, local: &mut Local) {
-    if let Some(name) = local.uploading.clone() {
+    if let Some(name) = local.uploading.as_ref().map(|h| h.name.clone()) {
         if net.is_loading(UPLOAD_KEY) {
             return;
         }
@@ -2528,10 +2406,11 @@ fn settle_upload(ctx: &egui::Context, net: &mut crate::desktop::net::Net, task_i
     if local.uploads.is_empty() {
         return;
     }
-    let next = local.uploads.remove(0);
-    local.uploading = str_of(&next, "name").map(str::to_owned);
+    let mut next = local.uploads.remove(0);
+    let body = std::mem::take(&mut next.body);
+    local.uploading = Some(next);
     net.invalidate(UPLOAD_KEY);
-    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), next);
+    net.post(UPLOAD_KEY, &format!("/api/user/tasks/{task_id}/files"), body);
 }
 
 /// One hue per kind, so a list of five resources is scannable rather than read.
@@ -2727,6 +2606,18 @@ fn plural(n: i64, unit: &str) -> String {
     }
 }
 
+pub(super) fn day_time(raw: &str) -> String {
+    let Ok(t) = DateTime::parse_from_rfc3339(raw) else {
+        return String::new();
+    };
+    let local = t.with_timezone(&LocalTz);
+    if local.date_naive() == LocalTz::now().date_naive() {
+        ago(raw)
+    } else {
+        local.format("%H:%M").to_string()
+    }
+}
+
 /// "Today", "Yesterday", or "Mon 22 Sep", in local time — a quiet separator
 /// for a list that reads top to bottom by time.
 pub(super) fn day_label(raw: &str) -> String {
@@ -2744,7 +2635,7 @@ pub(super) fn day_label(raw: &str) -> String {
 
 #[cfg(test)]
 mod link_label_tests {
-    use super::link_label;
+    use super::{link_label, png};
 
     #[test]
     fn names_commits_and_prs() {
@@ -2757,5 +2648,15 @@ mod link_label_tests {
             Some("mycohort-api #4821")
         );
         assert_eq!(link_label("https://figma.com/design/abc"), None);
+    }
+
+    #[test]
+    fn a_clipboard_image_becomes_a_png() {
+        let image = arboard::ImageData { width: 2, height: 1, bytes: vec![255, 0, 0, 255, 0, 0, 255, 255].into() };
+        let decoded = image::load_from_memory(&png(image).unwrap().0).unwrap().to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (2, 1));
+        assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
+        let short = arboard::ImageData { width: 4, height: 4, bytes: vec![0; 3].into() };
+        assert!(png(short).is_err());
     }
 }

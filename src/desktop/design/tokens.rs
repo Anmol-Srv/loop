@@ -55,28 +55,28 @@ pub mod colour {
         pub LINE: Color32,
         pub LINE_SOFT: Color32,
         pub LINE_STRONG: Color32,
-        // ---- ink, five levels. Every level clears 4.5:1 on SURFACE.
+        // ---- ink, four levels. Every level clears 4.5:1 on SURFACE.
         pub TEXT: Color32,
         /// A value next to its label.
         pub TEXT_2: Color32,
         /// Labels, metadata.
         pub TEXT_MUTED: Color32,
-        /// Timestamps, ids.
+        /// Timestamps, ids, placeholders and disabled text, which people still read.
         pub TEXT_FAINT: Color32,
-        /// Disabled and placeholders — still hint text people read.
-        pub TEXT_DISABLED: Color32,
         // ---- state. A dot, a pill or a thin rule; never a filled block.
         pub OK: Color32,
         pub WARN: Color32,
         pub DANGER: Color32,
         pub AGENT: Color32,
         pub INFO: Color32,
+        pub ASK: Color32,
         pub IDLE: Color32,
         pub OK_BG: Color32,
         pub WARN_BG: Color32,
         pub DANGER_BG: Color32,
         pub AGENT_BG: Color32,
         pub INFO_BG: Color32,
+        pub ASK_BG: Color32,
         /// The warm counterpoint. A highlight, never a surface.
         pub GLOW: Color32,
         pub WASH_TOP: Color32,
@@ -115,19 +115,20 @@ pub mod colour {
         TEXT: rgb(0xF2F3F5),
         TEXT_2: rgb(0xC3C7CC),
         TEXT_MUTED: rgb(0x8A9099),
-        TEXT_FAINT: rgb(0x7B828C),
-        TEXT_DISABLED: rgb(0x767C85),
+        TEXT_FAINT: rgb(0x858B94),
         OK: rgb(0x5FD39B),
         WARN: rgb(0xF0B354),
         DANGER: rgb(0xF27A7A),
         AGENT: rgb(0xB49BF0),
         INFO: rgb(0x7FB4F5),
+        ASK: rgb(0xEC8CCC),
         IDLE: rgb(0x6A7079),
         OK_BG: rgb(0x122A21),
         WARN_BG: rgb(0x2B2113),
         DANGER_BG: rgb(0x2C1718),
         AGENT_BG: rgb(0x221D33),
         INFO_BG: rgb(0x14202E),
+        ASK_BG: rgb(0x2E1726),
         GLOW: rgb(0xEAD6AE),
         WASH_TOP: rgb(0x242E4A),
         WASH_BOTTOM: rgb(0x111621),
@@ -161,19 +162,20 @@ pub mod colour {
         TEXT: rgb(0x15171B),
         TEXT_2: rgb(0x383D45),
         TEXT_MUTED: rgb(0x565D67),
-        TEXT_FAINT: rgb(0x656C76),
-        TEXT_DISABLED: rgb(0x6F757E),
+        TEXT_FAINT: rgb(0x5F6670),
         OK: rgb(0x16794D),
         WARN: rgb(0x9A5A00),
         DANGER: rgb(0xBF3036),
         AGENT: rgb(0x6A48C4),
         INFO: rgb(0x2463AD),
+        ASK: rgb(0xB0287A),
         IDLE: rgb(0x8A9099),
         OK_BG: rgb(0xE1F3EA),
         WARN_BG: rgb(0xFBEEDB),
         DANGER_BG: rgb(0xFCE7E7),
         AGENT_BG: rgb(0xEEE9FB),
         INFO_BG: rgb(0xE3EDFA),
+        ASK_BG: rgb(0xFBE6F2),
         GLOW: rgb(0x9A6B12),
         WASH_TOP: rgb(0xE3E8F3),
         WASH_BOTTOM: rgb(0xECEEF1),
@@ -252,12 +254,32 @@ pub mod colour {
         };
     }
     read!(
-        CANVAS, CHROME, SURFACE, SURFACE_HOVER, SURFACE_ACTIVE, INSET, LINE, LINE_SOFT,
-        LINE_STRONG, TEXT, TEXT_2, TEXT_MUTED, TEXT_FAINT, TEXT_DISABLED, OK, WARN, DANGER, AGENT,
-        INFO, IDLE, OK_BG, WARN_BG, DANGER_BG, AGENT_BG, INFO_BG, GLOW, WASH_TOP, WASH_BOTTOM,
-        GLASS, GLASS_HOVER, GLASS_ACTIVE, EDGE_MID, EDGE_MID_HOVER, EDGE_HI_HOVER, LOG_BG,
-        LOG_TEXT, LOG_SEQ,
+        CANVAS, CHROME, SURFACE, SURFACE_HOVER, SURFACE_ACTIVE, INSET, LINE_STRONG, TEXT, TEXT_2,
+        TEXT_MUTED, OK, WARN, DANGER, AGENT, INFO, ASK, IDLE, OK_BG, WARN_BG, DANGER_BG, AGENT_BG,
+        INFO_BG, ASK_BG, GLOW, WASH_TOP, WASH_BOTTOM, EDGE_HI_HOVER, LOG_BG, LOG_TEXT, LOG_SEQ,
     );
+
+    static CONTRAST: AtomicBool = AtomicBool::new(false);
+    static OPAQUE: AtomicBool = AtomicBool::new(false);
+
+    pub fn set_system(contrast: bool, opaque: bool) {
+        CONTRAST.store(contrast, Relaxed);
+        OPAQUE.store(opaque, Relaxed);
+    }
+
+    macro_rules! swap {
+        ($flag:ident: $($name:ident => $to:ident),* $(,)?) => {
+            $( #[inline] pub fn $name() -> Color32 {
+                let p = palette();
+                if $flag.load(Relaxed) { p.$to } else { p.$name }
+            } )*
+        };
+    }
+    swap!(CONTRAST:
+        TEXT_FAINT => TEXT_MUTED, LINE => LINE_STRONG,
+        LINE_SOFT => LINE_STRONG, EDGE_MID => EDGE_HI_HOVER, EDGE_MID_HOVER => EDGE_HI_HOVER,
+    );
+    swap!(OPAQUE: GLASS => SURFACE, GLASS_HOVER => SURFACE_HOVER, GLASS_ACTIVE => SURFACE_ACTIVE);
 
     /// The one accent: primary actions, the current selection, attention
     /// badges. Never decoration.
@@ -361,6 +383,7 @@ pub mod radius {
 /// Fixed heights, so columns align down a page and across screens.
 pub mod size {
     pub const ROW: f32 = 30.0;
+    pub const TOOLBAR: f32 = 52.0;
     pub const CONTROL: f32 = 28.0;
     pub const SIDEBAR_W: f32 = 232.0;
     /// Avatar diameters. Two callers independently reached for `24.0` during

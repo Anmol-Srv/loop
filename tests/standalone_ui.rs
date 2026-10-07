@@ -96,6 +96,15 @@ impl Page<'_> {
     fn has(&self, label: &str) -> bool {
         self.harness.query_all_by_label(label).next().is_some()
     }
+    fn wait_for(&mut self, label: &str, count: usize) {
+        for _ in 0..200 {
+            if self.harness.query_all_by_label(label).count() >= count {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.harness.step();
+        }
+    }
     fn click(&mut self, role: egui::accesskit::Role, label: &str) {
         self.harness
             .get_all_by(|n| n.role() == role && n.label().as_deref() == Some(label))
@@ -200,6 +209,76 @@ fn new_task_from_my_tasks_creates_and_closes() {
     p.steps(3);
     assert!(!p.dialog_open(), "closed on success");
     assert!(p.has("Created \u{201c}Rotate the webhook secret\u{201d}."));
+}
+
+fn close_window(p: &mut Page<'_>) -> bool {
+    p.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    p.harness.step();
+    p.harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
+}
+
+#[test]
+fn cmd_w_closes_the_dialog_rather_than_loop() {
+    let f = base();
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1000.0), false);
+    p.button("New task");
+    assert!(p.dialog_open());
+    assert!(close_window(&mut p), "Cmd+W with the dialog open does not quit Loop");
+    p.steps(2);
+    assert!(!p.dialog_open(), "it closes the dialog instead");
+    assert!(!close_window(&mut p), "with nothing open or attaching, it quits as before");
+}
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn files_given_to_the_form_wait_for_the_task_then_upload() {
+    let shot = std::env::temp_dir().join("loop-new-task-shot.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([40, 90, 200, 255])).save(&shot).unwrap();
+    let f = base();
+    let app = RefCell::new(None);
+    let mut p = page(&app, &f, Tab::MyTasks, None, (1440.0, 1000.0), false);
+    p.button("New task");
+    p.type_title("Checkout totals look wrong");
+    p.harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot.clone())));
+    p.steps(1);
+    p.wait_for("loop-new-task-shot.png", 1);
+    assert!(p.has("loop-new-task-shot.png"), "held in the form, by name");
+    assert!(p.has("Attached once the task is created."));
+
+    p.harness.input_mut().dropped_files.push(std::sync::Arc::new(Dropped(shot.clone())));
+    p.steps(1);
+    p.wait_for("loop-new-task-shot.png", 2);
+    assert_eq!(p.harness.query_all_by_label("loop-new-task-shot.png").count(), 2);
+    p.harness.get_all_by_label("Remove").next().unwrap().click();
+    p.steps(3);
+    assert_eq!(p.harness.query_all_by_label("loop-new-task-shot.png").count(), 1, "one can be taken back out");
+
+    let uploading = |p: &Page<'_>| p.app.borrow().as_ref().unwrap().net.as_ref().unwrap().is_loading("newtask:file");
+    p.button("Create task");
+    assert!(!uploading(&p), "nothing to attach to until the task exists");
+    p.seed("newtask:create", json!({"id": "new", "title": "Checkout totals look wrong"}));
+    p.steps(3);
+    assert!(!p.dialog_open());
+    assert!(p.has("Created \u{201c}Checkout totals look wrong\u{201d}; attaching 1 file."));
+    assert!(uploading(&p), "then it goes up, to the new task");
+    assert!(close_window(&mut p), "Cmd+W waits while a file is still going up");
+    assert!(p.has("Loop is still attaching files. Close it once they\u{2019}re up."));
 }
 
 #[test]
