@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.5.0
+version: 1.6.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -175,6 +175,12 @@ Use the Composio MCP server's Slack tools (find exact slugs with
   like `text`) — whoever works the task reads the whole conversation, not
   just the last line. Use the same fetch to decide whether a reply belongs
   to a task you already filed.
+- **Bound every search by its cursor**: add `after:<YYYY-MM-DD>` using the
+  day *before* the cursor's date (Slack's `after:` excludes that day), so a
+  long gap never returns old noise. If a result comes back truncated or
+  elided, do not give up: repeat that place's search with `count` 20, then 10,
+  and handle what you got, oldest first. A pass that handles nothing because
+  results were too big is a bug, not a partial.
 - If more than 50 new messages arrived in one place, handle the newest 50,
   set that cursor to the newest handled, and note it in the pass summary.
 - **Permalink**: `https://<workspace>.slack.com/archives/<channel id>/p<ts with
