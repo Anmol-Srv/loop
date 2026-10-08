@@ -163,13 +163,14 @@ async fn move_task(
     // with the row locked: two people moving the same task are serialised
     // here, so the second one's `expected` is checked against the first one's
     // result rather than against what both of them read.
-    let (current, assignee, department, admin, attached, last_mover): (
+    let (current, assignee, department, admin, attached, last_mover, needs_change): (
         String,
         Option<Uuid>,
         Option<String>,
         bool,
         Vec<String>,
         Option<String>,
+        bool,
     ) = sqlx::query_as(
         "SELECT t.status,
                 t.assignee_person_id,
@@ -181,7 +182,8 @@ async fn move_task(
                    LEFT JOIN person p ON p.id = c.on_behalf_of
                   WHERE c.target_type = 'task' AND c.target_id = t.id
                     AND c.state IN ('applied', 'approved') AND c.patch ? 'status'
-                  ORDER BY c.created_at DESC LIMIT 1)
+                  ORDER BY c.created_at DESC LIMIT 1),
+                t.needs_change
            FROM task t
            LEFT JOIN person own ON own.id = t.assignee_person_id
           WHERE t.id = $1
@@ -215,7 +217,7 @@ async fn move_task(
     // The holder (or an admin) moving by hand goes anywhere on the track; a
     // teammate's ship still comes only from `completed`, through the table.
     let reason = if free && (admin || mine) {
-        let to = free_moves(department, &current);
+        let to = free_moves(department, needs_change, &current);
         if !to.contains(&status.as_str()) {
             return Err(AppError::BadRequest(format!(
                 "a {} task in {current} goes to one of {}",
@@ -225,7 +227,7 @@ async fn move_task(
         }
         manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty())
     } else {
-        check_move(department, &current, &status, &attached, manual_reason)?
+        check_move(department, needs_change, &current, &status, &attached, manual_reason)?
     };
     if !admin && !mine && !ANYONE.contains(&status.as_str()) {
         return Err(AppError::Forbidden(
@@ -236,7 +238,7 @@ async fn move_task(
     // `done_at` is stamped at the track's terminal state and cleared on the
     // way out, so a reopened task does not keep claiming a finish date and
     // the dashboard counts one thing across both tracks.
-    let finished = status == terminal_of(department);
+    let finished = status == terminal_of(department, needs_change);
     let task: Task = sqlx::query_as(&format!(
         "UPDATE task SET status = $2, updated_at = now(),
                 manual_reason = $4,
@@ -266,12 +268,13 @@ async fn move_task(
 /// checked against this before anything moves.
 pub fn check_move(
     department: Option<&str>,
+    needs_change: bool,
     current: &str,
     status: &str,
     attached: &[String],
     manual_reason: Option<String>,
 ) -> AppResult<Option<String>> {
-    let next = next_statuses(department, current);
+    let next = next_statuses(department, needs_change, current);
     if !next.contains(&status) {
         return Err(AppError::BadRequest(format!(
             "a {} task in {current} goes to one of {}",
@@ -285,7 +288,7 @@ pub fn check_move(
     // recorded rather than waved through, so the board can still answer
     // "how did this get done".
     let reason = manual_reason.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
-    if let Some(kinds) = evidence_for(department, status) {
+    if let Some(kinds) = evidence_for(department, needs_change, status) {
         if reason.is_none() && !attached.iter().any(|k| kinds.contains(&k.as_str())) {
             let what = match kinds {
                 ["figma"] => "a Figma link",
@@ -700,6 +703,10 @@ pub struct TaskDetails {
     /// Absent leaves the labels alone; a list replaces them, `[]` clears.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_ids: Option<Vec<Uuid>>,
+    /// Whether it delivers a change (a PR to ship, a design to hand off).
+    /// Absent leaves it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_change: Option<bool>,
     /// The `updatedAt` the editor last saw. A precondition, not an edit, so it
     /// stays out of the audit patch — and out of a replayed proposal, which is
     /// approved against the row as it is then.
@@ -749,9 +756,9 @@ pub async fn update_details(
 
     let mut tx = state.db.begin().await?;
 
-    let (status, assignee, updated_at): (String, Option<Uuid>, chrono::DateTime<chrono::Utc>) =
+    let (status, assignee, updated_at, needs_change): (String, Option<Uuid>, chrono::DateTime<chrono::Utc>, bool) =
         sqlx::query_as(
-            "SELECT status, assignee_person_id, updated_at FROM task WHERE id = $1 FOR UPDATE",
+            "SELECT status, assignee_person_id, updated_at, needs_change FROM task WHERE id = $1 FOR UPDATE",
         )
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -780,7 +787,8 @@ pub async fn update_details(
         ),
         None => None,
     };
-    let (status, finished) = settle(department.as_deref(), &status);
+    let needs_change = details.needs_change.unwrap_or(needs_change);
+    let (status, finished) = settle(department.as_deref(), needs_change, &status);
 
     let task: Task = sqlx::query_as(&format!(
         "UPDATE task SET
@@ -795,6 +803,7 @@ pub async fn update_details(
             category           = CASE WHEN $8 THEN $9 ELSE category END,
             phase_id           = CASE WHEN $10 THEN $11 ELSE phase_id END,
             folder_name        = CASE WHEN $12 THEN $13 ELSE folder_name END,
+            needs_change       = $14,
             updated_at         = now()
           WHERE id = $1 RETURNING {TASK_COLUMNS}"
     ))
@@ -811,6 +820,7 @@ pub async fn update_details(
     .bind(moved.flatten())
     .bind(details.folder_name.is_some())
     .bind(details.folder_name.clone().flatten().map(|s| s.trim().to_owned()))
+    .bind(needs_change)
     .fetch_one(&mut *tx)
     .await?;
     if let Some(labels) = &details.label_ids {

@@ -662,7 +662,14 @@ fn open_cmux(ctx: &egui::Context, title: &str, cwd: &str, session_id: &str) {
             Some(ws) => mark(ws, None),
             None => {
                 ctx.copy_text(attach_command(&cwd, &sid));
-                w::toast(&ctx, "cmux didn\u{2019}t open it \u{2014} copied the attach command instead.", true);
+                // The usual reason: cmux's default socket mode only takes
+                // commands from processes started inside its own terminals,
+                // and Loop is opened from the Dock.
+                w::popup(
+                    &ctx,
+                    w::Popup::new(w::PopTone::Error, "cmux didn\u{2019}t accept the command \u{2014} attach command copied")
+                        .detail("cmux only takes commands from its own terminals by default. In cmux Settings \u{203A} Automation, set socket control to Password (or Allow all), then try again."),
+                );
             }
         }
     });

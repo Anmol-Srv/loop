@@ -24,17 +24,26 @@ pub const CATEGORIES: [&str; 5] = ["bug", "feature", "feedback", "question", "ch
 /// The flow for a department. An unassigned task has no department and so no
 /// track; engineering is the default because it is the larger half of the
 /// team and because `open` is all an unassigned task can be anyway.
-pub fn flow_of(department: Option<&str>) -> &'static [&'static str] {
-    match department {
+///
+/// `needs_change` false is work with no code or design to deliver — a data
+/// fix, an investigation, a question answered: its track ends at `completed`,
+/// with no handoff or ship after it and no evidence asked for.
+pub fn flow_of(department: Option<&str>, needs_change: bool) -> &'static [&'static str] {
+    let full: &'static [&'static str] = match department {
         Some("design") => &DESIGN_FLOW,
         _ => &ENG_FLOW,
+    };
+    if needs_change {
+        return full;
     }
+    let end = full.iter().position(|s| *s == "completed").expect("both flows have completed");
+    &full[..=end]
 }
 
 /// The state that means "finished" on this track. `done_at` is stamped here
 /// and nowhere else, so the dashboard counts one thing.
-pub fn terminal_of(department: Option<&str>) -> &'static str {
-    flow_of(department).last().expect("a flow is never empty")
+pub fn terminal_of(department: Option<&str>, needs_change: bool) -> &'static str {
+    flow_of(department, needs_change).last().expect("a flow is never empty")
 }
 
 /// When a task stops holding up the tasks that wait on it, as a SQL tuple.
@@ -53,8 +62,10 @@ pub const ALL_STATUSES: [&str; 9] =
     ["triage", "open", "in_progress", "research", "completed", "handoff", "shipped", "blocked", "dropped"];
 
 /// Every state a task on this track may hold.
-pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
-    std::iter::once(TRIAGE).chain(flow_of(department).iter().chain(ASIDE.iter()).copied()).collect()
+pub fn statuses_for(department: Option<&str>, needs_change: bool) -> Vec<&'static str> {
+    std::iter::once(TRIAGE)
+        .chain(flow_of(department, needs_change).iter().chain(ASIDE.iter()).copied())
+        .collect()
 }
 
 /// Where a task may go next. The one table: `set_status` refuses anything not
@@ -65,10 +76,11 @@ pub fn statuses_for(department: Option<&str>) -> Vec<&'static str> {
 /// other, so an open task could be shipped past the PR check. The order is
 /// the rule: `completed` only from `in_progress`, `shipped` only from
 /// `completed`, `handoff` only from `in_progress`. Stepping back one is
-/// always allowed, because work gets reopened.
-pub fn next_statuses(department: Option<&str>, from: &str) -> &'static [&'static str] {
+/// always allowed, because work gets reopened. A no-change task has the same
+/// table, cut where its track ends.
+pub fn next_statuses(department: Option<&str>, needs_change: bool, from: &str) -> Vec<&'static str> {
     let design = department == Some("design");
-    match (design, from) {
+    let all: &'static [&'static str] = match (design, from) {
         (_, "triage") => &["open", "dropped"],
         (_, "open") => &["in_progress", "blocked", "dropped"],
         (false, "in_progress") => &["completed", "open", "blocked", "dropped"],
@@ -84,12 +96,18 @@ pub fn next_statuses(department: Option<&str>, from: &str) -> &'static [&'static
         // A state this track does not have: finished work left behind by a
         // department change. `open` is the way back onto the track.
         _ => &["open", "blocked", "dropped"],
-    }
+    };
+    let on = statuses_for(department, needs_change);
+    all.iter().copied().filter(|s| on.contains(s)).collect()
 }
 
 /// The artifact kinds that let a task make this move, if it needs any. A
-/// `manual_reason` stands in for them; nothing else does.
-pub fn evidence_for(department: Option<&str>, to: &str) -> Option<&'static [&'static str]> {
+/// `manual_reason` stands in for them; nothing else does. Work with no change
+/// to deliver needs none.
+pub fn evidence_for(department: Option<&str>, needs_change: bool, to: &str) -> Option<&'static [&'static str]> {
+    if !needs_change {
+        return None;
+    }
     match (department == Some("design"), to) {
         (true, "handoff") => Some(&["figma"]),
         (false, "completed") => Some(&["pr", "commit"]),
@@ -104,36 +122,50 @@ pub const ANYONE: [&str; 1] = ["shipped"];
 /// Where a person may move a task they hold by hand: any other state on its
 /// track, no order and no evidence. Triage is the exception — only an intake
 /// puts a task there. Agents and teammates still go by `next_statuses`.
-pub fn free_moves(department: Option<&str>, from: &str) -> Vec<&'static str> {
-    statuses_for(department).into_iter().filter(|s| *s != from && *s != TRIAGE).collect()
+pub fn free_moves(department: Option<&str>, needs_change: bool, from: &str) -> Vec<&'static str> {
+    statuses_for(department, needs_change)
+        .into_iter()
+        .filter(|s| *s != from && *s != TRIAGE)
+        .collect()
 }
 
 /// `free_moves` as the JSON `GET /api/user/tracks`
 /// returns — generated, never written out, so it cannot drift from the rule.
+/// `engNoChange` / `designNoChange` are the tracks of work with no PR to ship.
 pub fn tracks_table() -> serde_json::Value {
-    let track = |dept: Option<&str>| -> serde_json::Map<String, serde_json::Value> {
-        statuses_for(dept)
+    let track = |dept: Option<&str>, change: bool| -> serde_json::Map<String, serde_json::Value> {
+        statuses_for(dept, change)
             .into_iter()
-            .map(|from| (from.to_owned(), serde_json::json!(free_moves(dept, from))))
+            .map(|from| (from.to_owned(), serde_json::json!(free_moves(dept, change, from))))
             .collect()
     };
     serde_json::json!({
-        "eng": track(None),
-        "design": track(Some("design")),
+        "eng": track(None, true),
+        "design": track(Some("design"), true),
+        "engNoChange": track(None, false),
+        "designNoChange": track(Some("design"), false),
         // People move without evidence now; kept so older apps still parse.
         "evidence": { "eng": {}, "design": {} },
         "anyone": ANYONE,
     })
 }
 
-/// Where a task lands when its track changes under it — reassignment, or its
-/// holder changing department. A status the new track lacks becomes `open`
-/// (a design `handoff` given to an engineer is theirs to start), and the
-/// second value says whether that is the new track's finish line, so
-/// `done_at` is recomputed alongside it and the two never disagree.
-pub fn settle(department: Option<&str>, status: &str) -> (String, bool) {
-    let status = if statuses_for(department).contains(&status) { status } else { "open" };
-    (status.to_owned(), status == terminal_of(department))
+/// Where a task lands when its track changes under it — reassignment, its
+/// holder changing department, or "needs a PR" switched. A status the new
+/// track lacks becomes `open` (a design `handoff` given to an engineer is
+/// theirs to start) — except a finished one switched to no-change, which is
+/// simply done: `completed`. The second value says whether that is the new
+/// track's finish line, so `done_at` is recomputed alongside it.
+pub fn settle(department: Option<&str>, needs_change: bool, status: &str) -> (String, bool) {
+    let on = statuses_for(department, needs_change);
+    let status = if on.contains(&status) {
+        status
+    } else if !needs_change && matches!(status, "handoff" | "shipped") {
+        "completed"
+    } else {
+        "open"
+    };
+    (status.to_owned(), status == terminal_of(department, needs_change))
 }
 
 /// The departments a person can belong to. A task's discipline is whoever
@@ -185,6 +217,9 @@ pub struct Task {
     /// on `TaskRow` — every viewer reads it: it is what a teammate's neutral
     /// "Plan approved" line is built from.
     pub plan_approved_at: Option<DateTime<Utc>>,
+    /// Whether it delivers a change — a PR to ship, a design to hand off. Off,
+    /// its track ends at `completed` and nothing needs evidence.
+    pub needs_change: bool,
 }
 
 /// A task plus the names a list needs to render a row, and a count of how many
@@ -255,16 +290,15 @@ pub struct TaskFilter {
     pub archived: bool,
 }
 
-/// Who may archive, restore or delete a task: whoever created it, whoever
-/// created its project (a standalone task has none), or an admin. SQL over `t`
-/// and `pr`, for the person bound at `viewer` — selected into every `TaskRow`
+/// Who may archive, restore, delete or move a task between projects: anyone
+/// on the team. SQL for the person bound at `viewer` — selected into every `TaskRow`
 /// and checked by the controller before it acts, so the app and the server
 /// ask one question.
 pub fn can_manage(viewer: &str) -> String {
-    format!(
-        "(coalesce(t.created_by = {viewer} OR pr.created_by = {viewer}, false)
-          OR EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND role = 'admin'))"
-    )
+    // Anyone on the team, not only the creator or an admin: archiving and
+    // deleting are everyday tidying. An agent never acts here (its routes
+    // don't reach these), and a task an agent holds is refused separately.
+    format!("EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND deleted_at IS NULL)")
 }
 
 /// Who may read the private side of a task's agent session: the task's
@@ -295,7 +329,7 @@ macro_rules! plain_task_columns {
         "id, phase_id, title, body, status, priority, \
          assignee_kind, assignee_person_id, assignee_token_id, claimed_by, \
          claim_expires_at, blocked_by, manual_reason, done_at, created_at, updated_at, \
-         review_target, archived_at, category, folder_name, plan_approved_at"
+         review_target, archived_at, category, folder_name, plan_approved_at, needs_change"
     };
 }
 

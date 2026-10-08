@@ -31,17 +31,15 @@ pub struct Project {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Who may archive, restore or delete a project: whoever created it, or an
-/// admin. SQL over `pr`, for the person bound at `viewer`.
+/// Who may archive, restore or delete a project: anyone on the team. SQL for
+/// the person bound at `viewer`.
 ///
 /// The one rule. Every project the app reads selects it as `can_archive` and
 /// `can_delete`, and the controller refuses on it before acting, so what the
 /// app offers and what the server allows cannot drift apart.
 pub fn can_manage(viewer: &str) -> String {
-    format!(
-        "(coalesce(pr.created_by = {viewer}, false)
-          OR EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND role = 'admin'))"
-    )
+    // Anyone on the team, as for tasks (`models::task::can_manage`).
+    format!("EXISTS (SELECT 1 FROM person WHERE id = {viewer} AND deleted_at IS NULL)")
 }
 
 /// A project's columns as `Project` reads them, the table named `pr`.

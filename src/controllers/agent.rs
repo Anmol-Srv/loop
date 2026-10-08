@@ -535,12 +535,16 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
         return Err(not_delegated(task_id));
     }
     let department = row.discipline.as_deref();
-    let track = if department == Some("design") {
-        "design"
-    } else {
-        "eng"
+    let needs_change = row.task.needs_change;
+    let track = match (department == Some("design"), needs_change) {
+        (true, true) => "design",
+        (false, true) => "eng",
+        // No PR to ship and no design to hand off: finishing is `completed`
+        // with a summary, nothing else.
+        (true, false) => "design-no-change",
+        (false, false) => "eng-no-change",
     };
-    let allowed = next_statuses(department, &row.task.status);
+    let allowed = next_statuses(department, needs_change, &row.task.status);
 
     // Whose Mac the agent works on: the owner of the agent this task is
     // delegated to, since that is whose repo folders and whose private
@@ -736,6 +740,7 @@ struct Delegated {
     status: String,
     agent_state: Option<String>,
     department: Option<String>,
+    needs_change: bool,
     attached: Vec<String>,
     /// Set once the owner has approved the current hand-off's plan; the gate
     /// `submit` and a `pr` attach check.
@@ -748,7 +753,7 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         .bind(agent.to_string())
         .execute(&mut *tx)
         .await?;
-    let (status, agent_state, finished, department, attached, name, owner, plan_approved_at): (
+    let (status, agent_state, finished, department, attached, name, owner, plan_approved_at, needs_change): (
         String,
         Option<String>,
         bool,
@@ -757,10 +762,11 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         String,
         Uuid,
         Option<chrono::DateTime<chrono::Utc>>,
+        bool,
     ) = sqlx::query_as(
         "SELECT t.status, t.agent_state, t.done_at IS NOT NULL, own.department,
                 ARRAY(SELECT a.kind FROM artifact a WHERE a.parent_type = 'task' AND a.parent_id = t.id),
-                ag.name, ag.owner_id, t.plan_approved_at
+                ag.name, ag.owner_id, t.plan_approved_at, t.needs_change
            FROM task t
            JOIN agent ag ON ag.id = t.delegate_agent_id
            LEFT JOIN person own ON own.id = t.assignee_person_id
@@ -800,6 +806,7 @@ async fn delegated(state: &AppState, agent: Uuid, task_id: Uuid) -> AppResult<De
         status,
         agent_state,
         department,
+        needs_change,
         attached,
         plan_approved_at,
     })
@@ -1004,8 +1011,10 @@ pub async fn submit(
     if d.plan_approved_at.is_none() {
         return Err(AppError::Conflict(NO_PLAN.into()));
     }
-    let finishing: &[&str] = match d.department.as_deref() {
-        Some("design") => &["completed", "handoff"],
+    let finishing: &[&str] = match (d.department.as_deref(), d.needs_change) {
+        // No change to deliver: done is done.
+        (_, false) => &["completed"],
+        (Some("design"), true) => &["completed", "handoff"],
         _ => &["completed", "shipped"],
     };
     if !finishing.contains(&target) {
@@ -1021,6 +1030,7 @@ pub async fn submit(
     }
     let reason = task::check_move(
         d.department.as_deref(),
+        d.needs_change,
         &d.status,
         target,
         &d.attached,

@@ -422,6 +422,7 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
         Tab::Triage => "Triage".to_owned(),
         Tab::Projects => "Projects".to_owned(),
         Tab::Agents => "Agents".to_owned(),
+        Tab::Todo => "To-do".to_owned(),
         Tab::Settings => "Back".to_owned(),
     };
     if shell::crumbs(ui, &back, &title) {
@@ -450,7 +451,8 @@ fn render(app: &mut App, ui: &mut egui::Ui, task_id: &str, local: &mut Local) {
     let mine = !me.is_empty() && str_of(&task, "assigneePersonId") == Some(me.as_str());
     let track = Track::of(str_of(&task, "discipline"));
     let can_act = admin || mine;
-    let moves = legal_moves(net.data(TRACKS_KEY), track, &status);
+    let needs_change = task.get("needsChange").and_then(Value::as_bool).unwrap_or(true);
+    let moves = legal_moves(net.data(TRACKS_KEY), track, needs_change, &status);
     let updated_at = str_of(&task, "updatedAt").map(str::to_owned);
     // Fold in the reply to a move started on an earlier frame. Done here, where
     // `net` is still free, so neither column has to own it.
@@ -1200,6 +1202,28 @@ fn rail(
         }
     });
 
+    // What finishing means: a PR to ship (or a design to hand off), or no
+    // change at all — then the track ends at Completed and nothing needs a PR.
+    let needs_change = task.get("needsChange").and_then(Value::as_bool).unwrap_or(true);
+    let (yes, no) = match r.track {
+        Track::Design => ("Needs handoff", "No design change"),
+        Track::Eng => ("Needs PR", "No code change"),
+    };
+    shell::property(ui, "Delivers", |ui| {
+        let current = if needs_change { yes } else { no };
+        if !r.can_write || r.busy {
+            value(ui, current);
+            return;
+        }
+        let other = if needs_change { ("false".to_owned(), no.to_owned()) } else { ("true".to_owned(), yes.to_owned()) };
+        let mut slot: Option<String> = None;
+        viz::value_select(ui, current, &[other], &mut slot)
+            .on_hover_text("Without a change, the task ends at Completed: no PR, no ship, and an agent submits with a summary.");
+        if let Some(v) = slot {
+            ask = Some(Ask::Details(json!({ "needsChange": v == "true" })));
+        }
+    });
+
     // A reassignment that would drag the task across tracks waits here for a
     // yes. Kept in the temp store so the rail, which holds nothing, can
     // remember it between frames: (who, the question to ask).
@@ -1572,9 +1596,17 @@ impl Track {
 /// the server's own table, so the menu never offers a move it would refuse.
 /// Until the table arrives (or from a server that lacks it) every other state
 /// on the track is offered, and the server has the last word.
-fn legal_moves(table: Option<&Value>, track: Track, status: &str) -> Vec<&'static str> {
-    let all = track.states().iter().copied().filter(|s| *s != status);
-    match table.and_then(|t| t.get(track.key())) {
+///
+/// A task with no change to deliver ends at completed: no handoff, no ship.
+fn legal_moves(table: Option<&Value>, track: Track, needs_change: bool, status: &str) -> Vec<&'static str> {
+    let all = track
+        .states()
+        .iter()
+        .copied()
+        .filter(|s| *s != status)
+        .filter(|s| needs_change || !matches!(*s, "handoff" | "shipped"));
+    let key = if needs_change { track.key().to_owned() } else { format!("{}NoChange", track.key()) };
+    match table.and_then(|t| t.get(key.as_str())) {
         Some(moves) => {
             let listed: Vec<&str> = moves
                 .get(status)

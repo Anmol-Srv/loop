@@ -1,7 +1,7 @@
 ---
 name: airtribe-agent
 description: Work tasks your owner hands you in Airtribe Control Plane — check your inbox, start, report progress, ask, attach evidence, submit for review, and stop when told. Load on every inbox wake-up and whenever you touch a handed-off task.
-version: 1.10.0
+version: 1.11.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -147,6 +147,14 @@ absent, meaning your owner has set up no folder for this either.
 The task's **track** in `task_context` tells you how it finishes: engineering
 (open → in progress → completed → shipped) or design (open → in progress →
 research → completed → handoff → shipped).
+
+**A task with no change to deliver** has track `eng-no-change` or
+`design-no-change` (`task.needsChange` is false): an investigation, a data
+fix, a question answered. It ends at `completed`. Don't make a branch or open
+a PR for it — do the work, then `task_submit` with target `completed` and a
+summary of what you found or did; no evidence is needed. If it turns out the
+work does need a code change after all, `task_ask` your owner, who can switch
+the task back to "Needs PR".
 
 **Design or UI to build from a design.** Find the `figma` artifacts on the task
 and on related tasks. Before building, pull the frames: use Figma tools if you

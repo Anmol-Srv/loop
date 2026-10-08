@@ -146,15 +146,15 @@ pub async fn set_department(
     .ok_or_else(|| AppError::NotFound("person not found".into()))?;
 
     // ponytail: one UPDATE per task that moves. A person holds tens of tasks.
-    let held: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, status FROM task
+    let held: Vec<(Uuid, String, bool)> = sqlx::query_as(
+        "SELECT id, status, needs_change FROM task
           WHERE assignee_person_id = $1 AND done_at IS NULL FOR UPDATE",
     )
     .bind(person_id)
     .fetch_all(&mut *tx)
     .await?;
-    for (id, status) in held {
-        let (next, finished) = settle(Some(department), &status);
+    for (id, status, needs_change) in held {
+        let (next, finished) = settle(Some(department), needs_change, &status);
         if next == status && !finished {
             continue;
         }

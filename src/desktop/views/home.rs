@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use egui::{Align, Color32, Layout, RichText};
 use serde_json::Value;
 
@@ -44,7 +44,7 @@ use super::projects::PRIORITIES;
 use super::menus::{task_items, Pick, Viewer};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, shell, size, space, status_colour, status_label, text, tokens,
+    avatar, cards as c, colour, radius, shell, size, space, status_colour, status_label, text, theme, tokens,
     viz, widgets as w,
 };
 use crate::desktop::net::memo;
@@ -196,6 +196,15 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
+    // ---- the numbers, in one band: what is moving, what is stuck, what is done
+    let agents_working = app
+        .net
+        .as_ref()
+        .and_then(|n| n.data(super::agent_session::ACTIVE_KEY))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    figures_band(ui, &d, agents_working);
+
     // ---- what a lead opens this page for: the list of things going wrong
     let mut go: Option<Target> = None;
     if !d.alerts.is_empty() {
@@ -203,7 +212,8 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(space::XL);
     }
 
-    // ---- the four figures, all the same height
+    // ---- the breakdowns, all the same height (the week's completions are in
+    // the band above)
     let team = list(d.home.as_ref(), "team");
     viz::row(
         ui,
@@ -211,7 +221,6 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         &mut [
             &mut |ui: &mut egui::Ui, h| status_card(ui, h, &d.status),
             &mut |ui: &mut egui::Ui, h| department_card(ui, h, &d.departments),
-            &mut |ui: &mut egui::Ui, h| completed_card(ui, h, &d.completed),
             &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
         ],
     );
@@ -638,6 +647,147 @@ fn status_card(ui: &mut egui::Ui, min_body: f32, f: &StatusFigures) -> f32 {
     })
 }
 
+/// One figure in the band: the number, what it counts, a line under it, and
+/// the colour it takes when it is something to act on.
+struct Figure {
+    value: String,
+    label: &'static str,
+    sub: String,
+    hint: &'static str,
+    /// The number's colour when it asks for attention; white otherwise.
+    alarm: Option<Color32>,
+}
+
+/// The page's headline numbers in one band, divided by hairlines — the agent
+/// page's figures, for the whole team. "Done this week" carries its seven
+/// days as a small bar chart, so the trend reads without the card below.
+fn figures_band(ui: &mut egui::Ui, d: &Derived, agents_working: usize) {
+    let count = |b: &str| d.all.iter().filter(|r| r.bucket == b).count();
+    let open = count("open");
+    let moving = count("in_progress") + count("research");
+    let blocked = count("blocked");
+    let review = count("completed") + count("handoff");
+    let overdue = d.alerts.iter().filter(|a| a.signal == "Overdue").count();
+    let attention = d.alerts.len();
+    let figures = [
+        Figure {
+            value: d.status.total.to_string(),
+            label: "Live tasks",
+            sub: format!("{}% done", d.status.pct),
+            hint: "Every task that isn\u{2019}t dropped, and how much of it is finished.",
+            alarm: None,
+        },
+        Figure {
+            value: moving.to_string(),
+            label: "In progress",
+            sub: format!("{open} not started \u{00B7} {review} to ship"),
+            hint: "In progress or in research; then how many nobody has started, and how many are completed but not yet out.",
+            alarm: None,
+        },
+        Figure {
+            value: blocked.to_string(),
+            label: "Blocked",
+            sub: if blocked > 0 { "waiting on other work".into() } else { "nothing stuck".into() },
+            hint: "Tasks waiting on work that isn\u{2019}t finished yet.",
+            alarm: (blocked > 0).then(colour::DANGER),
+        },
+        Figure {
+            value: attention.to_string(),
+            label: "Needs attention",
+            sub: if overdue > 0 { format!("{overdue} project{} overdue", if overdue == 1 { "" } else { "s" }) } else { "listed below".into() },
+            hint: "Questions, plans and reviews waiting on someone, blocked work and projects at risk.",
+            alarm: (attention > 0).then(colour::WARN),
+        },
+        Figure {
+            value: d.completed.total.to_string(),
+            label: "Done this week",
+            sub: d.completed.delta.clone(),
+            hint: "Tasks that reached the end of their track in the last seven days, against the seven before.",
+            alarm: None,
+        },
+        Figure {
+            value: agents_working.to_string(),
+            label: "Agents working",
+            sub: if agents_working > 0 { "on tasks now".into() } else { "none right now".into() },
+            hint: "Agents holding a task right now.",
+            alarm: None,
+        },
+    ];
+
+    egui::Frame::new()
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::symmetric(0, space::LG as i8))
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            // Narrow windows wrap the band onto a second row.
+            let per_row = if width >= 880.0 { figures.len() } else { 3 };
+            let cell_w = width / per_row as f32;
+            let value_font = egui::FontId::new(text::TITLE * 1.15, egui::FontFamily::Name(theme::SEMIBOLD.into()));
+            let label_font = egui::FontId::proportional(text::SMALL);
+            let sub_font = egui::FontId::proportional(text::CAPTION);
+            let cell_h = text::TITLE * 1.15 + text::SMALL + text::CAPTION + space::SM * 2.0;
+            for (row_i, chunk) in figures.chunks(per_row).enumerate() {
+                if row_i > 0 {
+                    ui.add_space(space::LG);
+                }
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(width, cell_h), egui::Sense::hover());
+                for (i, f) in chunk.iter().enumerate() {
+                    let cell = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + i as f32 * cell_w, rect.top()),
+                        egui::vec2(cell_w, cell_h),
+                    );
+                    let r = ui.interact(cell, ui.id().with(("home:figure", row_i, i)), egui::Sense::hover());
+                    let spoken = format!("{}: {}, {}", f.label, f.value, f.sub);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &spoken));
+                    r.on_hover_text(f.hint);
+                    let p = ui.painter();
+                    let x = cell.left() + space::LG;
+                    let room = cell_w - space::LG * 2.0;
+                    let label_g = w::truncated(ui, f.label, label_font.clone(), colour::TEXT_MUTED(), room);
+                    p.galley(egui::pos2(x, cell.top()), label_g.clone(), colour::TEXT_MUTED());
+                    let vy = cell.top() + label_g.size().y + space::XS;
+                    let value_g = p.layout_no_wrap(f.value.clone(), value_font.clone(), f.alarm.unwrap_or(colour::TEXT()));
+                    p.galley(egui::pos2(x, vy), value_g.clone(), f.alarm.unwrap_or(colour::TEXT()));
+                    // The week as seven little bars beside its number.
+                    if f.label == "Done this week" {
+                        let max = d.completed.buckets.iter().cloned().fold(0.0_f32, f32::max).max(1.0);
+                        let bar_w = 4.0;
+                        let gap = 3.0;
+                        let h = value_g.size().y * 0.62;
+                        let bx = x + value_g.size().x + space::MD;
+                        let base = vy + value_g.size().y * 0.78;
+                        for (k, v) in d.completed.buckets.iter().enumerate() {
+                            let bh = (v / max * h).max(2.0);
+                            let bar = egui::Rect::from_min_max(
+                                egui::pos2(bx + k as f32 * (bar_w + gap), base - bh),
+                                egui::pos2(bx + k as f32 * (bar_w + gap) + bar_w, base),
+                            );
+                            let last = k + 1 == d.completed.buckets.len();
+                            p.rect_filled(bar, 1.5, if last { colour::ACCENT() } else { colour::TEXT_FAINT() });
+                        }
+                    }
+                    // Live tasks: how much is done, as a thin bar.
+                    if f.label == "Live tasks" {
+                        let bw = (room * 0.55).min(110.0);
+                        let by = vy + value_g.size().y * 0.55;
+                        let bx = x + value_g.size().x + space::MD;
+                        let track = egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bw, 5.0));
+                        p.rect_filled(track, 2.5, colour::LINE());
+                        let done = egui::Rect::from_min_size(track.min, egui::vec2(bw * d.status.pct as f32 / 100.0, 5.0));
+                        p.rect_filled(done, 2.5, colour::OK());
+                    }
+                    let sub_g = w::truncated(ui, &f.sub, sub_font.clone(), colour::TEXT_FAINT(), room);
+                    ui.painter().galley(egui::pos2(x, cell.bottom() - sub_g.size().y), sub_g, colour::TEXT_FAINT());
+                    if i > 0 {
+                        ui.painter().vline(cell.left(), cell.y_range().shrink(space::XXS), egui::Stroke::new(1.0, colour::LINE()));
+                    }
+                }
+            }
+        });
+}
+
 /// Sentence-cased status names, positionally matched to `DONUT`. Built once
 /// rather than capitalising in the render loop.
 const LABELS: [&str; DONUT.len()] =
@@ -711,8 +861,6 @@ struct CompletedFigures {
     buckets: Vec<f32>,
     total: usize,
     delta: String,
-    /// Day initials, oldest bucket first, so the last column is today.
-    names: Vec<String>,
 }
 
 fn completed_figures(rows: &[&Value]) -> CompletedFigures {
@@ -736,32 +884,13 @@ fn completed_figures(rows: &[&Value]) -> CompletedFigures {
     let total: f32 = buckets.iter().sum();
     let total = total as usize;
     let delta = match total as i64 - previous as i64 {
-        _ if total == 0 && previous == 0 => String::new(),
+        _ if total == 0 && previous == 0 => "none yet".to_owned(),
         0 => "same as prev".to_owned(),
         d if d > 0 => format!("+{d} vs prev"),
         d => format!("{d} vs prev"),
     };
 
-    let names: Vec<String> = (0..WEEK)
-        .map(|i| {
-            let day = today - chrono::Duration::days((WEEK - 1 - i) as i64);
-            initial(day.weekday()).to_owned()
-        })
-        .collect();
-    CompletedFigures { buckets, total, delta, names }
-}
-
-fn completed_card(ui: &mut egui::Ui, min_body: f32, f: &CompletedFigures) -> f32 {
-    let names: Vec<&str> = f.names.iter().map(String::as_str).collect();
-    viz::card(ui, "Completed", "last 7 days", min_body, |ui| {
-        viz::headline(ui, &f.total.to_string(), &f.delta);
-        ui.add_space(space::MD);
-        viz::columns(ui, &f.buckets, &names, colour::ACCENT());
-    })
-}
-
-fn initial(day: chrono::Weekday) -> &'static str {
-    ["M", "T", "W", "T", "F", "S", "S"][day.num_days_from_monday() as usize]
+    CompletedFigures { buckets, total, delta }
 }
 
 /// Who is carrying what. The bar is `open` — work the person can act on
