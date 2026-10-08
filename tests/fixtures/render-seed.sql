@@ -243,4 +243,10 @@ Errors return `{ok:false, reason}`.$md$, 'UTF8'), NULL, NULL, anmol, now() - int
   INSERT INTO note (task_id, agent_id, kind, body, created_at) VALUES
     (t_long_agent, bot, 'progress', 'Found three places that build reminder times by hand: the cohort-start job, the manual resend in the admin panel and the calendar invite attachment.', now() - interval '1 day 4 hours'),
     (t_long_agent, bot, 'progress', 'Timezone resolver written with tests for Toronto, Dubai and a learner with no profile timezone; all passing.', now() - interval '5 hours');
+  -- A plan waiting on its owner: the pinned plan card, Approve / Ask for changes.
+  UPDATE task SET delegate_agent_id = bot, agent_state = 'plan_review', delegated_at = now() - interval '2 hours'
+   WHERE id = t_eng;
+  INSERT INTO task_plan (task_id, agent_id, summary, plan, created_at) VALUES
+    (t_eng, bot, 'Wrap the Jev client in a retry budget: three tries, two seconds each, eight in all.',
+     E'1. api/services/jev.js: per-attempt timeout\n2. Budget across attempts\n3. Tests for timeout and exhaustion', now() - interval '1 hour');
 END $$;

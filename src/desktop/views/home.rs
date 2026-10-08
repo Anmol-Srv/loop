@@ -37,14 +37,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
-use egui::{Align, Color32, Layout, RichText};
+use egui::{Align, Layout, RichText};
 use serde_json::Value;
 
 use super::projects::PRIORITIES;
 use super::menus::{task_items, Pick, Viewer};
 use crate::desktop::design::table::{self, Col};
 use crate::desktop::design::{
-    avatar, cards as c, colour, radius, shell, size, space, status_colour, status_label, text, theme, tokens,
+    avatar, cards as c, colour, radius, shell, size, space, status_colour, status_label, text, theme,
     viz, widgets as w,
 };
 use crate::desktop::net::memo;
@@ -64,9 +64,6 @@ const FILTERS: &str = "home:filters";
 const TABLE: &str = "home:table";
 /// The attention list's table id. Its own, so its hover never lights a task row.
 const ATTENTION: &str = "home:attention";
-
-/// Last frame's tallest figure, so all four cards agree on a height.
-const VIZ_H: &str = "home:viz-h";
 
 /// Days in the completed chart. Seven, because the label says week.
 const WEEK: usize = 7;
@@ -91,10 +88,6 @@ const STATUSES: [&str; 8] =
 /// Mirrors the server's `BLOCKER_RESOLVED`: a design handoff unblocks the
 /// engineer, it does not have to ship first.
 const BLOCKER_RESOLVED: [&str; 4] = ["handoff", "completed", "shipped", "dropped"];
-
-/// The donut's slices, finished-first so the ring fills clockwise from the
-/// outcome you want. `dropped` is absent because the whole page excludes it.
-const DONUT: [&str; 7] = ["shipped", "handoff", "completed", "research", "in_progress", "blocked", "open"];
 
 // Table geometry. Fixed so the columns line up with the header and with each
 // other; the task column takes whatever is left. Alignment is declared here
@@ -144,6 +137,60 @@ pub struct State {
     pub project: Option<String>,
     /// The table lists archived tasks instead.
     pub archived: bool,
+    /// A figure from the overview, clicked: the table shows just those.
+    pub quick: Option<Quick>,
+    /// A person from the Team list, clicked: (person id, name).
+    pub owner: Option<(String, String)>,
+}
+
+/// The overview's figures, each one also a filter on the table below.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Quick {
+    InProgress,
+    Blocked,
+    NotStarted,
+    ToShip,
+    DoneWeek,
+    WithAgents,
+}
+
+impl Quick {
+    const ALL: [Quick; 6] =
+        [Quick::InProgress, Quick::Blocked, Quick::NotStarted, Quick::ToShip, Quick::DoneWeek, Quick::WithAgents];
+
+    fn label(self) -> &'static str {
+        match self {
+            Quick::InProgress => "In progress",
+            Quick::Blocked => "Blocked",
+            Quick::NotStarted => "Not started",
+            Quick::ToShip => "Ready to ship",
+            Quick::DoneWeek => "Done this week",
+            Quick::WithAgents => "With agents",
+        }
+    }
+
+    /// What the figure counts, for its tooltip.
+    fn hint(self) -> &'static str {
+        match self {
+            Quick::InProgress => "Being worked on now, research included.",
+            Quick::Blocked => "Waiting on work that isn\u{2019}t finished yet.",
+            Quick::NotStarted => "Open: nobody has started it.",
+            Quick::ToShip => "Completed or handed off, but not out yet.",
+            Quick::DoneWeek => "Reached the end of its track in the last seven days.",
+            Quick::WithAgents => "Held by an agent right now.",
+        }
+    }
+
+    fn matches(self, r: &Row) -> bool {
+        match self {
+            Quick::InProgress => matches!(r.bucket, "in_progress" | "research"),
+            Quick::Blocked => r.bucket == "blocked",
+            Quick::NotStarted => r.bucket == "open",
+            Quick::ToShip => matches!(r.bucket, "completed" | "handoff") && !r.finished,
+            Quick::DoneWeek => r.done_days.is_some_and(|d| d < WEEK as i64),
+            Quick::WithAgents => r.agent,
+        }
+    }
 }
 
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -196,34 +243,35 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    // ---- the numbers, in one band: what is moving, what is stuck, what is done
-    let agents_working = app
-        .net
-        .as_ref()
-        .and_then(|n| n.data(super::agent_session::ACTIVE_KEY))
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    figures_band(ui, &d, agents_working);
+    // ---- the overview: six figures, each a filter on the table below
+    let mut scroll_to_table = false;
+    if let Some(q) = overview(ui, &d, state.quick) {
+        state.quick = if state.quick == Some(q) { None } else { Some(q) };
+        scroll_to_table = state.quick.is_some();
+    }
 
     // ---- what a lead opens this page for: the list of things going wrong
     let mut go: Option<Target> = None;
     if !d.alerts.is_empty() {
         attention_list(ui, &d.alerts, &mut go);
-        ui.add_space(space::XL);
     }
 
-    // ---- the breakdowns, all the same height (the week's completions are in
-    // the band above)
-    let team = list(d.home.as_ref(), "team");
-    viz::row(
-        ui,
-        egui::Id::new(VIZ_H),
-        &mut [
-            &mut |ui: &mut egui::Ui, h| status_card(ui, h, &d.status),
-            &mut |ui: &mut egui::Ui, h| department_card(ui, h, &d.departments),
-            &mut |ui: &mut egui::Ui, h| team_card(ui, h, &team),
-        ],
-    );
+    // ---- this week, and who holds what
+    ui.add_space(space::XL);
+    let (opened, show_all) = this_week(ui, &d, d.rows());
+    if let Some(id) = opened {
+        go = Some(Target::Task(id));
+    }
+    if show_all {
+        state.quick = Some(Quick::DoneWeek);
+        scroll_to_table = true;
+    }
+    ui.add_space(space::LG);
+    if let Some((id, name)) = team(ui, &d, state.owner.as_ref().map(|(id, _)| id.as_str())) {
+        let same = state.owner.as_ref().is_some_and(|(o, _)| *o == id);
+        state.owner = if same { None } else { Some((id, name)) };
+        scroll_to_table = state.owner.is_some();
+    }
 
     // ---- whose agents are holding what, right now
     if let Some(id) = super::agent_session::at_work(ui, app.net.as_mut().unwrap(), &my_person_id) {
@@ -245,6 +293,9 @@ pub fn ui(app: &mut App, ui: &mut egui::Ui) {
     );
     let filtered = state != State::default();
     let mut new_task = false;
+    if scroll_to_table {
+        ui.scroll_to_cursor(Some(Align::TOP));
+    }
     shell::section_count_with(ui, "Tasks", shown.len(), |ui| {
         if viewer.can_write {
             new_task = super::new_task::button(ui);
@@ -308,16 +359,17 @@ const SHOWN: &str = "home:shown";
 /// Everything this page works out from its two payloads. Rows point back into
 /// `tasks` by index rather than copying it.
 struct Derived {
-    home: Arc<Value>,
     tasks: Arc<Value>,
     /// Every task, newest first, dropped included.
     all: Vec<Row>,
     /// How many of `all` are not dropped.
     live: usize,
     alerts: Vec<Alert>,
-    status: StatusFigures,
-    departments: Vec<(String, i64, i64)>,
     completed: CompletedFigures,
+    /// Everyone holding live work, busiest first.
+    team: Vec<Member>,
+    /// Indexes into `all` of what finished in the last seven days, newest first.
+    finished: Vec<usize>,
     filter_departments: Vec<(String, String)>,
     filter_projects: Vec<(String, String)>,
 }
@@ -327,6 +379,14 @@ struct Row {
     /// Index into the `/tasks` array.
     at: usize,
     bucket: &'static str,
+    /// At the end of its track (`doneAt` set).
+    finished: bool,
+    /// Days since it finished, when it has.
+    done_days: Option<i64>,
+    /// An agent holds it right now.
+    agent: bool,
+    /// Its assignee's person id.
+    owner: Option<String>,
     /// Title, project and owner, lowercased once, for the search box.
     search: [String; 3],
     /// "waiting on …", when something unresolved holds it up.
@@ -364,9 +424,19 @@ fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
         .map(|&i| {
             let t = &rows[i];
             let lower = |k: &str| str_at(t, k).unwrap_or_default().to_lowercase();
+            let done_days = str_at(t, "doneAt")
+                .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+                .map(|when| (Local::now().date_naive() - when.with_timezone(&Local).date_naive()).num_days());
+            let agent = t.get("delegate").is_some_and(|d| {
+                d.is_object() && !matches!(str_at(d, "state"), Some("done" | "stopped"))
+            });
             Row {
                 at: i,
                 bucket: bucket(t),
+                finished: done_days.is_some(),
+                done_days,
+                agent,
+                owner: str_at(t, "assigneePersonId").map(str::to_owned),
                 search: [lower("title"), lower("projectName"), lower("assigneeName")],
                 waiting: (outstanding(t) > 0).then(|| format!("waiting on {}", blocker(t, &by_id))),
             }
@@ -392,16 +462,23 @@ fn derive(home: Option<Arc<Value>>, tasks: Option<Arc<Value>>) -> Derived {
     Derived {
         live: live.len(),
         alerts: attention(&home, &projects, &live, &by_id),
-        status: status_figures(&live),
-        departments: department_rollup(&projects),
         completed: completed_figures(&live),
+        team: members(&all, rows),
+        finished: {
+            let mut f: Vec<usize> = (0..all.len())
+                .filter(|&i| all[i].bucket != "dropped" && all[i].done_days.is_some_and(|d| d < WEEK as i64))
+                .collect();
+            f.sort_by(|&a, &b| {
+                str_at(&rows[all[b].at], "doneAt").unwrap_or_default().cmp(str_at(&rows[all[a].at], "doneAt").unwrap_or_default())
+            });
+            f
+        },
         filter_departments: departments.iter().map(|d| ((*d).to_owned(), (*d).to_owned())).collect(),
         filter_projects: projects
             .iter()
             .filter_map(|p| Some((str_at(p, "id")?.to_owned(), str_at(p, "name")?.to_owned())))
             .collect(),
         all,
-        home: home.clone(),
         tasks: tasks.clone(),
     }
 }
@@ -604,253 +681,320 @@ fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) 
 
 // ------------------------------------------------------------------- figures
 
-/// The ring's numbers: a count per `DONUT` slice, the whole, and the share done.
-struct StatusFigures {
-    counts: [usize; DONUT.len()],
-    total: usize,
-    pct: usize,
+/// One person's live work, split the way the Team list draws it.
+struct Member {
+    id: String,
+    name: String,
+    in_progress: usize,
+    to_ship: usize,
+    blocked: usize,
+    open: usize,
 }
 
-fn status_figures(rows: &[&Value]) -> StatusFigures {
-    // Dropped work is off the board, so it is off the ring and out of the
-    // denominator too — otherwise the percentage measures the wrong pile.
-    let live: Vec<&&Value> = rows.iter().filter(|t| bucket(t) != "dropped").collect();
-    let mut counts = [0; DONUT.len()];
-    for t in &live {
-        if let Some(i) = DONUT.iter().position(|s| *s == bucket(t)) {
-            counts[i] += 1;
+impl Member {
+    fn total(&self) -> usize {
+        self.in_progress + self.to_ship + self.blocked + self.open
+    }
+}
+
+/// Everyone holding live work, busiest first. Finished and dropped work is
+/// not load.
+fn members(all: &[Row], rows: &[Value]) -> Vec<Member> {
+    let mut by: Vec<Member> = Vec::new();
+    for r in all.iter().filter(|r| !r.finished && r.bucket != "dropped") {
+        let Some(id) = &r.owner else { continue };
+        let at = match by.iter().position(|m| &m.id == id) {
+            Some(at) => at,
+            None => {
+                by.push(Member {
+                    id: id.clone(),
+                    name: str_at(&rows[r.at], "assigneeName").unwrap_or("Someone").to_owned(),
+                    in_progress: 0,
+                    to_ship: 0,
+                    blocked: 0,
+                    open: 0,
+                });
+                by.len() - 1
+            }
+        };
+        let m = &mut by[at];
+        match r.bucket {
+            "in_progress" | "research" => m.in_progress += 1,
+            "completed" | "handoff" => m.to_ship += 1,
+            "blocked" => m.blocked += 1,
+            _ => m.open += 1,
         }
     }
-    let total = live.len();
-    // `doneAt` is the server's one answer for both tracks: design ends at
-    // completed, engineering at shipped, and only the terminal state stamps it.
-    let done = live.iter().filter(|t| finished(t)).count();
-    let pct = if total == 0 { 0 } else { done * 100 / total };
-    StatusFigures { counts, total, pct }
+    by.sort_by(|a, b| b.total().cmp(&a.total()).then(a.name.cmp(&b.name)));
+    by
 }
 
-/// Status as a ring. The centre carries the only number worth reading from
-/// across the room: how much of this is finished.
-fn status_card(ui: &mut egui::Ui, min_body: f32, f: &StatusFigures) -> f32 {
-    viz::card(ui, "Status", &plural(f.total, "task"), min_body, |ui| {
-        let slices: Vec<viz::Slice<'_>> = DONUT
-            .iter()
-            .zip(LABELS)
-            .zip(f.counts)
-            .map(|((status, label), count)| viz::Slice {
-                label,
-                count,
-                colour: status_colour(status),
-            })
-            .collect();
-        viz::donut(ui, &slices, &format!("{}%", f.pct), "DONE");
-    })
-}
-
-/// One figure in the band: the number, what it counts, a line under it, and
-/// the colour it takes when it is something to act on.
-struct Figure {
-    value: String,
-    label: &'static str,
-    sub: String,
-    hint: &'static str,
-    /// The number's colour when it asks for attention; white otherwise.
-    alarm: Option<Color32>,
-}
-
-/// The page's headline numbers in one band, divided by hairlines — the agent
-/// page's figures, for the whole team. "Done this week" carries its seven
-/// days as a small bar chart, so the trend reads without the card below.
-fn figures_band(ui: &mut egui::Ui, d: &Derived, agents_working: usize) {
-    let count = |b: &str| d.all.iter().filter(|r| r.bucket == b).count();
-    let open = count("open");
-    let moving = count("in_progress") + count("research");
-    let blocked = count("blocked");
-    let review = count("completed") + count("handoff");
-    let overdue = d.alerts.iter().filter(|a| a.signal == "Overdue").count();
-    let attention = d.alerts.len();
-    let figures = [
-        Figure {
-            value: d.status.total.to_string(),
-            label: "Live tasks",
-            sub: format!("{}% done", d.status.pct),
-            hint: "Every task that isn\u{2019}t dropped, and how much of it is finished.",
-            alarm: None,
-        },
-        Figure {
-            value: moving.to_string(),
-            label: "In progress",
-            sub: format!("{open} not started \u{00B7} {review} to ship"),
-            hint: "In progress or in research; then how many nobody has started, and how many are completed but not yet out.",
-            alarm: None,
-        },
-        Figure {
-            value: blocked.to_string(),
-            label: "Blocked",
-            sub: if blocked > 0 { "waiting on other work".into() } else { "nothing stuck".into() },
-            hint: "Tasks waiting on work that isn\u{2019}t finished yet.",
-            alarm: (blocked > 0).then(colour::DANGER),
-        },
-        Figure {
-            value: attention.to_string(),
-            label: "Needs attention",
-            sub: if overdue > 0 { format!("{overdue} project{} overdue", if overdue == 1 { "" } else { "s" }) } else { "listed below".into() },
-            hint: "Questions, plans and reviews waiting on someone, blocked work and projects at risk.",
-            alarm: (attention > 0).then(colour::WARN),
-        },
-        Figure {
-            value: d.completed.total.to_string(),
-            label: "Done this week",
-            sub: d.completed.delta.clone(),
-            hint: "Tasks that reached the end of their track in the last seven days, against the seven before.",
-            alarm: None,
-        },
-        Figure {
-            value: agents_working.to_string(),
-            label: "Agents working",
-            sub: if agents_working > 0 { "on tasks now".into() } else { "none right now".into() },
-            hint: "Agents holding a task right now.",
-            alarm: None,
-        },
-    ];
-
+/// A quiet panel: the surface every section on this page sits on.
+fn panel<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(colour::SURFACE())
         .stroke(egui::Stroke::new(1.0, colour::LINE()))
         .corner_radius(radius::LG)
-        .inner_margin(egui::Margin::symmetric(0, space::LG as i8))
+        .inner_margin(egui::Margin::symmetric(space::LG as i8, space::LG as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+fn panel_title(ui: &mut egui::Ui, title: &str, note: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        ui.label(
+            RichText::new(title)
+                .size(text::BODY)
+                .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
+                .color(colour::TEXT()),
+        );
+        if !note.is_empty() {
+            ui.label(RichText::new(note).size(text::SMALL).color(colour::TEXT_MUTED()));
+        }
+    });
+}
+
+/// The overview: six figures in one band, each a filter. Clicking one shows
+/// just those tasks in the table below (and scrolls to it); clicking it again
+/// clears it. Returns the figure clicked.
+fn overview(ui: &mut egui::Ui, d: &Derived, active: Option<Quick>) -> Option<Quick> {
+    let count = |q: Quick| d.all.iter().filter(|r| r.bucket != "dropped" && q.matches(r)).count();
+    let mut clicked = None;
+    egui::Frame::new()
+        .fill(colour::SURFACE())
+        .stroke(egui::Stroke::new(1.0, colour::LINE()))
+        .corner_radius(radius::LG)
+        .inner_margin(egui::Margin::same(space::XS as i8))
         .show(ui, |ui| {
             let width = ui.available_width();
-            // Narrow windows wrap the band onto a second row.
-            let per_row = if width >= 880.0 { figures.len() } else { 3 };
+            let per_row = if width >= 860.0 { Quick::ALL.len() } else { 3 };
             let cell_w = width / per_row as f32;
-            let value_font = egui::FontId::new(text::TITLE * 1.15, egui::FontFamily::Name(theme::SEMIBOLD.into()));
-            let label_font = egui::FontId::proportional(text::SMALL);
-            let sub_font = egui::FontId::proportional(text::CAPTION);
-            let cell_h = text::TITLE * 1.15 + text::SMALL + text::CAPTION + space::SM * 2.0;
-            for (row_i, chunk) in figures.chunks(per_row).enumerate() {
-                if row_i > 0 {
-                    ui.add_space(space::LG);
-                }
+            let cell_h = 84.0;
+            for (row_i, chunk) in Quick::ALL.chunks(per_row).enumerate() {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(width, cell_h), egui::Sense::hover());
-                for (i, f) in chunk.iter().enumerate() {
+                for (i, q) in chunk.iter().enumerate() {
+                    let n = count(*q);
                     let cell = egui::Rect::from_min_size(
                         egui::pos2(rect.left() + i as f32 * cell_w, rect.top()),
                         egui::vec2(cell_w, cell_h),
                     );
-                    let r = ui.interact(cell, ui.id().with(("home:figure", row_i, i)), egui::Sense::hover());
-                    let spoken = format!("{}: {}, {}", f.label, f.value, f.sub);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &spoken));
-                    r.on_hover_text(f.hint);
+                    let id = ui.id().with(("home:quick", row_i, i));
+                    let r = ui.interact(cell.shrink(2.0), id, egui::Sense::click());
+                    let r = crate::desktop::design::motion::operable(ui, r, radius::MD as f32);
+                    let on = active == Some(*q);
+                    let hot = r.hovered() || r.has_focus();
                     let p = ui.painter();
+                    if on {
+                        p.rect_filled(cell.shrink(2.0), radius::MD as f32, colour::ACCENT_SOFT());
+                    } else if hot {
+                        p.rect_filled(cell.shrink(2.0), radius::MD as f32, colour::SURFACE_HOVER());
+                    }
+                    if i > 0 && !on && active != Some(chunk[i - 1]) {
+                        p.vline(cell.left(), cell.y_range().shrink(space::LG), egui::Stroke::new(1.0, colour::LINE()));
+                    }
+                    // Red for what is stuck, amber for what waits on a ship;
+                    // every other number in white.
+                    let ink = match q {
+                        Quick::Blocked if n > 0 => colour::DANGER(),
+                        _ => colour::TEXT(),
+                    };
                     let x = cell.left() + space::LG;
-                    let room = cell_w - space::LG * 2.0;
-                    let label_g = w::truncated(ui, f.label, label_font.clone(), colour::TEXT_MUTED(), room);
-                    p.galley(egui::pos2(x, cell.top()), label_g.clone(), colour::TEXT_MUTED());
-                    let vy = cell.top() + label_g.size().y + space::XS;
-                    let value_g = p.layout_no_wrap(f.value.clone(), value_font.clone(), f.alarm.unwrap_or(colour::TEXT()));
-                    p.galley(egui::pos2(x, vy), value_g.clone(), f.alarm.unwrap_or(colour::TEXT()));
-                    // The week as seven little bars beside its number.
-                    if f.label == "Done this week" {
-                        let max = d.completed.buckets.iter().cloned().fold(0.0_f32, f32::max).max(1.0);
-                        let bar_w = 4.0;
-                        let gap = 3.0;
-                        let h = value_g.size().y * 0.62;
-                        let bx = x + value_g.size().x + space::MD;
-                        let base = vy + value_g.size().y * 0.78;
-                        for (k, v) in d.completed.buckets.iter().enumerate() {
-                            let bh = (v / max * h).max(2.0);
-                            let bar = egui::Rect::from_min_max(
-                                egui::pos2(bx + k as f32 * (bar_w + gap), base - bh),
-                                egui::pos2(bx + k as f32 * (bar_w + gap) + bar_w, base),
-                            );
-                            let last = k + 1 == d.completed.buckets.len();
-                            p.rect_filled(bar, 1.5, if last { colour::ACCENT() } else { colour::TEXT_FAINT() });
-                        }
+                    let label_ink = if on { colour::ACCENT() } else { colour::TEXT_MUTED() };
+                    p.text(egui::pos2(x, cell.top() + space::MD), egui::Align2::LEFT_TOP, q.label(),
+                        egui::FontId::proportional(text::SMALL), label_ink);
+                    p.text(egui::pos2(x, cell.top() + space::MD + text::SMALL + space::XS), egui::Align2::LEFT_TOP,
+                        n.to_string(), egui::FontId::new(text::TITLE * 1.2, egui::FontFamily::Name(theme::SEMIBOLD.into())), ink);
+                    let foot = if on { "Showing below \u{00B7} click to clear" } else { "Show tasks" };
+                    if hot || on {
+                        p.text(egui::pos2(x, cell.bottom() - space::MD), egui::Align2::LEFT_BOTTOM, foot,
+                            egui::FontId::proportional(text::CAPTION), if on { colour::ACCENT() } else { colour::TEXT_FAINT() });
                     }
-                    // Live tasks: how much is done, as a thin bar.
-                    if f.label == "Live tasks" {
-                        let bw = (room * 0.55).min(110.0);
-                        let by = vy + value_g.size().y * 0.55;
-                        let bx = x + value_g.size().x + space::MD;
-                        let track = egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bw, 5.0));
-                        p.rect_filled(track, 2.5, colour::LINE());
-                        let done = egui::Rect::from_min_size(track.min, egui::vec2(bw * d.status.pct as f32 / 100.0, 5.0));
-                        p.rect_filled(done, 2.5, colour::OK());
+                    if hot {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    let sub_g = w::truncated(ui, &f.sub, sub_font.clone(), colour::TEXT_FAINT(), room);
-                    ui.painter().galley(egui::pos2(x, cell.bottom() - sub_g.size().y), sub_g, colour::TEXT_FAINT());
-                    if i > 0 {
-                        ui.painter().vline(cell.left(), cell.y_range().shrink(space::XXS), egui::Stroke::new(1.0, colour::LINE()));
+                    let spoken = format!("{}: {n}", q.label());
+                    let r = r.on_hover_text(q.hint());
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &spoken));
+                    if r.clicked() {
+                        clicked = Some(*q);
                     }
                 }
             }
         });
+    clicked
 }
 
-/// Sentence-cased status names, positionally matched to `DONUT`. Built once
-/// rather than capitalising in the render loop.
-const LABELS: [&str; DONUT.len()] =
-    ["Shipped", "Handoff", "Completed", "Research", "In progress", "Blocked", "Open"];
-
-/// Progress per department, from the server's per-project rollup — the one
-/// number on this page that covers every task, not just the ones on screen.
-fn department_rollup(projects: &[&Value]) -> Vec<(String, i64, i64)> {
-    // Sum the rollups across projects, keeping first-seen order so the list
-    // does not reshuffle between refreshes.
-    let mut order: Vec<String> = Vec::new();
-    let mut tally: HashMap<String, (i64, i64)> = HashMap::new();
-    let (mut all_done, mut all_total) = (0, 0);
-
-    for p in projects {
-        all_done += num(p, "done");
-        all_total += num(p, "total");
-        for d in list(p, "disciplines") {
-            let Some(name) = str_at(d, "discipline") else { continue };
-            let slot = tally.entry(name.to_owned()).or_insert_with(|| {
-                order.push(name.to_owned());
-                (0, 0)
+/// This week: what finished each day, large enough to read, beside the list of
+/// what finished. Returns a task to open, or `true` for "show them all".
+fn this_week(ui: &mut egui::Ui, d: &Derived, rows: &[Value]) -> (Option<String>, bool) {
+    let mut open = None;
+    let mut all = false;
+    panel(ui, |ui| {
+        let total = d.completed.total;
+        let note = if d.completed.delta.is_empty() { String::new() } else { d.completed.delta.clone() };
+        panel_title(ui, "Finished this week", &format!("{total} \u{00B7} {note}"));
+        ui.add_space(space::MD);
+        let width = ui.available_width();
+        let chart_w = if width >= 760.0 { width * 0.48 } else { width };
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(chart_w, 170.0), Layout::top_down(Align::Min), |ui| {
+                week_chart(ui, &d.completed.buckets);
             });
-            slot.0 += num(d, "done");
-            slot.1 += num(d, "total");
-        }
-    }
-
-    // Whatever the departments do not account for is unassigned work — a task
-    // with no assignee has no department yet. It is real, so it gets a row
-    // rather than quietly vanishing from the total.
-    let labelled: i64 = order.iter().filter_map(|d| tally.get(d)).map(|(_, t)| t).sum();
-    let labelled_done: i64 = order.iter().filter_map(|d| tally.get(d)).map(|(d, _)| d).sum();
-    if all_total > labelled {
-        order.push("Unassigned".to_owned());
-        tally.insert("Unassigned".to_owned(), (all_done - labelled_done, all_total - labelled));
-    }
-
-    order
-        .into_iter()
-        .map(|name| {
-            let (done, total) = tally.get(&name).copied().unwrap_or((0, 0));
-            (name, done, total)
-        })
-        .collect()
+            if width < 760.0 {
+                return;
+            }
+            ui.add_space(space::XL);
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                if d.finished.is_empty() {
+                    w::muted(ui, "Nothing finished in the last seven days yet.");
+                    return;
+                }
+                for &i in d.finished.iter().take(5) {
+                    let t = &rows[d.all[i].at];
+                    if finished_row(ui, t) {
+                        open = str_at(t, "id").map(str::to_owned);
+                    }
+                }
+                if d.finished.len() > 5 && w::link(ui, &format!("Show all {}", d.finished.len())).clicked() {
+                    all = true;
+                }
+            });
+        });
+    });
+    (open, all)
 }
 
-fn department_card(ui: &mut egui::Ui, min_body: f32, rollup: &[(String, i64, i64)]) -> f32 {
-    viz::card(ui, "By department", "done / total", min_body, |ui| {
-        for (name, done, total) in rollup.iter().take(viz::MAX_BARS) {
-            let (done, total) = (*done, *total);
-            let fill = if total == 0 { 0.0 } else { done as f32 / total as f32 };
-            viz::bar_row(
-                ui,
-                name,
-                fill,
-                discipline_tint(name),
-                &format!("{done}/{total}"),
-                tokens::DISCIPLINE_W,
-            );
+/// Seven columns, today last: the count over each bar and the day under it.
+fn week_chart(ui: &mut egui::Ui, buckets: &[f32]) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 150.0), egui::Sense::hover());
+    let n = buckets.len().max(1) as f32;
+    let gap = space::MD;
+    let bar_w = ((rect.width() - gap * (n - 1.0)) / n).min(48.0);
+    let span = bar_w * n + gap * (n - 1.0);
+    let left = rect.left() + (rect.width() - span) / 2.0;
+    let label_h = text::SMALL + space::XS;
+    let value_h = text::SMALL + space::XS;
+    let plot_top = rect.top() + value_h;
+    let plot_bottom = rect.bottom() - label_h;
+    let peak = buckets.iter().cloned().fold(1.0_f32, f32::max);
+    let today = Local::now().date_naive();
+    let p = ui.painter();
+    p.hline(rect.x_range(), plot_bottom, egui::Stroke::new(1.0, colour::LINE()));
+    for (k, v) in buckets.iter().enumerate() {
+        let x = left + k as f32 * (bar_w + gap);
+        let is_today = k + 1 == buckets.len();
+        let h = if *v > 0.0 { (v / peak * (plot_bottom - plot_top)).max(4.0) } else { 0.0 };
+        if h > 0.0 {
+            let bar = egui::Rect::from_min_max(egui::pos2(x, plot_bottom - h), egui::pos2(x + bar_w, plot_bottom));
+            p.rect_filled(bar, 4.0, colour::ACCENT());
+            p.text(egui::pos2(x + bar_w / 2.0, bar.top() - 2.0), egui::Align2::CENTER_BOTTOM, format!("{}", *v as i64),
+                egui::FontId::new(text::SMALL, egui::FontFamily::Name(theme::SEMIBOLD.into())), colour::TEXT());
         }
-        overflow(ui, rollup.len());
-    })
+        let day = today - chrono::Duration::days((buckets.len() - 1 - k) as i64);
+        let name = if is_today { "Today".to_owned() } else { day.format("%a").to_string() };
+        p.text(egui::pos2(x + bar_w / 2.0, plot_bottom + space::XS), egui::Align2::CENTER_TOP, name,
+            egui::FontId::proportional(text::CAPTION),
+            if is_today { colour::TEXT() } else { colour::TEXT_MUTED() });
+    }
+}
+
+/// A finished task: its end state, the title, who, when. The row opens it.
+fn finished_row(ui: &mut egui::Ui, t: &Value) -> bool {
+    let status = str_at(t, "status").unwrap_or("completed");
+    let title = str_at(t, "title").unwrap_or("Untitled");
+    let who = str_at(t, "assigneeName").map(first_name).unwrap_or("");
+    let when = str_at(t, "doneAt").map(age).unwrap_or_default();
+    let r = w::row(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        w::dot(ui, status_colour(status));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(when).size(text::CAPTION).color(colour::TEXT_FAINT()));
+            if !who.is_empty() {
+                ui.label(RichText::new(who).size(text::SMALL).color(colour::TEXT_MUTED()));
+            }
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(title).size(text::SMALL).color(colour::TEXT())).truncate());
+            });
+        });
+    });
+    r.on_hover_text(format!("{} \u{00B7} open the task", status_label(status))).clicked()
+}
+
+/// Team: everyone's live work as one stacked bar — in progress, ready to
+/// ship, blocked, not started — on a shared scale, so who is overloaded and
+/// who is stuck reads at a glance. A row filters the table to that person.
+fn team(ui: &mut egui::Ui, d: &Derived, active: Option<&str>) -> Option<(String, String)> {
+    let mut picked = None;
+    panel(ui, |ui| {
+        ui.horizontal(|ui| {
+            panel_title(ui, "Team", "live work per person");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::MD;
+                for (label, c) in [("Not started", colour::TEXT_FAINT()), ("Blocked", colour::DANGER()), ("Ready to ship", colour::INFO()), ("In progress", colour::WARN())] {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
+                        w::dot(ui, c);
+                        ui.label(RichText::new(label).size(text::CAPTION).color(colour::TEXT_MUTED()));
+                    });
+                }
+            });
+        });
+        ui.add_space(space::SM);
+        if d.team.is_empty() {
+            w::muted(ui, "Nobody holds live work right now.");
+            return;
+        }
+        let peak = d.team.iter().map(Member::total).max().unwrap_or(1).max(1) as f32;
+        for m in &d.team {
+            let on = active == Some(m.id.as_str());
+            let r = w::row(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                avatar::small(ui, &m.name, size::AVATAR_SM);
+                let name_w = 110.0;
+                let (nr, _) = ui.allocate_exact_size(egui::vec2(name_w, size::ROW), egui::Sense::hover());
+                let g = w::truncated(ui, first_name(&m.name), egui::FontId::proportional(text::SMALL),
+                    if on { colour::ACCENT() } else { colour::TEXT() }, name_w);
+                ui.painter().galley(egui::pos2(nr.left(), nr.center().y - g.size().y / 2.0), g, colour::TEXT());
+                let summary = {
+                    let mut parts = Vec::new();
+                    if m.in_progress > 0 { parts.push(format!("{} in progress", m.in_progress)); }
+                    if m.to_ship > 0 { parts.push(format!("{} to ship", m.to_ship)); }
+                    if m.blocked > 0 { parts.push(format!("{} blocked", m.blocked)); }
+                    if m.open > 0 { parts.push(format!("{} not started", m.open)); }
+                    parts.join(" \u{00B7} ")
+                };
+                let text_w = 230.0_f32.min(ui.available_width() * 0.45);
+                let bar_room = (ui.available_width() - text_w - space::MD).max(40.0);
+                let (br, _) = ui.allocate_exact_size(egui::vec2(bar_room, size::ROW), egui::Sense::hover());
+                let total_w = bar_room * (m.total() as f32 / peak);
+                let mut x = br.left();
+                let p = ui.painter();
+                let track = egui::Rect::from_center_size(egui::pos2(br.center().x, br.center().y), egui::vec2(bar_room, 8.0));
+                p.rect_filled(track, 4.0, colour::LINE());
+                for (n, c) in [(m.in_progress, colour::WARN()), (m.to_ship, colour::INFO()), (m.blocked, colour::DANGER()), (m.open, colour::TEXT_FAINT())] {
+                    if n == 0 { continue; }
+                    let w_ = total_w * n as f32 / m.total() as f32;
+                    p.rect_filled(egui::Rect::from_min_size(egui::pos2(x, track.top()), egui::vec2(w_, 8.0)), 4.0, c);
+                    x += w_;
+                }
+                ui.add_space(space::MD);
+                ui.add(egui::Label::new(RichText::new(summary).size(text::CAPTION).color(colour::TEXT_MUTED())).truncate());
+            });
+            if on {
+                ui.painter().rect_stroke(r.rect, radius::SM as f32, egui::Stroke::new(1.0, colour::ACCENT()), egui::StrokeKind::Inside);
+            }
+            if r.on_hover_text(if on { "Showing their tasks below \u{00B7} click to clear" } else { "Show their tasks below" }).clicked() {
+                picked = Some((m.id.clone(), m.name.clone()));
+            }
+        }
+    });
+    picked
 }
 
 /// Completions per day for the last week, bucketed on `doneAt` — the moment
@@ -893,76 +1037,6 @@ fn completed_figures(rows: &[&Value]) -> CompletedFigures {
     CompletedFigures { buckets, total, delta }
 }
 
-/// Who is carrying what. The bar is `open` — work the person can act on
-/// now. What is theirs but out of their hands (`review`) and what they are
-/// holding up for others (`blocking`) ride underneath in words, because a
-/// third bar colour would need a legend and nobody reads a legend.
-fn team_card(ui: &mut egui::Ui, min_body: f32, team: &[&Value]) -> f32 {
-    let peak = team.iter().map(|p| num(p, "open")).max().unwrap_or(0);
-
-    viz::card(ui, "Team load", "open tasks", min_body, |ui| {
-        // `ui.columns` hands each card a justified layout, and a justified
-        // label that wraps spreads its letters across the line. Nothing here
-        // wants justifying.
-        ui.with_layout(Layout::top_down(Align::Min), |ui| {
-            for p in team.iter().take(viz::MAX_BARS) {
-                let open = num(p, "open");
-                let fill = if peak == 0 { 0.0 } else { open as f32 / peak as f32 };
-                viz::bar_row(
-                    ui,
-                    first_name(str_at(p, "name").unwrap_or_default()),
-                    fill,
-                    colour::ACCENT(),
-                    &open.to_string(),
-                    tokens::DISCIPLINE_W,
-                );
-                load_note(ui, num(p, "blocking"), num(p, "review"));
-            }
-            overflow(ui, team.len());
-        });
-    })
-}
-
-/// "blocks 2 tasks · 1 in review" under a person's bar, lined up with the bar
-/// rather than the name. Silent when both are zero. Blocking is in the danger
-/// ink: it is the one number here that says who to go and talk to.
-fn load_note(ui: &mut egui::Ui, blocking: i64, review: i64) {
-    if blocking == 0 && review == 0 {
-        return;
-    }
-    // Tucked up under its own bar, so it reads as that person's and not the
-    // next one's. `interact_size` would otherwise make this a control-height
-    // row and push the card taller than every figure beside it.
-    let indent = tokens::DISCIPLINE_W + ui.spacing().item_spacing.x;
-    ui.add_space(-space::SM);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().interact_size.y = 0.0;
-        ui.spacing_mut().item_spacing.x = space::XS;
-        ui.add_space(indent - space::XS);
-        if blocking > 0 {
-            ui.label(
-                RichText::new(format!("blocks {}", plural(blocking as usize, "task")))
-                    .size(text::CAPTION)
-                    .color(colour::DANGER()),
-            );
-        }
-        if blocking > 0 && review > 0 {
-            w::caption(ui, "·");
-        }
-        if review > 0 {
-            w::caption(ui, &format!("{review} in review"));
-        }
-    });
-}
-
-/// "+N more" under a capped bar list. Silent when nothing was cut, so the
-/// line only ever appears when it is telling the truth.
-fn overflow(ui: &mut egui::Ui, total: usize) {
-    if total > viz::MAX_BARS {
-        w::caption(ui, &format!("+{} more", total - viz::MAX_BARS));
-    }
-}
-
 // ---------------------------------------------------------------- filter bar
 
 fn filter_bar(
@@ -973,6 +1047,19 @@ fn filter_bar(
 ) {
     viz::toolbar(ui, |ui| {
         viz::search(ui, "Search tasks, projects, people…", &mut state.query);
+
+        // What was picked from the overview or the Team list, shown as an
+        // active filter that clears with a click.
+        if let Some(q) = state.quick {
+            if viz::filter(ui, q.label(), true, false).on_hover_text("Click to clear").clicked() {
+                state.quick = None;
+            }
+        }
+        if let Some((_, name)) = state.owner.clone() {
+            if viz::filter(ui, first_name(&name), true, false).on_hover_text("Click to clear").clicked() {
+                state.owner = None;
+            }
+        }
 
         if viz::filter(ui, "Mine", state.mine, false).clicked() {
             state.mine = !state.mine;
@@ -1029,6 +1116,16 @@ fn keep(r: &Row, t: &Value, state: &State, my_person_id: &str, needle: &str) -> 
     }
     if let Some(p) = &state.project {
         if str_at(t, "projectId") != Some(p.as_str()) {
+            return false;
+        }
+    }
+    if let Some(q) = state.quick {
+        if !q.matches(r) {
+            return false;
+        }
+    }
+    if let Some((id, _)) = &state.owner {
+        if r.owner.as_deref() != Some(id.as_str()) {
             return false;
         }
     }
@@ -1193,16 +1290,6 @@ fn finished(t: &Value) -> bool {
     t.get("doneAt").is_some_and(|v| !v.is_null())
 }
 
-
-/// A department's bar colour, matching the chip it wears everywhere else.
-fn discipline_tint(discipline: &str) -> Color32 {
-    match c::discipline_tone(discipline) {
-        c::Tone::Agent => colour::AGENT(),
-        c::Tone::Info => colour::INFO(),
-        c::Tone::Ok => colour::OK(),
-        _ => colour::LINE_STRONG(),
-    }
-}
 
 fn plural(n: usize, word: &str) -> String {
     if n == 1 {

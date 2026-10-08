@@ -358,7 +358,7 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
                 *ask = Some(Ask::PlanChanges(st.plan_changes.trim().to_owned()));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        button_row(ui, |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             if st.plan_changes_open {
                 let ready = !st.plan_changes.trim().is_empty() && !s.busy;
@@ -382,6 +382,17 @@ fn plan_section(ui: &mut egui::Ui, s: &Session, st: &mut State, short: &str, ask
             }
         });
     });
+}
+
+/// A row of action buttons, right-aligned, exactly one control tall. A bare
+/// right-to-left layout takes every pixel of height left to it — pinned under
+/// the title, that stretched the whole plan card down the page.
+fn button_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), size::CONTROL),
+        egui::Layout::right_to_left(egui::Align::Center),
+        add,
+    );
 }
 
 /// A card for something waiting on the owner, edged in the colour of what it
@@ -1063,7 +1074,7 @@ fn answer_box(ui: &mut egui::Ui, st: &mut State, short: &str, busy: bool) -> Opt
     let field = w::field_multiline(ui, "", &mut st.answer, 2, &format!("Answer {short}\u{2026}  Cmd+Enter to send"));
     let ready = !st.answer.trim().is_empty() && !busy;
     let mut go = ready && submit_key(ui, &field);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+    button_row(ui, |ui| {
         let response = w::primary(ui, "Send answer", ready);
         if st.answer.trim().is_empty() {
             response.clone().on_disabled_hover_text("Write the answer first.");
@@ -1187,7 +1198,7 @@ fn review_controls(ui: &mut egui::Ui, st: &mut State, short: &str, busy: bool) -
             ask = Some(Ask::Changes(st.changes.trim().to_owned()));
         }
     }
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    button_row(ui, |ui| {
         ui.spacing_mut().item_spacing.x = space::SM;
         if st.changes_open {
             let ready = !st.changes.trim().is_empty() && !busy;

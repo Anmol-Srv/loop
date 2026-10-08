@@ -1162,7 +1162,11 @@ pub async fn review_plan(
     let no_plan = || {
         AppError::Conflict("there is no plan waiting for your review on this task".into())
     };
-    if delegate.is_none() || agent_state.as_deref() != Some("plan_review") {
+    // The latest undecided plan is what gets decided, whatever state the
+    // agent reports now: an owner who steered the session by hand may have
+    // moved it on to `working` with the plan still waiting. Only an agent
+    // that no longer holds the task has nothing to decide.
+    if delegate.is_none() || matches!(agent_state.as_deref(), Some("done" | "stopped")) {
         return Err(no_plan());
     }
     let agent_id = delegate.expect("checked above");
