@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::desktop::creds;
-use crate::desktop::design::{cards as c, space, widgets as w};
+use crate::desktop::design::{cards as c, colour, space, text, widgets as w};
 
 use super::chrome::VERSION;
 
@@ -30,6 +30,71 @@ struct Check {
 }
 
 static STATE: Mutex<Check> = Mutex::new(Check { latest: None, asked: None, running: false });
+
+/// The update in flight: the installer process, so the section can tell a
+/// failure from a run still going. Loop is quit and reopened by the
+/// installer itself when it succeeds, so success is never seen here.
+static INSTALLING: Mutex<Option<std::process::Child>> = Mutex::new(None);
+
+const UPDATE_LOG: &str = "update.log";
+
+fn log_path(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Logs/Loop").join(name))
+}
+
+/// Where the installer is, read from its own output: (words, fraction done).
+/// curl's progress bar writes "#### 42.0%" with carriage returns, so the last
+/// percentage in the log is how far the download is.
+fn install_phase() -> (String, Option<f32>) {
+    let raw = log_path(UPDATE_LOG).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    if raw.contains("installed. Opening") {
+        return ("Installed \u{2014} restarting Loop\u{2026}".into(), Some(1.0));
+    }
+    let pct = raw
+        .split(|c: char| c == '\r' || c == '\n' || c == ' ')
+        .filter_map(|w| w.strip_suffix('%'))
+        .filter_map(|n| n.parse::<f32>().ok())
+        .next_back();
+    match pct {
+        Some(p) if p >= 100.0 => ("Installing\u{2026}".into(), Some(1.0)),
+        Some(p) => (format!("Downloading\u{2026} {p:.0}%"), Some(p / 100.0)),
+        None => ("Starting the update\u{2026}".into(), None),
+    }
+}
+
+/// The installer's state: still running, failed (with its last lines), or
+/// not started.
+enum Install {
+    Idle,
+    Running,
+    Failed(String),
+}
+
+fn install_state() -> Install {
+    let mut slot = INSTALLING.lock().unwrap();
+    let Some(child) = slot.as_mut() else { return Install::Idle };
+    match child.try_wait() {
+        Ok(None) => Install::Running,
+        Ok(Some(status)) if status.success() => Install::Running, // Loop is about to be quit
+        _ => {
+            *slot = None;
+            let raw = log_path(UPDATE_LOG).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+            let tail: Vec<&str> = raw.lines().rev().filter(|l| !l.trim().is_empty() && !l.contains('#')).take(2).collect();
+            Install::Failed(tail.into_iter().rev().collect::<Vec<_>>().join(" "))
+        }
+    }
+}
+
+fn start_install(ctx: &egui::Context, team: &str) {
+    let script = format!("curl -fsSL {team}/install.sh | bash");
+    match run_detached(&script, UPDATE_LOG) {
+        Ok(child) => {
+            *INSTALLING.lock().unwrap() = Some(child);
+            ctx.request_repaint();
+        }
+        Err(e) => w::toast(ctx, format!("Couldn\u{2019}t start the update: {e}"), true),
+    }
+}
 
 /// The team server: the first non-private workspace, else whatever this Mac
 /// talks to. Releases are published there.
@@ -89,7 +154,7 @@ pub fn available() -> Option<String> {
 
 /// Run a shell line detached from Loop — its own process group, output to
 /// a log — so it keeps going after Loop quits.
-fn run_detached(script: &str, log: &str) -> Result<(), String> {
+fn run_detached(script: &str, log: &str) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
     let home = std::env::var("HOME").map_err(|_| "no home folder".to_owned())?;
     let dir = std::path::PathBuf::from(home).join("Library/Logs/Loop");
@@ -103,7 +168,6 @@ fn run_detached(script: &str, log: &str) -> Result<(), String> {
         .stderr(err)
         .process_group(0)
         .spawn()
-        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
@@ -116,22 +180,44 @@ pub(super) fn section(ui: &mut egui::Ui, email: &str) {
     };
     let newer = available();
 
+    let install = install_state();
     super::settings::group(ui, "Loop", |ui| {
+        // An update in flight: what it is doing, live, until the installer
+        // quits Loop and opens the new one.
+        if let Install::Running = install {
+            let (words, fraction) = install_phase();
+            super::settings::row(ui, &format!("Updating Loop {VERSION}"), &words, false, |ui| {
+                crate::desktop::design::agent::spinner(ui, text::BODY);
+            });
+            if let Some(f) = fraction {
+                ui.add_space(space::XS);
+                w::progress(ui, f, ui.available_width(), colour::ACCENT());
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+        if let Install::Failed(why) = &install {
+            ui.add_space(space::XS);
+            w::error(ui, &format!("The update didn\u{2019}t finish: {}", if why.is_empty() { "see ~/Library/Logs/Loop/update.log" } else { why }));
+            ui.add_space(space::SM);
+        }
         let detail = match (&latest, VERSION) {
-            (_, "dev") => "A development build \u{2014} it isn\u{2019}t on the release line, so it never offers updates.".to_owned(),
+            (Some(l), "dev") => format!("A development build. Loop {l} is the latest release; installing it puts this Mac back on releases (and on Updates)."),
+            (None, "dev") => "A development build \u{2014} it isn\u{2019}t on the release line.".to_owned(),
             (Some(l), _) if newer.is_some() => format!("Loop {l} is out. Updating quits Loop, installs it and opens it again; your sign-in and settings stay."),
             (Some(_), _) => "This is the latest release.".to_owned(),
             (None, _) if running => "Checking for a newer release\u{2026}".to_owned(),
             (None, _) => format!("Couldn\u{2019}t reach {team} to check."),
         };
         super::settings::row(ui, &format!("Loop {VERSION}"), &detail, false, |ui| {
-            if newer.is_some() {
-                if w::primary(ui, "Update Loop", true).clicked() {
-                    let script = format!("curl -fsSL {team}/install.sh | bash");
-                    match run_detached(&script, "update.log") {
-                        Ok(()) => w::toast(ui.ctx(), "Updating \u{2014} Loop will quit and reopen in a moment.", false),
-                        Err(e) => w::toast(ui.ctx(), format!("Couldn\u{2019}t start the update: {e}"), true),
-                    }
+            let offer = if VERSION == "dev" {
+                latest.is_some().then_some("Install latest release")
+            } else {
+                newer.is_some().then_some("Update Loop")
+            };
+            if let Some(label) = offer {
+                if w::primary(ui, label, true).clicked() {
+                    start_install(ui.ctx(), &team);
                 }
             } else if VERSION != "dev" {
                 if latest.is_some() {
@@ -157,7 +243,7 @@ pub(super) fn section(ui: &mut egui::Ui, email: &str) {
                     if w::secondary(ui, "Update", true).clicked() {
                         let script = format!("curl -fsSL {team}/private-workspace.sh | bash -s -- '{email}'");
                         match run_detached(&script, "private-update.log") {
-                            Ok(()) => w::toast(ui.ctx(), "Updating the private server \u{2014} about a minute.", false),
+                            Ok(_) => w::toast(ui.ctx(), "Updating the private server \u{2014} about a minute.", false),
                             Err(e) => w::toast(ui.ctx(), format!("Couldn\u{2019}t start it: {e}"), true),
                         }
                     }
