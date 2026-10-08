@@ -35,6 +35,8 @@ struct State {
     newest: Option<i64>,
     open: bool,
     unread_only: bool,
+    /// The task open last frame, so opening one marks its notifications read.
+    opened: Option<String>,
 }
 
 thread_local! {
@@ -98,6 +100,27 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
         net.get(KEY, PATH);
     }
     ctx.request_repaint_after(std::time::Duration::from_secs_f64(EVERY));
+
+    // A task was just opened, from anywhere: what it was telling you is read.
+    let opened = app.task.clone();
+    if STATE.with(|s| std::mem::replace(&mut s.borrow_mut().opened, opened.clone())) != opened {
+        if let Some(task) = opened {
+            // ponytail: only the newest 50 the bell holds; older unread ones stay.
+            let ids: Vec<i64> = items(app)
+                .0
+                .iter()
+                .filter(|n| str_of(n, "taskId") == Some(task.as_str()))
+                .filter(|n| n.get("unread").and_then(Value::as_bool).unwrap_or(false))
+                .filter_map(|n| n.get("id").and_then(Value::as_i64))
+                .collect();
+            if !ids.is_empty() {
+                let net = app.net.as_mut().expect("signed in");
+                net.invalidate(READ_KEY);
+                net.post(READ_KEY, "/api/user/notifications/read", json!({ "ids": ids }));
+            }
+        }
+    }
+    let net = app.net.as_mut().expect("signed in");
 
     // A mark-read landed: read the list again so the counts follow.
     if !net.is_loading(READ_KEY) && net.peek(READ_KEY).is_some() {
@@ -332,11 +355,8 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         net.invalidate(READ_KEY);
         net.post(READ_KEY, "/api/user/notifications/read", json!({}));
     }
-    if let Some((task, id)) = open_task {
-        if let Some(id) = id {
-            net.invalidate(READ_KEY);
-            net.post(READ_KEY, "/api/user/notifications/read", json!({ "ids": [id] }));
-        }
+    // Opening it marks the task's notifications read (see `tick`).
+    if let Some((task, _)) = open_task {
         app.task = Some(task);
         close = true;
     }
