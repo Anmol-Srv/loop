@@ -1,7 +1,7 @@
 ---
 name: airtribe-intake
 description: File task-worthy messages from a source (Slack first) into Airtribe Control Plane as Triage tasks for your owner — decide what is worth tracking, categorise it, never file the same thing twice, keep threads together. Load on every intake pass.
-version: 1.6.0
+version: 1.8.0
 author: Airtribe Control Plane
 license: MIT
 metadata:
@@ -36,6 +36,14 @@ Tasks you file are standalone (no project) and carry a label named after the
 source ("Slack"), so the whole team can see where they came from.
 
 ## One pass
+
+**On Hermes the pass is code:** `$HERMES_HOME/scripts/slack_triage.py` does
+everything below (search, threads, dedupe, Jev, appends, skips, attachments,
+cursors, `run_report`) and asks a model only to word new tasks, in one
+tool-free call. Run it rather than doing a pass by hand; `--dry-run` shows
+what it would do. The rest of this skill is its policy, and the manual pass
+for runtimes without the script.
+
 
 1. Load your state file (see *Where you are up to*). If it is missing this is
    your first pass: look back 24 hours only.
@@ -157,8 +165,18 @@ Where it came from changes the bar:
 
 ## Slack
 
-Use the Composio MCP server's Slack tools (find exact slugs with
-`COMPOSIO_SEARCH_TOOLS` if a call fails). Read-only calls only.
+Use the Composio MCP server's Slack tools. Read-only calls only. The slugs
+are known — call them directly through `COMPOSIO_MULTI_EXECUTE_TOOL`; do not
+spend turns on `COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS` or the
+remote workbench unless a call actually fails:
+
+- All places in **one** call: `COMPOSIO_MULTI_EXECUTE_TOOL` with
+  `tools: [{tool_slug: "SLACK_SEARCH_MESSAGES", arguments: {query, sort:
+  "timestamp", count}}, …one per place]`, `sync_response_to_workbench: false`.
+- Threads: `SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION` `{channel, ts}`,
+  all threads you need in one `COMPOSIO_MULTI_EXECUTE_TOOL` call.
+- Run the Jev parser for all candidate messages in **one** terminal call (a
+  shell loop, one JSON object per invocation), not one tool call per message.
 
 - **Everything through search** (one `SLACK_SEARCH_MESSAGES` call per place,
   `sort: timestamp`, `count` up to 50, then filter to `ts` newer than that
