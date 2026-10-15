@@ -81,6 +81,13 @@ fn source_of(t: &Value) -> Option<&Value> {
     t.get("source").filter(|s| s.is_object())
 }
 
+/// The project the filing agent suggested, (id, name): what Accept files it
+/// into. None once that project is gone or archived.
+pub(super) fn suggested(t: &Value) -> Option<(String, String)> {
+    let src = source_of(t)?;
+    Some((str_of(src, "suggestedProjectId")?.to_owned(), str_of(src, "suggestedProjectName")?.to_owned()))
+}
+
 /// A DM: the request said so, or the channel is a Slack DM id.
 fn private(src: &Value) -> bool {
     src.get("private").and_then(Value::as_bool).unwrap_or(false)
@@ -114,6 +121,7 @@ fn kind_word(kind: &str) -> String {
     match kind {
         "slack" => "Slack".to_owned(),
         "github" => "GitHub".to_owned(),
+        "claude" => "Claude Code".to_owned(),
         other => {
             let mut ch = other.chars();
             ch.next()
@@ -777,7 +785,8 @@ pub(super) fn category_chip(
 /// draws the same items as a row's right-click. Right to left: call from a
 /// right-to-left layout.
 pub(super) fn page_actions(ui: &mut egui::Ui, t: &Value) -> Option<Pick> {
-    let hover = match str_of(t, "projectName").filter(|n| !n.is_empty()) {
+    let into = suggested(t);
+    let hover = match into.as_ref().map(|(_, n)| n.as_str()).or(str_of(t, "projectName").filter(|n| !n.is_empty())) {
         Some(p) => format!("Make it an open task in {p}"),
         None => "Make it an open task, in no project".to_owned(),
     };
@@ -786,7 +795,7 @@ pub(super) fn page_actions(ui: &mut egui::Ui, t: &Value) -> Option<Pick> {
         .on_hover_text(hover)
         .clicked()
     {
-        pick = Some(Pick::Accept(None));
+        pick = Some(Pick::Accept(into));
     }
     if w::ghost(ui, "Dismiss")
         .on_hover_text("Drop it, with an optional reason")
@@ -1075,7 +1084,7 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
                 )
                 .clicked()
                 {
-                    pick = Some(Pick::Accept(None));
+                    pick = Some(Pick::Accept(suggested(t)));
                 }
                 if icon_action(
                     ui,
@@ -1101,7 +1110,7 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
                     )
                 });
                 if a {
-                    pick = Some(Pick::Accept(None));
+                    pick = Some(Pick::Accept(suggested(t)));
                 } else if d {
                     pick = Some(Pick::Dismiss);
                 }
@@ -1143,6 +1152,9 @@ fn row(ui: &mut egui::Ui, t: &Value, viewer: &Viewer, busy: bool) -> Option<Out>
         second.spacing_mut().item_spacing.x = space::XS;
         mark(&mut second, src, text::SMALL, colour::TEXT_MUTED());
         let mut words = source_words(src, true);
+        if let Some((_, project)) = suggested(t) {
+            words = format!("\u{2192} {project}  \u{00B7}  {words}");
+        }
         let withheld = private(src) && str_of(src, "author").is_none();
         if let Some(said) = str_of(src, "text")
             .map(str::trim)

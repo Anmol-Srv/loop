@@ -229,8 +229,10 @@ fn triage_items(ui: &mut egui::Ui, t: &Value, viewer: &Viewer) -> Option<Pick> {
     let mine = !viewer.me.is_empty() && str_at(t, "assigneePersonId") == viewer.me;
     let why = (!mine && !viewer.admin).then_some(super::triage::NOT_YOURS);
     let mut pick = None;
-    if viz::menu_item(ui, "Accept", false, why) {
-        pick = Some(Pick::Accept(None));
+    let into = super::triage::suggested(t);
+    let label = into.as_ref().map_or_else(|| "Accept".to_owned(), |(_, n)| format!("Accept into {n}"));
+    if viz::menu_item(ui, &label, false, why) {
+        pick = Some(Pick::Accept(into));
     }
     let here = str_at(t, "projectId");
     let others: Vec<&(String, String)> = viewer

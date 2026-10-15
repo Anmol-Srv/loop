@@ -1983,6 +1983,9 @@ pub struct Intake {
     pub confidence: f32,
     #[serde(default)]
     pub priority: Option<i32>,
+    /// The project it most likely belongs in; Accept files it there.
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
 }
 
 struct Intaker {
@@ -2072,6 +2075,17 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
 
     let mut tx = state.db.begin().await?;
     let who = intaker(&mut tx, agent).await?;
+    if let Some(project) = i.project_id {
+        let live: Option<bool> = sqlx::query_scalar("SELECT archived_at IS NULL FROM project WHERE id = $1")
+            .bind(project)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if live != Some(true) {
+            return Err(AppError::BadRequest(format!(
+                "projectId {project} is not a live project; pick one from project_list, or leave it out"
+            )));
+        }
+    }
     if let Some(task_id) = seen(&mut tx, agent, &key).await? {
         return Err(AppError::Conflict(format!(
             "You already filed this message as task {task_id}; nothing was created. \
@@ -2099,8 +2113,9 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     let s = &i.source;
     sqlx::query(
         "INSERT INTO task_source (task_id, agent_id, kind, source_key, url, channel, channel_name,
-                                  author, text, private, received_at, reason, confidence, thread)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                                  author, text, private, received_at, reason, confidence, thread,
+                                  suggested_project_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(agent)
@@ -2116,6 +2131,7 @@ pub async fn intake(state: &AppState, agent: Uuid, i: Intake) -> AppResult<TaskR
     .bind(i.reason.trim())
     .bind(i.confidence)
     .bind(thread)
+    .bind(i.project_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| dedupe_conflict(e, &key))?;

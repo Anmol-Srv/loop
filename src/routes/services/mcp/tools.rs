@@ -353,6 +353,7 @@ pub fn intake_tools() -> Vec<ToolDef> {
                     "reason": { "type": "string", "description": "One sentence: why this is a task." },
                     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
                     "priority": { "type": "integer", "minimum": 0, "maximum": 4, "default": 2 },
+                    "projectId": { "type": "string", "format": "uuid", "description": "The live project (from project_list) it most likely belongs in. Shown as the suggestion in Triage; accepting files it there. Leave out when none fits." },
                 }),
                 &["source", "title", "category", "reason", "confidence"],
             ),

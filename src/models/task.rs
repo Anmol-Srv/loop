@@ -382,7 +382,10 @@ pub fn task_row_select(viewer: &str) -> String {
                         'text', CASE WHEN NOT s.private OR {private} THEN s.text
                                      ELSE 'From a direct message' END,
                         'thread', CASE WHEN NOT s.private OR {private} THEN s.thread ELSE '[]' END,
-                        'files', {files})
+                        'files', {files},
+                        'suggestedProjectId', s.suggested_project_id,
+                        'suggestedProjectName', (SELECT sp.name FROM project sp
+                                                  WHERE sp.id = s.suggested_project_id AND sp.archived_at IS NULL))
                    FROM task_source s WHERE s.task_id = t.id AND NOT s.appended) AS source,
                 coalesce((SELECT json_agg(json_build_object('id', l.id, 'name', l.name, 'colour', l.colour)
                                           ORDER BY l.name)

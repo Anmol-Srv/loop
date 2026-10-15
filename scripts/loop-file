@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Hand a task to Luna, the background sorter, instead of picking its project.
+#
+#   loop-file "what to do, in your words"   queue it; Luna files it into Loop
+#                                            Triage with a suggested project
+#   loop-file on | off | status              the sorter switch
+#
+# Fire-and-forget: it only writes a file to ~/.loop/inbox. Luna (Hermes
+# profile `luna`, run by launchd every minute) picks it up. Exit 3 when the
+# sorter is off, so a session falls back to asking which project.
+set -euo pipefail
+
+DIR="$HOME/.loop"
+FLAG="$DIR/sorter-on"
+INBOX="$DIR/inbox"
+
+case "${1:-}" in
+  on) mkdir -p "$INBOX"; touch "$FLAG"; echo "Sorter on: Claude sessions hand new tasks to Luna."; exit 0 ;;
+  off) rm -f "$FLAG"; echo "Sorter off: sessions ask which project again."; exit 0 ;;
+  status)
+    [ -f "$FLAG" ] && echo "on" || echo "off"
+    echo "waiting: $(find "$INBOX" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+    exit 0 ;;
+  ""|-h|--help) sed -n 2,11p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+if [ ! -f "$FLAG" ]; then
+  echo "The sorter is off (loop-file on to enable). Ask which project instead." >&2
+  exit 3
+fi
+
+mkdir -p "$INBOX"
+TEXT="$*"
+CWD="$PWD"
+REPO="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs -I{} basename {} || true)"
+BRANCH="$(git -C "$CWD" branch --show-current 2>/dev/null || true)"
+ID="$(date +%Y%m%d-%H%M%S)-$$"
+# Written aside, then moved in, so Luna never reads half a file.
+TMP="$INBOX/.$ID.tmp"
+python3 - "$TMP" "$TEXT" "$CWD" "$REPO" "$BRANCH" "$ID" <<'EOF'
+import json, sys, datetime
+path, text, cwd, repo, branch, key = sys.argv[1:]
+json.dump({
+    "key": f"claude:{key}",
+    "text": text,
+    "cwd": cwd,
+    "repo": repo or None,
+    "branch": branch or None,
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}, open(path, "w"), indent=2)
+EOF
+mv "$TMP" "$INBOX/$ID.json"
+echo "Handed to Luna. It lands in Loop Triage with a suggested project in a minute or two."
