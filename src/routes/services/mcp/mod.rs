@@ -160,6 +160,8 @@ async fn visible(state: &AppState, caller: &Caller) -> Vec<ToolDef> {
         .flatten()
         .unwrap_or(false);
     if intake {
+        // The projects too: a filing suggests the one it belongs in.
+        tools.extend(tools::all().into_iter().filter(|t| t.name == "project_list"));
         tools.extend(tools::intake_tools());
     }
     tools
@@ -387,6 +389,7 @@ async fn call_agent_tool(
             )
             .await?,
         ),
+        "project_list" => to_value(controllers::project::list(state, caller.actor.person_id, false).await?),
         "intake_create" => to_value(agent::intake(state, me, parse(args, "intake_create")?).await?),
         "intake_append" => {
             let source = parse(args.get("source").cloned().unwrap_or(Value::Null), "intake_append's source")?;
