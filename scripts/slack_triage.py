@@ -15,6 +15,11 @@ in one tool-free call, and only when there is something to file.
   7. Cursors advance only past handled messages; run_report; one-line counts.
 
 Usage: slack_triage.py [--dry-run]   (dry run: decide and print, write nothing)
+
+Per owner: HERMES_PROFILE (default slack-agent) and INTAKE_OWNER (default Anmol). Optional, in the
+profile: intake-rules.md (the owner's own filing rules, added to the prompt) and roster.json (Slack id ->
+"team · role", so the model knows who is asking). In the state file, a channel with "bots": true keeps
+bot posts (Sentry), and "mutedDms" lists people whose DMs are never read.
 """
 import concurrent.futures as cf
 import datetime as dt
@@ -31,12 +36,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jev_intake  # noqa: E402
 import slack_attach  # noqa: E402
 
-HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes/profiles/slack-agent")
+PROFILE, HOME = slack_attach.PROFILE, slack_attach.HOME
 STATE = os.path.join(HOME, "slack-intake.json")
 USERS = os.path.join(HOME, "state", "slack-users.json")
 URL, TOKEN = os.environ.get("AIRTRIBE_URL", "").rstrip("/"), os.environ.get("AIRTRIBE_TOKEN", "")
 JEV_KEY = os.environ.get("TYPESAFE_API_KEY", "")
-OWNER = "Anmol"
+OWNER = os.environ.get("INTAKE_OWNER", "Anmol")
+RULES = os.path.join(HOME, "intake-rules.md")
+ROSTER = os.path.join(HOME, "roster.json")
 UA = "airtribe-slack-agent/1"  # Cloudflare bans the default Python-urllib agent (403, error 1010)
 PAGE, MAX_PAGES = 40, 6
 DRY = "--dry-run" in sys.argv
@@ -54,13 +61,27 @@ def api(method, path, body=None):
         return e.code, e.read().decode()[:300]
 
 
+def projects():
+    """Live projects, so a filing can suggest where it belongs; [] when the list can't be had."""
+    req = urllib.request.Request(f"{URL}/api/services/mcp", json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "project_list", "arguments": {}}}).encode(),
+        {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "User-Agent": UA}, method="POST")
+    try:
+        with urllib.request.urlopen(req, context=slack_attach.TLS, timeout=30) as r:
+            return [{"id": p["id"], "name": p["name"]}
+                    for p in json.loads(json.loads(r.read())["result"]["content"][0]["text"])]
+    except Exception as e:
+        print(f"project_list: {e}", file=sys.stderr)
+        return []
+
+
 # ── Slack through Composio ────────────────────────────────────────────────
 
 class Slack:
     def __init__(self):
         tok = json.load(open(slack_attach.TOKEN))
         if tok.get("expires_at", 0) - time.time() < 120:  # Hermes owns the refresh; this triggers it
-            subprocess.run(["hermes", "-p", "slack-agent", "mcp", "test", "composio"],
+            subprocess.run(["hermes", "-p", PROFILE, "mcp", "test", "composio"],
                            capture_output=True, timeout=90)
             tok = json.load(open(slack_attach.TOKEN))
         self.token = tok["access_token"]
@@ -115,6 +136,16 @@ def resolve(text, names):
     return re.sub(r"<@([UW][A-Z0-9]+)>", lambda m: f"<@{m[1]}|{names.get(m[1], m[1])}>", text or "")[:4000]
 
 
+def text_of(m):
+    """A bot (Sentry) often posts only attachments."""
+    return m.get("text") or " ".join(a.get("fallback") or a.get("title") or "" for a in m.get("attachments") or [])
+
+
+def sentry_issue(m):
+    hit = re.search(r"sentry\.io/(?:[\w-]+/)*issues/(\d+)", json.dumps(m))
+    return hit[1] if hit else None
+
+
 def thread_ts(match):
     m = re.search(r"thread_ts=([\d.]+)", match.get("permalink", ""))
     return m[1] if m else match["ts"]
@@ -134,6 +165,8 @@ def collect(slack, state):
     """New messages since the cursors, one Composio call per results page, oldest first."""
     owner, cursors = state["ownerId"], state["cursors"]
     intake_ids = {c["id"] for c in state.get("channels", [])}
+    bot_ids = {c["id"] for c in state.get("channels", []) if c.get("bots")}
+    muted = set(state.get("mutedDms", []))
     if "dms" not in cursors:  # one watermark for every DM, from the old per-DM cursors
         cursors["dms"] = max((v for k, v in cursors.items() if k[0] in "DG"), default=f"{time.time() - 86400:.6f}")
     places = [(c["id"], f'in:{c["name"]}') for c in state.get("channels", [])]
@@ -160,7 +193,11 @@ def collect(slack, state):
                 if thread_ts(m) == m["ts"]:  # top-level: context for later messages in the conversation
                     convo.setdefault(m["channel"]["id"], {})[m["ts"]] = m
                 ch = m["channel"]
-                if float(m["ts"]) <= float(cursors[place]) or not m.get("user") or m["user"] == owner:
+                if float(m["ts"]) <= float(cursors[place]) or m.get("user") == owner:
+                    continue
+                if not m.get("user") and ch["id"] not in bot_ids:
+                    continue
+                if (ch.get("is_im") or ch.get("is_mpim")) and m.get("user") in muted:
                     continue
                 if place == "mentions" and ch["id"] in intake_ids:
                     continue  # the channel pass covers it
@@ -189,7 +226,7 @@ def with_threads(slack, items, names):
         for root, data in zip(roots, slack.multi([("SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION",
                                                    {"channel": c, "ts": t, "limit": 100}) for c, t in roots])):
             threads[root] = data.get("messages", [])
-    need = {i["m"]["user"] for i in items} | {t.get("user") for ms in threads.values() for t in ms if t.get("user")}
+    need = {i["m"].get("user") for i in items} | {t.get("user") for ms in threads.values() for t in ms if t.get("user")}
     need |= {c.get("user") for i in items for c in i["convo"] if c.get("user")}
     for i in items:
         for u in re.findall(r"<@([UW][A-Z0-9]+)>", i["m"].get("text", "")):
@@ -200,15 +237,18 @@ def with_threads(slack, items, names):
         earlier = [t for t in threads.get((ch["id"], thread_ts(m)), []) if float(t["ts"]) < float(m["ts"])][-30:]
         # ponytail: length heuristic for "this refers back" ("ye kr dijiye please"); a self-contained DM
         # judged with unrelated earlier DMs gets matched to the wrong task. Upgrade: ask Jev if it refers back.
-        if not earlier and (ch.get("is_im") or ch.get("is_mpim")) and len(m.get("text", "")) < 120:
+        if not earlier and (ch.get("is_im") or ch.get("is_mpim")) and len(text_of(m)) < 120:
             earlier = i["convo"][-8:]  # a DM is one conversation: the last few hours of it are its context
-        i["thread"] = [{"author": names.get(t.get("user"), t.get("user") or "bot"), "text": resolve(t.get("text"), names),
+        i["thread"] = [{"author": names.get(t.get("user"), t.get("user") or t.get("username") or "bot"),
+                        "text": resolve(text_of(t), names),
                         "ts": t["ts"], "receivedAt": iso(t["ts"]), "user": t.get("user"),
                         "files": t.get("files") or []} for t in earlier]
         i["source"] = {"kind": "slack", "key": i["key"], "url": m["permalink"], "channel": ch["id"],
-                       "channelName": channel_name(ch), "author": names.get(m["user"], m.get("username") or m["user"]),
-                       "text": resolve(m.get("text"), names), "receivedAt": iso(m["ts"]),
+                       "channelName": channel_name(ch),
+                       "author": names.get(m.get("user")) or m.get("username") or m.get("user") or "bot",
+                       "text": resolve(text_of(m), names), "receivedAt": iso(m["ts"]),
                        "private": bool(ch.get("is_im") or ch.get("is_mpim"))}
+        i["sentry"] = sentry_issue(m)
         if i["thread"]:
             i["source"]["thread"] = [{k: t[k] for k in ("author", "text", "ts", "receivedAt")} for t in i["thread"]]
 
@@ -240,6 +280,9 @@ def judge(item, filed):
 def route(item):
     """skip | append | write (to the model), from Jev and the thread link."""
     j, linked = item["jev"], item.get("linked")
+    if item.get("sentryTask"):  # the same Sentry issue alerting again
+        item["taskId"] = item["sentryTask"]
+        return "append"
     if linked:
         if j["decision"] == "skip":
             return "skip"
@@ -269,16 +312,22 @@ For "create" also give:
 - "reason": one line on why it is worth tracking.
 - "confidence": 0-1, your honest estimate {owner} wants this tracked.
 - "priority": 0-4 (0 highest) ONLY when urgency is explicit (outage, customer blocked, deadline); otherwise omit.
+- "projectId": the id from Projects it most likely belongs in; omit when none fits.
 For "skip" give "why" (a few words).
 
 Output shape: [{{"i": 0, "action": "create", "title": "...", "body": "...", "category": "bug", "reason": "...", "confidence": 0.8}}, {{"i": 1, "action": "append", "taskId": "..."}}, {{"i": 2, "action": "skip", "why": "thanks"}}]
+
+`who` is the author's team and role, when known.
+{rules}
+Projects:
+{projects}
 
 Items:
 {items}
 """
 
 
-def write(batch, filed):
+def write(batch, filed, projs, roster):
     """One tool-free model call for every message that needs words or a judgment."""
     titles = {f["id"]: f'{f["title"]} ({f.get("category") or "?"}, {f["status"]})' for f in filed}
     items = []
@@ -288,13 +337,17 @@ def write(batch, filed):
         if it.get("linked") and it["linked"]["id"] not in {r["taskId"] for r in related}:
             related.insert(0, {"taskId": it["linked"]["id"], "title": titles.get(it["linked"]["id"], it["linked"]["title"])})
         items.append({"i": n, "kind": it["kind"], "channel": it["source"]["channelName"], "author": it["source"]["author"],
+                      "who": roster.get(it["m"].get("user") or ""),
                       "text": it["source"]["text"],
                       "thread": [f'{t["author"]}: {t["text"][:600]}' for t in it["thread"][-10:]],
                       "jev": {k: it["jev"].get(k) for k in ("decision", "category", "confidence")},
                       "linkedTask": it["linked"]["id"] if it.get("linked") else None, "related": related})
     qfile = os.path.join(HOME, "state", "triage-prompt.txt")
-    open(qfile, "w").write(PROMPT.format(owner=OWNER, items=json.dumps(items, indent=1, ensure_ascii=False)))
-    out = subprocess.run(["hermes", "-p", "slack-agent", "chat", "-Q", "-t", "none", "--query-file", qfile],
+    rules = open(RULES).read().strip() if os.path.exists(RULES) else ""
+    open(qfile, "w").write(PROMPT.format(
+        owner=OWNER, rules=f"\n{OWNER}'s own rules, which win over the ones above:\n{rules}\n" if rules else "",
+        projects=json.dumps(projs, ensure_ascii=False), items=json.dumps(items, indent=1, ensure_ascii=False)))
+    out = subprocess.run(["hermes", "-p", PROFILE, "chat", "-Q", "-t", "none", "--query-file", qfile],
                          capture_output=True, text=True, timeout=240).stdout
     m = re.search(r"\[.*\]", out, re.S)
     if not m:
@@ -340,6 +393,10 @@ def main():
     if status != 200:
         errors.append(f"intake/recent {status}")
     link(items, filed)
+    sentry = state.setdefault("sentry", {})
+    for it in items:
+        if it["sentry"] in sentry:
+            it["sentryTask"] = sentry[it["sentry"]]
     with cf.ThreadPoolExecutor(8) as ex:
         for item, j in zip(items, ex.map(lambda i: judge(i, filed), items)):
             item["jev"] = j
@@ -348,10 +405,12 @@ def main():
     for it in items:
         it["route"] = route(it)
     batch = [it for it in items if it["route"] == "write"]
-    words = {}
+    words, projs = {}, []
     if batch:
+        projs = projects()
+        roster = json.load(open(ROSTER)) if os.path.exists(ROSTER) else {}
         try:
-            words = write(batch, filed)
+            words = write(batch, filed, projs, roster)
         except Exception as e:
             errors.append(f"model: {e}")
     for n, it in enumerate(batch):
@@ -367,6 +426,8 @@ def main():
 
     for it in items:
         r = it["route"]
+        if r == "create" and it["sentry"] in sentry:  # alerted twice in this pass
+            r, it["taskId"] = "append", sentry[it["sentry"]]
         if DRY:
             w = it.get("words", {})
             print(f'{r:7} {it["source"]["channelName"]:22} {it["source"]["author"][:14]:14} '
@@ -392,9 +453,13 @@ def main():
                      "reason": w.get("reason") or "", "confidence": float(w.get("confidence", 0.7))}
             if isinstance(w.get("priority"), int):
                 body_["priority"] = w["priority"]
+            if w.get("projectId") in {p["id"] for p in projs}:
+                body_["projectId"] = w["projectId"]
             status, body = api("POST", "/api/agent/intake", body_)
             ok_key = "filed"
             task_id = body["data"]["id"] if status in (200, 201) else None
+            if task_id and it["sentry"]:
+                sentry[it["sentry"]] = task_id
         if status in (200, 201):
             counts[ok_key] += 1
             attach_files(slack, task_id, it)
@@ -414,6 +479,7 @@ def main():
                 break
             state["cursors"][place] = it["m"]["ts"]
     state["skipped"] = (state.get("skipped", []) + skips)[-200:]
+    state["sentry"] = dict(list(sentry.items())[-500:])
     tmp = STATE + ".tmp"
     json.dump(state, open(tmp, "w"), indent=2)
     os.replace(tmp, STATE)

@@ -41,6 +41,22 @@ class TestRoute(unittest.TestCase):
         self.assertEqual((t.route(i), i["taskId"]), ("append", "x"))
 
 
+    def test_repeat_sentry_issue_appends_to_its_task(self):
+        i = item("create")
+        i["sentryTask"] = "first"
+        self.assertEqual((t.route(i), i["taskId"]), ("append", "first"))
+
+
+class TestSentry(unittest.TestCase):
+    def test_issue_id_from_attachment_link(self):
+        m = {"text": "", "attachments": [{"fallback": "TypeError in upload", "title_link":
+                                          "https://airtribe.sentry.io/issues/6123456/?referrer=slack"}]}
+        self.assertEqual((t.sentry_issue(m), t.text_of(m)), ("6123456", "TypeError in upload"))
+
+    def test_plain_message_has_no_issue(self):
+        self.assertIsNone(t.sentry_issue({"text": "upload is broken"}))
+
+
 class TestLink(unittest.TestCase):
     def test_links_to_the_filed_thread_message(self):
         i = item("unsure", thread=("1.0", "2.0"))
