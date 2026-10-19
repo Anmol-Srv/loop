@@ -822,6 +822,7 @@ fn headline(
     } else {
         let mut edit = false;
         let mut pick: Option<Pick> = None;
+        let mut copy_handover = false;
         shell::toolbar_trailing(ui, |ui| {
             viz::more(ui, |ui| pick = task_items(ui, task, viewer, false));
             if status == "triage" && super::triage::decides(task, viewer) && !local.deciding && pick.is_none() {
@@ -836,6 +837,15 @@ fn headline(
                 if let Some(p) = handoff_control(ui, handoff, busy) {
                     pick = Some(p);
                 }
+                // The same context, for a Claude session of your own.
+                if handoff.mine
+                    && !handoff.delegated
+                    && w::ghost(ui, "Copy hand-over")
+                        .on_hover_text("Copy the task with all its context, as a hand-off gives an agent, to paste into your own Claude session")
+                        .clicked()
+                {
+                    copy_handover = true;
+                }
             }
             if can_write && w::ghost(ui, "Edit").clicked() {
                 edit = true;
@@ -844,6 +854,13 @@ fn headline(
                 ui.add(egui::Spinner::new().size(text::BODY));
             }
         });
+        if copy_handover {
+            let key = handover_key(task_id);
+            net.invalidate(&key);
+            net.get(&key, &format!("/api/user/tasks/{task_id}/handover"));
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(HANDOVER_PENDING), key));
+        }
+        handover_landed(ui.ctx(), net);
 
         // ---- the title, wrapped in full rather than cut off: a prose
         // measure keeps a long one readable instead of a single edge-to-edge
@@ -992,6 +1009,33 @@ struct Handoff<'a> {
     finished: bool,
     /// The viewer's agents that can still take work: (id, name).
     agents: &'a [(String, String)],
+}
+
+const HANDOVER_PENDING: &str = "task:handover:pending";
+
+fn handover_key(task_id: &str) -> String {
+    format!("task:handover:{task_id}")
+}
+
+/// The asked-for hand-over, once it lands: onto the clipboard, then forgotten.
+fn handover_landed(ctx: &egui::Context, net: &mut crate::desktop::net::Net) {
+    let id = egui::Id::new(HANDOVER_PENDING);
+    let Some(key) = ctx.data(|d| d.get_temp::<String>(id)) else { return };
+    let outcome = match net.peek(&key) {
+        None => return,
+        Some(Ok(v)) => Ok(v.get("prompt").and_then(Value::as_str).unwrap_or_default().to_owned()),
+        Some(Err(e)) => Err(e.clone()),
+    };
+    ctx.data_mut(|d| d.remove::<String>(id));
+    net.invalidate(&key);
+    match outcome {
+        Ok(prompt) if !prompt.is_empty() => {
+            ctx.copy_text(prompt);
+            w::toast(ctx, "Hand-over copied \u{2014} paste it into a Claude session in the task's repo.", false);
+        }
+        Ok(_) => w::toast(ctx, "The hand-over came back empty.", true),
+        Err(e) => w::toast(ctx, format!("Couldn\u{2019}t copy the hand-over: {e}"), true),
+    }
 }
 
 /// The hand-off control in the title's actions: "Take back" while an agent

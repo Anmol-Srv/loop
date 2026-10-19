@@ -13,3 +13,4 @@ pub mod home;
 pub mod repo;
 pub mod folder;
 pub mod agent_overview;
+pub mod handover;

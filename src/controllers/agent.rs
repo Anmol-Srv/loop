@@ -534,6 +534,21 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
     if row.task.delegate.as_ref().and_then(|d| d["id"].as_str()) != Some(id.to_string().as_str()) {
         return Err(not_delegated(task_id));
     }
+    // Whose Mac the agent works on: the owner of the agent this task is
+    // delegated to, since that is whose repo folders and whose private
+    // `user_folder` list mean anything here.
+    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    context_for(state, row, owner_id, server, false).await
+}
+
+/// The context itself, for whoever works it on `owner_id`'s Mac. `manual`:
+/// handed over by hand into a person's own session, so file links point at
+/// the person's file route rather than the agent's.
+pub async fn context_for(state: &AppState, row: TaskRow, owner_id: Uuid, server: &str, manual: bool) -> AppResult<Value> {
+    let task_id = row.task.id;
     let department = row.discipline.as_deref();
     let needs_change = row.task.needs_change;
     let track = match (department == Some("design"), needs_change) {
@@ -545,14 +560,6 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
         (false, false) => "eng-no-change",
     };
     let allowed = next_statuses(department, needs_change, &row.task.status);
-
-    // Whose Mac the agent works on: the owner of the agent this task is
-    // delegated to, since that is whose repo folders and whose private
-    // `user_folder` list mean anything here.
-    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agent WHERE id = $1")
-        .bind(id)
-        .fetch_one(&state.db)
-        .await?;
 
     // A standalone task has no project: `project` is null. `has_repo_path`
     // says whether it gave the owner somewhere to work — if not, `folder`
@@ -655,13 +662,15 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
         "SELECT json_build_object('kind', s.kind, 'url', s.url, 'channelName', s.channel_name,
                 'author', s.author, 'text', s.text, 'receivedAt', s.received_at, 'thread', s.thread,
                 'files', coalesce((SELECT json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
-                                'url', $2 || '/api/agent/tasks/' || s.task_id || '/files/' || f.id)
+                                'url', $2 || CASE WHEN $3 THEN '/api/user/files/' || f.id
+                                                    ELSE '/api/agent/tasks/' || s.task_id || '/files/' || f.id END)
                                                    ORDER BY f.created_at, f.name)
                                      FROM task_file f WHERE f.task_id = s.task_id AND f.added_by IS NULL), '[]'))
            FROM task_source s WHERE s.task_id = $1 AND NOT s.appended",
     )
     .bind(task_id)
     .bind(server)
+    .bind(manual)
     .fetch_optional(&state.db)
     .await?;
 
@@ -669,11 +678,13 @@ pub async fn context(state: &AppState, id: Uuid, task_id: Uuid, server: &str) ->
     // a `url` to fetch its bytes, newest first.
     let files: Value = sqlx::query_scalar(
         "SELECT coalesce(json_agg(json_build_object('id', f.id, 'name', f.name, 'mime', f.mime,
-                'url', $2 || '/api/agent/tasks/' || f.task_id || '/files/' || f.id) ORDER BY f.created_at DESC), '[]')
+                'url', $2 || CASE WHEN $3 THEN '/api/user/files/' || f.id
+                                ELSE '/api/agent/tasks/' || f.task_id || '/files/' || f.id END) ORDER BY f.created_at DESC), '[]')
            FROM task_file f WHERE f.task_id = $1 AND f.added_by IS NOT NULL",
     )
     .bind(task_id)
     .bind(server)
+    .bind(manual)
     .fetch_one(&state.db)
     .await?;
 

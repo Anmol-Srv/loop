@@ -107,6 +107,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/tasks/{id}/blockers", patch(blockers))
         .route("/api/user/tasks/{id}/accept", post(accept))
         .route("/api/user/tasks/{id}/dismiss", post(dismiss))
+        .route("/api/user/tasks/{id}/handover", get(handover))
         .route("/api/user/tracks", get(tracks))
         .route(
             "/api/user/tasks/{id}/files",
@@ -362,6 +363,20 @@ async fn dismiss(
     session(&caller)?;
     let reason = optional_body::<DismissBody>(&body)?.reason;
     Ok(ApiResponse::ok(controllers::task::triage(&state, &caller.actor, id, false, None, reason).await?))
+}
+
+/// The hand-over prompt: what a hand-off gives an agent, to paste into the
+/// assignee's own Claude session.
+async fn handover(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    caller: Caller,
+    headers: axum::http::HeaderMap,
+) -> AppResult<ApiResponse<serde_json::Value>> {
+    session(&caller)?;
+    let server = crate::routes::agent::server_url(&headers);
+    let prompt = controllers::handover::prompt(&state, caller.actor.person_id, id, &server).await?;
+    Ok(ApiResponse::ok(serde_json::json!({ "prompt": prompt })))
 }
 
 /// A filed message's file, as itself. Not JSON, so the ETag layer passes it
