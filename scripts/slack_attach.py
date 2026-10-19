@@ -12,7 +12,7 @@ uses for `intake_append`/`intake_attach`.
 
 Reads the profile's own Composio MCP access token from mcp-tokens/composio.json
 (same pattern as scripts/slack_activity.py) and never refreshes it - if it's
-expired, run `hermes -p slack-agent mcp test composio` first. Reads
+expired, run `hermes -p $HERMES_PROFILE mcp test composio` first. Reads
 AIRTRIBE_URL / AIRTRIBE_TOKEN from the environment (Hermes loads the
 profile's .env into every tool call already, same as jev_intake.py reads
 TYPESAFE_API_KEY).
@@ -29,7 +29,8 @@ import sys
 import urllib.error
 import urllib.request
 
-HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes/profiles/slack-agent")
+PROFILE = os.environ.get("HERMES_PROFILE", "slack-agent")
+HOME = os.environ.get("HERMES_HOME") or os.path.expanduser(f"~/.hermes/profiles/{PROFILE}")
 TOKEN = os.path.join(HOME, "mcp-tokens", "composio.json")
 COMPOSIO_URL = "https://connect.composio.dev/mcp"
 TLS = ssl.create_default_context(cafile="/etc/ssl/cert.pem" if os.path.exists("/etc/ssl/cert.pem") else None)
