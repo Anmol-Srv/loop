@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Routing invariants for slack_triage: what Jev and the thread link decide."""
 
+import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -67,6 +69,44 @@ class TestLink(unittest.TestCase):
         i = item("unsure", thread=("1.0",))
         t.link([i], [{"id": "task", "title": "x", "source": {"key": "T1:C2:1.0"}}])
         self.assertNotIn("linked", i)
+
+
+class TestMulti(unittest.TestCase):
+    def run_multi(self, reply, n=4):
+        """multi() over n calls against a fake Composio; reply(batch size, call number) -> response."""
+        def rpc(token, session, method, params, rid=None):
+            tools = params["arguments"]["tools"]
+            results = [{"response": reply(len(tools), c["arguments"]["n"])} for c in tools]
+            return {"result": {"content": [{"text": json.dumps({"data": {"results": results}})}]}}, session
+
+        slack = t.Slack.__new__(t.Slack)
+        slack.token = slack.session = None
+        with mock.patch.object(t.slack_attach, "rpc", rpc), mock.patch.object(t.time, "sleep") as sleep:
+            return slack.multi([("SLUG", {"n": k}) for k in range(n)]), sleep.call_count
+
+    def test_elided_batch_is_split(self):
+        out, _ = self.run_multi(lambda size, k: {"successful": True, "data": {"n": k} if size == 1 else None})
+        self.assertEqual(out, [{"n": k} for k in range(4)])
+
+    def test_rate_limited_batch_runs_one_call_at_a_time_and_waits(self):
+        tried = set()
+
+        def reply(size, k):
+            if size == 1 and k in tried:
+                return {"successful": True, "data": {"n": k}}
+            if size == 1:
+                tried.add(k)
+            return {"successful": False, "error": '{"ok":false,"error":"ratelimited"}'}
+
+        self.assertEqual(self.run_multi(reply), ([{"n": k} for k in range(4)], 4))
+
+    def test_rate_limited_call_gives_up(self):
+        with self.assertRaisesRegex(RuntimeError, "ratelimited"):
+            self.run_multi(lambda size, k: {"successful": False, "error": "ratelimited"}, n=1)
+
+    def test_other_errors_raise_at_once(self):
+        with self.assertRaisesRegex(RuntimeError, "channel_not_found"):
+            self.run_multi(lambda size, k: {"successful": False, "error": "channel_not_found"})
 
 
 if __name__ == "__main__":

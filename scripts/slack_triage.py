@@ -46,6 +46,7 @@ RULES = os.path.join(HOME, "intake-rules.md")
 ROSTER = os.path.join(HOME, "roster.json")
 UA = "airtribe-slack-agent/1"  # Cloudflare bans the default Python-urllib agent (403, error 1010)
 PAGE, MAX_PAGES = 40, 6
+RATE_WAIT, RATE_TRIES = 60, 5
 DRY = "--dry-run" in sys.argv
 
 
@@ -89,9 +90,12 @@ class Slack:
             "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "slack-triage", "version": "1"}})
         slack_attach.rpc(self.token, self.session, "notifications/initialized", rid=None)
 
-    def multi(self, calls):
+    def multi(self, calls, tries=RATE_TRIES):
         """Run [(slug, args)] in one Composio call; returns each call's data, or None where Composio
-        elided a response too big to return inline (the caller asks for less). Raises on failure."""
+        elided a response too big to return inline (the caller asks for less). Raises on failure.
+        Composio elides the whole batch past ~8k tokens, so an elided batch is split in half. Slack
+        allows only a call or two a minute for some methods (thread replies), so a rate-limited batch
+        runs one call at a time, and a rate-limited call waits a minute, up to `tries` times."""
         reply, self.session = slack_attach.rpc(self.token, self.session, "tools/call", {
             "name": "COMPOSIO_MULTI_EXECUTE_TOOL", "arguments": {
                 "tools": [{"tool_slug": s, "arguments": a} for s, a in calls],
@@ -101,8 +105,17 @@ class Slack:
         for (slug, _), r in zip(calls, results):
             resp = r.get("response") or {}
             if not resp.get("successful"):
-                raise RuntimeError(f"{slug}: {resp.get('error') or r.get('error') or 'failed'}")
+                error = resp.get("error") or r.get("error") or "failed"
+                if "ratelimited" not in str(error) or (len(calls) == 1 and tries == 0):
+                    raise RuntimeError(f"{slug}: {error}")
+                if len(calls) > 1:
+                    return [d for c in calls for d in self.multi([c])]
+                time.sleep(RATE_WAIT)
+                return self.multi(calls, tries - 1)
             out.append(resp.get("data"))
+        if len(calls) > 1 and None in out:
+            half = len(calls) // 2
+            return self.multi(calls[:half]) + self.multi(calls[half:])
         return out
 
 
@@ -225,7 +238,7 @@ def with_threads(slack, items, names):
     if roots:
         for root, data in zip(roots, slack.multi([("SLACK_FETCH_MESSAGE_THREAD_FROM_A_CONVERSATION",
                                                    {"channel": c, "ts": t, "limit": 100}) for c, t in roots])):
-            threads[root] = data.get("messages", [])
+            threads[root] = (data or {}).get("messages", [])
     need = {i["m"].get("user") for i in items} | {t.get("user") for ms in threads.values() for t in ms if t.get("user")}
     need |= {c.get("user") for i in items for c in i["convo"] if c.get("user")}
     for i in items:
