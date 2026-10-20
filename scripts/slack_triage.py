@@ -80,6 +80,9 @@ def projects():
 
 class Slack:
     def __init__(self):
+        self.connect()
+
+    def connect(self):
         tok = json.load(open(slack_attach.TOKEN))
         if tok.get("expires_at", 0) - time.time() < 120:  # Hermes owns the refresh; this triggers it
             subprocess.run(["hermes", "-p", PROFILE, "mcp", "test", "composio"],
@@ -96,10 +99,16 @@ class Slack:
         Composio elides the whole batch past ~8k tokens, so an elided batch is split in half. Slack
         allows only a call or two a minute for some methods (thread replies), so a rate-limited batch
         runs one call at a time, and a rate-limited call waits a minute, up to `tries` times."""
-        reply, self.session = slack_attach.rpc(self.token, self.session, "tools/call", {
-            "name": "COMPOSIO_MULTI_EXECUTE_TOOL", "arguments": {
-                "tools": [{"tool_slug": s, "arguments": a} for s, a in calls],
-                "sync_response_to_workbench": False, "thought": "slack intake pass", "current_step": "INTAKE"}}, 2)
+        params = {"name": "COMPOSIO_MULTI_EXECUTE_TOOL", "arguments": {
+            "tools": [{"tool_slug": s, "arguments": a} for s, a in calls],
+            "sync_response_to_workbench": False, "thought": "slack intake pass", "current_step": "INTAKE"}}
+        try:
+            reply, self.session = slack_attach.rpc(self.token, self.session, "tools/call", params, 2)
+        except urllib.error.HTTPError as e:
+            if e.code != 401:
+                raise
+            self.connect()
+            reply, self.session = slack_attach.rpc(self.token, self.session, "tools/call", params, 2)
         results = json.loads(reply["result"]["content"][0]["text"])["data"]["results"]
         out = []
         for (slug, _), r in zip(calls, results):
@@ -314,7 +323,7 @@ PROMPT = """You triage Slack messages into tasks for {owner}. Reply with ONLY a 
 
 For each item decide `action`:
 - "create": someone needs something done or decided by {owner}: a bug, a feature/change request, feedback on something shipped that implies a follow-up, a question {owner} must look into, or a concrete ask. In an intake channel (kind "channel") a new top-level report is presumed task-worthy unless it is plainly chit-chat.
-- "append": it is about one of the item's `related` tasks (same underlying problem, a follow-up, "still happening") — give that `taskId`.
+- "append": it is about one of the item's `related` tasks (same underlying problem, a follow-up, "still happening") — give that `taskId`. Or it belongs with an EARLIER item in this batch that you create or append: give `"sameAs": <that item's i>` instead, so they land in one task.
 - "skip": thanks, +1, greetings, FYI without an ask, a question already answered in the thread, or anything you would file with confidence < 0.6.
 `jev` is a classifier's opinion; follow it unless the text clearly says otherwise. `linkedTask` means the thread's parent was already filed as that task: append unless the message raises a clearly different issue.
 
@@ -328,9 +337,9 @@ For "create" also give:
 - "projectId": the id from Projects it most likely belongs in; omit when none fits.
 For "skip" give "why" (a few words).
 
-Output shape: [{{"i": 0, "action": "create", "title": "...", "body": "...", "category": "bug", "reason": "...", "confidence": 0.8}}, {{"i": 1, "action": "append", "taskId": "..."}}, {{"i": 2, "action": "skip", "why": "thanks"}}]
+Output shape: [{{"i": 0, "action": "create", "title": "...", "body": "...", "category": "bug", "reason": "...", "confidence": 0.8}}, {{"i": 1, "action": "append", "taskId": "..."}}, {{"i": 2, "action": "skip", "why": "thanks"}}, {{"i": 3, "action": "append", "sameAs": 0}}]
 
-`who` is the author's team and role, when known.
+`who` is the author's team and role, when known. For a Sentry alert, `related` also lists the Sentry tasks already filed.
 {rules}
 Projects:
 {projects}
@@ -340,7 +349,7 @@ Items:
 """
 
 
-def write(batch, filed, projs, roster):
+def write(batch, filed, projs, roster, sentry_tasks=()):
     """One tool-free model call for every message that needs words or a judgment."""
     titles = {f["id"]: f'{f["title"]} ({f.get("category") or "?"}, {f["status"]})' for f in filed}
     items = []
@@ -349,6 +358,9 @@ def write(batch, filed, projs, roster):
         related = [{"taskId": k, "title": titles[k]} for k in sorted(probs, key=probs.get, reverse=True) if k in titles][:5]
         if it.get("linked") and it["linked"]["id"] not in {r["taskId"] for r in related}:
             related.insert(0, {"taskId": it["linked"]["id"], "title": titles.get(it["linked"]["id"], it["linked"]["title"])})
+        if it["sentry"]:
+            listed = {r["taskId"] for r in related}
+            related += [{"taskId": k, "title": titles[k]} for k in dict.fromkeys(sentry_tasks) if k in titles and k not in listed]
         items.append({"i": n, "kind": it["kind"], "channel": it["source"]["channelName"], "author": it["source"]["author"],
                       "who": roster.get(it["m"].get("user") or ""),
                       "text": it["source"]["text"],
@@ -423,7 +435,7 @@ def main():
         projs = projects()
         roster = json.load(open(ROSTER)) if os.path.exists(ROSTER) else {}
         try:
-            words = write(batch, filed, projs, roster)
+            words = write(batch, filed, projs, roster, sentry.values())
         except Exception as e:
             errors.append(f"model: {e}")
     for n, it in enumerate(batch):
@@ -434,17 +446,23 @@ def main():
         it["words"] = w
         if it["route"] == "append":
             it["taskId"] = w.get("taskId") or (it.get("linked") or {}).get("id")
-            if not it["taskId"]:
+            if isinstance(w.get("sameAs"), int) and 0 <= w["sameAs"] < n:
+                it["sameAs"] = batch[w["sameAs"]]
+            if not it["taskId"] and "sameAs" not in it:
                 it["route"] = "create" if w.get("title") else "skip"
 
     for it in items:
         r = it["route"]
         if r == "create" and it["sentry"] in sentry:  # alerted twice in this pass
             r, it["taskId"] = "append", sentry[it["sentry"]]
+        if r == "append" and not it.get("taskId"):
+            it["taskId"] = it["sameAs"].get("filedId") or it["sameAs"].get("taskId")
+            r = "append" if it["taskId"] or DRY else "write"
         if DRY:
             w = it.get("words", {})
-            print(f'{r:7} {it["source"]["channelName"]:22} {it["source"]["author"][:14]:14} '
-                  f'{(w.get("title") or it.get("taskId") or w.get("why") or it["jev"].get("decision"))!s:60.60} '
+            same = (it.get("sameAs") or {}).get("words", {}).get("title")
+            label = w.get("title") or it.get("taskId") or (same and f"+ {same}") or w.get("why") or it["jev"].get("decision")
+            print(f'{r:7} {it["source"]["channelName"]:22} {it["source"]["author"][:14]:14} {label!s:60.60} '
                   f'| {it["source"]["text"][:60]!r}')
             continue
         if r == "write":
@@ -470,10 +488,10 @@ def main():
                 body_["projectId"] = w["projectId"]
             status, body = api("POST", "/api/agent/intake", body_)
             ok_key = "filed"
-            task_id = body["data"]["id"] if status in (200, 201) else None
-            if task_id and it["sentry"]:
-                sentry[it["sentry"]] = task_id
+            task_id = it["filedId"] = body["data"]["id"] if status in (200, 201) else None
         if status in (200, 201):
+            if it["sentry"]:
+                sentry.setdefault(it["sentry"], task_id)
             counts[ok_key] += 1
             attach_files(slack, task_id, it)
             done.add(it["key"])

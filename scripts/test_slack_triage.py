@@ -104,6 +104,18 @@ class TestMulti(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ratelimited"):
             self.run_multi(lambda size, k: {"successful": False, "error": "ratelimited"}, n=1)
 
+    def test_expired_token_reconnects_and_retries(self):
+        expired = [True]
+
+        def reply(size, k):
+            if expired.pop() if expired else False:
+                raise t.urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+            return {"successful": True, "data": {"n": k}}
+
+        with mock.patch.object(t.Slack, "connect") as connect:
+            self.assertEqual(self.run_multi(reply, n=1), ([{"n": 0}], 0))
+        connect.assert_called_once()
+
     def test_other_errors_raise_at_once(self):
         with self.assertRaisesRegex(RuntimeError, "channel_not_found"):
             self.run_multi(lambda size, k: {"successful": False, "error": "channel_not_found"})
