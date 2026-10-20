@@ -19,7 +19,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/user/notifications/read", post(read))
 }
 
-/// The newest 50, with the task's title and project, and how many are unread.
+/// The newest 50 and up to 500 unread older ones, with the task's title and
+/// project, and how many are unread.
 async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiResponse<Value>> {
     caller.require("read")?;
     let me = caller.person_id()?;
@@ -31,8 +32,10 @@ async fn list(State(state): State<AppState>, caller: Caller) -> AppResult<ApiRes
              JOIN task t ON t.id = n.task_id
              LEFT JOIN phase ph ON ph.id = t.phase_id
              LEFT JOIN project pr ON pr.id = ph.project_id
-            WHERE n.person_id = $1
-            ORDER BY n.id DESC LIMIT 50) x",
+            WHERE n.id IN ((SELECT id FROM notification WHERE person_id = $1 ORDER BY id DESC LIMIT 50)
+                           UNION
+                           (SELECT id FROM notification WHERE person_id = $1 AND read_at IS NULL
+                             ORDER BY id DESC LIMIT 500))) x",
     )
     .bind(me)
     .fetch_one(&state.db)

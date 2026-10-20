@@ -505,12 +505,13 @@ struct Alert {
 
 /// Everything worth a lead's attention, most severe first, capped.
 ///
-/// First what an agent is waiting on me for — a question to answer, work to
-/// review — since nothing moves on those tasks until I do. Then five kinds, in
-/// order: a project past its date, a task waiting on another,
-/// a project that will miss its date at this pace, work nobody has touched,
-/// and urgent work nobody holds. Past-due outranks blocked because a date is
-/// a promise to someone outside the team; a blocked task is still internal.
+/// First what an agent is waiting on me for — a question to answer, a plan or
+/// work to review — since nothing moves on those tasks until I do. Then six
+/// kinds, in order: a project past its date, a task waiting on another, what
+/// an intake agent filed for me, a project that will miss its date at this
+/// pace, work nobody has touched, and urgent work nobody holds. Past-due
+/// outranks blocked because a date is a promise to someone outside the team;
+/// a blocked task is still internal.
 fn attention(
     home: &Value,
     projects: &[&Value],
@@ -527,6 +528,7 @@ fn attention(
         let kind = if filed { Some("triage") } else { str_at(item, "kind") };
         let (signal, tone, verb) = match kind {
             Some("question") => ("Question", c::Tone::Ask, "asks"),
+            Some("plan") => ("Plan", c::Tone::Ask, "sent a plan"),
             Some("review") => ("Review", c::Tone::Ask, "submitted"),
             Some("triage") => ("Triage", c::Tone::Info, "filed"),
             _ => continue,
@@ -546,8 +548,8 @@ fn attention(
                 _ => "a task",
             };
             out.push(Alert {
-                rank: 0,
-                weight: -1,
+                rank: 3,
+                weight: 0,
                 tone,
                 signal,
                 subject: str_at(item, "title").unwrap_or_default().to_owned(),
@@ -595,7 +597,7 @@ fn attention(
                 d => format!("due in {}", plural(d as usize, "day")),
             };
             out.push(Alert {
-                rank: 3,
+                rank: 4,
                 weight: -days,
                 tone: c::Tone::Running,
                 signal: "At risk",
@@ -631,7 +633,7 @@ fn attention(
         if str_at(t, "status") == Some("in_progress") && idle > STALLED_DAYS {
             let who = str_at(t, "assigneeName").map(first_name).unwrap_or("nobody");
             out.push(Alert {
-                rank: 4,
+                rank: 5,
                 weight: idle,
                 tone: c::Tone::Running,
                 signal: "Stalled",
@@ -641,7 +643,7 @@ fn attention(
             });
         } else if priority <= 1 && str_at(t, "assigneeName").is_none() {
             out.push(Alert {
-                rank: 5,
+                rank: 6,
                 weight: -priority,
                 tone: c::Tone::Quiet,
                 signal: "Unassigned",
@@ -660,9 +662,17 @@ fn attention(
 /// reach for free. A card per alert was the other option, and six cards is
 /// the column-of-cards this page stopped being.
 fn attention_list(ui: &mut egui::Ui, alerts: &[Alert], go: &mut Option<Target>) {
-    let shown = &alerts[..alerts.len().min(ATTENTION_MAX)];
+    let all_id = egui::Id::new(ATTENTION).with("all");
+    let all: bool = ui.ctx().data_mut(|d| d.get_temp(all_id)).unwrap_or(false);
+    let shown = if all { alerts } else { &alerts[..alerts.len().min(ATTENTION_MAX)] };
     shell::section_count_with(ui, "Needs attention", alerts.len(), |ui| {
-        if alerts.len() > shown.len() {
+        if alerts.len() <= ATTENTION_MAX {
+            return;
+        }
+        if w::link(ui, if all { "Show less" } else { "Show all" }).clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(all_id, !all));
+        }
+        if !all {
             w::caption(ui, &format!("the {} most severe", shown.len()));
         }
     });

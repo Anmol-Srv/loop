@@ -422,6 +422,41 @@ async fn submit_checks_the_move_and_its_evidence_now(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_pending_plan_or_submission_waits_for_the_owner(pool: PgPool) {
+    let (owner, t, token, _) = working(&pool, "backend", "in_progress").await;
+    let refused = |pool: PgPool, token: String| async move {
+        for (path, body) in [
+            ("update", json!({ "body": "FYI", "status": "blocked" })),
+            ("ask", json!({ "body": "Stripe or Razorpay?" })),
+            ("now", json!({ "text": "waiting" })),
+        ] {
+            let r = send(&pool, "POST", &format!("/api/agent/tasks/{t}/{path}"), &token, body).await;
+            assert_eq!(r.status, StatusCode::CONFLICT, "{path}: {}", r.text);
+        }
+    };
+
+    let r = send(&pool, "POST", &format!("/api/agent/tasks/{t}/plan"), &token,
+        json!({ "summary": "Add the endpoint", "plan": "Route, controller, tests" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    refused(pool.clone(), token.clone()).await;
+    let home = send(&pool, "GET", "/api/user/home", &owner, Value::Null).await.data();
+    let item = &home["needsAttention"][0];
+    assert_eq!((item["kind"].as_str(), item["body"].as_str()), (Some("plan"), Some("Add the endpoint")));
+    let r = send(&pool, "POST", &format!("/api/user/tasks/{t}/plan/approve"), &owner, Value::Null).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+
+    send(&pool, "POST", &format!("/api/agent/tasks/{t}/attach"), &token,
+        json!({ "kind": "commit", "url": "3f9a2c1" })).await;
+    let r = send(&pool, "POST", &format!("/api/agent/tasks/{t}/submit"), &token,
+        json!({ "target": "completed", "summary": "Endpoint live, tests pass" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    refused(pool.clone(), token.clone()).await;
+    let r = send(&pool, "POST", &format!("/api/user/tasks/{t}/review"), &owner, json!({ "decision": "approve" })).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    assert_eq!(r.data()["status"], "completed");
+}
+
+#[sqlx::test]
 async fn a_design_handoff_needs_figma_unless_there_is_a_reason(pool: PgPool) {
     let (owner, t, token, _) = working(&pool, "design", "in_progress").await;
     let submit = |reason: Option<&'static str>| {
