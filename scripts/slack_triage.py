@@ -19,7 +19,8 @@ Usage: slack_triage.py [--dry-run]   (dry run: decide and print, write nothing)
 Per owner: HERMES_PROFILE (default slack-agent) and INTAKE_OWNER (default Anmol). Optional, in the
 profile: intake-rules.md (the owner's own filing rules, added to the prompt) and roster.json (Slack id ->
 "team · role", so the model knows who is asking). In the state file, a channel with "bots": true keeps
-bot posts (Sentry), and "mutedDms" lists people whose DMs are never read.
+bot posts (Sentry), "mutedDms" lists people whose DMs are never read, and "grouping": true lets the model put
+related messages in one task (sameAs) and offers it the Sentry tasks already filed. Off by default.
 """
 import concurrent.futures as cf
 import datetime as dt
@@ -323,7 +324,7 @@ PROMPT = """You triage Slack messages into tasks for {owner}. Reply with ONLY a 
 
 For each item decide `action`:
 - "create": someone needs something done or decided by {owner}: a bug, a feature/change request, feedback on something shipped that implies a follow-up, a question {owner} must look into, or a concrete ask. In an intake channel (kind "channel") a new top-level report is presumed task-worthy unless it is plainly chit-chat.
-- "append": it is about one of the item's `related` tasks (same underlying problem, a follow-up, "still happening") — give that `taskId`. Or it belongs with an EARLIER item in this batch that you create or append: give `"sameAs": <that item's i>` instead, so they land in one task.
+- "append": it is about one of the item's `related` tasks (same underlying problem, a follow-up, "still happening") — give that `taskId`.
 - "skip": thanks, +1, greetings, FYI without an ask, a question already answered in the thread, or anything you would file with confidence < 0.6.
 `jev` is a classifier's opinion; follow it unless the text clearly says otherwise. `linkedTask` means the thread's parent was already filed as that task: append unless the message raises a clearly different issue.
 
@@ -337,9 +338,9 @@ For "create" also give:
 - "projectId": the id from Projects it most likely belongs in; omit when none fits.
 For "skip" give "why" (a few words).
 
-Output shape: [{{"i": 0, "action": "create", "title": "...", "body": "...", "category": "bug", "reason": "...", "confidence": 0.8}}, {{"i": 1, "action": "append", "taskId": "..."}}, {{"i": 2, "action": "skip", "why": "thanks"}}, {{"i": 3, "action": "append", "sameAs": 0}}]
+Output shape: [{{"i": 0, "action": "create", "title": "...", "body": "...", "category": "bug", "reason": "...", "confidence": 0.8}}, {{"i": 1, "action": "append", "taskId": "..."}}, {{"i": 2, "action": "skip", "why": "thanks"}}]
 
-`who` is the author's team and role, when known. For a Sentry alert, `related` also lists the Sentry tasks already filed.
+`who` is the author's team and role, when known.
 {rules}
 Projects:
 {projects}
@@ -348,9 +349,14 @@ Items:
 {items}
 """
 
+GROUPING = """Grouping is on. For "append", instead of a taskId you can give "sameAs": the i of an EARLIER item in this \
+batch that you create or append, so they land in one task. For a Sentry alert, `related` also lists the Sentry tasks \
+already filed."""
 
-def write(batch, filed, projs, roster, sentry_tasks=()):
-    """One tool-free model call for every message that needs words or a judgment."""
+
+def write(batch, filed, projs, roster, sentry_tasks=None):
+    """One tool-free model call for every message that needs words or a judgment. sentry_tasks is given only when the
+    owner turned grouping on; without it the prompt is the same as before grouping existed."""
     titles = {f["id"]: f'{f["title"]} ({f.get("category") or "?"}, {f["status"]})' for f in filed}
     items = []
     for n, it in enumerate(batch):
@@ -358,7 +364,7 @@ def write(batch, filed, projs, roster, sentry_tasks=()):
         related = [{"taskId": k, "title": titles[k]} for k in sorted(probs, key=probs.get, reverse=True) if k in titles][:5]
         if it.get("linked") and it["linked"]["id"] not in {r["taskId"] for r in related}:
             related.insert(0, {"taskId": it["linked"]["id"], "title": titles.get(it["linked"]["id"], it["linked"]["title"])})
-        if it["sentry"]:
+        if it["sentry"] and sentry_tasks is not None:
             listed = {r["taskId"] for r in related}
             related += [{"taskId": k, "title": titles[k]} for k in dict.fromkeys(sentry_tasks) if k in titles and k not in listed]
         items.append({"i": n, "kind": it["kind"], "channel": it["source"]["channelName"], "author": it["source"]["author"],
@@ -369,6 +375,8 @@ def write(batch, filed, projs, roster, sentry_tasks=()):
                       "linkedTask": it["linked"]["id"] if it.get("linked") else None, "related": related})
     qfile = os.path.join(HOME, "state", "triage-prompt.txt")
     rules = open(RULES).read().strip() if os.path.exists(RULES) else ""
+    if sentry_tasks is not None:
+        rules = f"{GROUPING}\n{rules}".strip()
     open(qfile, "w").write(PROMPT.format(
         owner=OWNER, rules=f"\n{OWNER}'s own rules, which win over the ones above:\n{rules}\n" if rules else "",
         projects=json.dumps(projs, ensure_ascii=False), items=json.dumps(items, indent=1, ensure_ascii=False)))
@@ -419,6 +427,7 @@ def main():
         errors.append(f"intake/recent {status}")
     link(items, filed)
     sentry = state.setdefault("sentry", {})
+    grouping = bool(state.get("grouping"))
     for it in items:
         if it["sentry"] in sentry:
             it["sentryTask"] = sentry[it["sentry"]]
@@ -435,7 +444,7 @@ def main():
         projs = projects()
         roster = json.load(open(ROSTER)) if os.path.exists(ROSTER) else {}
         try:
-            words = write(batch, filed, projs, roster, sentry.values())
+            words = write(batch, filed, projs, roster, list(sentry.values()) if grouping else None)
         except Exception as e:
             errors.append(f"model: {e}")
     for n, it in enumerate(batch):
@@ -446,7 +455,7 @@ def main():
         it["words"] = w
         if it["route"] == "append":
             it["taskId"] = w.get("taskId") or (it.get("linked") or {}).get("id")
-            if isinstance(w.get("sameAs"), int) and 0 <= w["sameAs"] < n:
+            if grouping and isinstance(w.get("sameAs"), int) and 0 <= w["sameAs"] < n:
                 it["sameAs"] = batch[w["sameAs"]]
             if not it["taskId"] and "sameAs" not in it:
                 it["route"] = "create" if w.get("title") else "skip"
@@ -490,7 +499,7 @@ def main():
             ok_key = "filed"
             task_id = it["filedId"] = body["data"]["id"] if status in (200, 201) else None
         if status in (200, 201):
-            if it["sentry"]:
+            if it["sentry"] and (ok_key == "filed" or grouping):
                 sentry.setdefault(it["sentry"], task_id)
             counts[ok_key] += 1
             attach_files(slack, task_id, it)
