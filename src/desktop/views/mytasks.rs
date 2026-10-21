@@ -175,7 +175,7 @@ const COLS: [Col; 6] = [
 /// the first thing asked of a team list. `task_row` shifts the rest by one.
 const COLS_ALL: [Col; 7] = [
     Col::left("Task", COL_TASK),
-    Col::left("Owner", COL_OWNER).rank(4),
+    Col::left("Owner", COL_OWNER),
     Col::fill("Description", COL_DESCRIPTION).rank(3),
     Col::left("Priority", COL_PRIORITY).rank(1),
     Col::left("Status", COL_STATUS),
@@ -183,7 +183,7 @@ const COLS_ALL: [Col; 7] = [
     Col::right("Created", COL_CREATED).rank(2),
 ];
 /// An avatar and a first name.
-const COL_OWNER: f32 = 130.0;
+const COL_OWNER: f32 = 110.0;
 
 /// My Tasks: what is assigned to you.
 pub fn ui(app: &mut App, ui: &mut egui::Ui) {
@@ -556,11 +556,12 @@ impl Group {
 }
 
 /// One group: a key (the status, project or priority it gathers), what its
-/// header says, the dot beside it, and its rows, newest first.
+/// header says, the dot beside it, its count, and its rows, newest first.
 struct Bucket<'a> {
     key: String,
     label: String,
     dot: Option<egui::Color32>,
+    count: String,
     rows: Vec<&'a Value>,
 }
 
@@ -627,7 +628,13 @@ fn group<'a>(
                     (key.clone(), email.map(avatar::tint))
                 }
             };
-            Bucket { key, label, dot, rows: members }
+            let open = members.iter().filter(|t| !finished(t)).count();
+            let count = if by == Group::Status || open == members.len() {
+                members.len().to_string()
+            } else {
+                format!("{open} open of {}", members.len())
+            };
+            Bucket { key, label, dot, count, rows: members }
         })
         .filter(|b| !b.rows.is_empty() || (board && by == Group::Status && BOARD_ALWAYS.contains(&b.key.as_str())))
         .collect()
@@ -701,10 +708,9 @@ fn list(ui: &mut egui::Ui, scope: Scope, groups: &[Bucket<'_>], viewer: &Viewer,
 /// and how many. The whole row is the target.
 fn group_header(ui: &mut egui::Ui, g: &Bucket<'_>, open: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), size::CONTROL), egui::Sense::click());
-    let n = g.rows.len();
     response.widget_info(|| {
         let state = if open { "expanded" } else { "collapsed" };
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{}, {n}, {state}", g.label))
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{}, {}, {state}", g.label, g.count))
     });
     let response = motion::operable(ui, response, radius::SM as f32);
     let hot = response.hovered() || response.has_focus();
@@ -736,7 +742,7 @@ fn group_header(ui: &mut egui::Ui, g: &Bucket<'_>, open: bool) -> egui::Response
     p.text(
         egui::pos2(x + lw + space::SM, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        n.to_string(),
+        &g.count,
         egui::FontId::proportional(text::SMALL),
         colour::TEXT_FAINT(),
     );
@@ -816,7 +822,7 @@ fn column(
                                 .family(egui::FontFamily::Name(theme::SEMIBOLD.into()))
                                 .color(colour::TEXT_2()),
                         );
-                        ui.label(egui::RichText::new(g.rows.len().to_string()).size(text::SMALL).color(colour::TEXT_FAINT()));
+                        ui.label(egui::RichText::new(&g.count).size(text::SMALL).color(colour::TEXT_FAINT()));
                     });
                     ui.add_space(space::XS);
                     egui::ScrollArea::vertical()

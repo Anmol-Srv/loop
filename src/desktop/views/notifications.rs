@@ -4,7 +4,8 @@
 //! The server writes them (migration 20261007000027) when someone else acts
 //! on your work: assigns you, moves or notes on your task, your agent asks,
 //! plans or submits, or a task you were waiting on finishes. The app asks for
-//! the newest fifty every 30 seconds — an ETag'd GET, so a quiet poll is a 304.
+//! the newest fifty, plus every older unread one, every 30 seconds — an ETag'd
+//! GET, so a quiet poll is a 304.
 
 use std::cell::RefCell;
 
@@ -105,7 +106,6 @@ pub fn tick(app: &mut App, ctx: &egui::Context) {
     let opened = app.task.clone();
     if STATE.with(|s| std::mem::replace(&mut s.borrow_mut().opened, opened.clone())) != opened {
         if let Some(task) = opened {
-            // ponytail: only the newest 50 the bell holds; older unread ones stay.
             let ids: Vec<i64> = items(app)
                 .0
                 .iter()

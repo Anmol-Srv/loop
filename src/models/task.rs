@@ -200,8 +200,9 @@ pub struct Task {
     /// see `TaskRow::project_archived_at`.
     pub archived_at: Option<DateTime<Utc>>,
     /// The agent this task is handed off to, if any: `{id, handle, name,
-    /// runtime, ownerName, state, now, nowAt, delegatedAt, lastSeenAt}`. Built in SQL so every query
-    /// that returns a task carries it without a second round trip.
+    /// runtime, ownerName, state, now, nowAt, delegatedAt}`, plus `lastSeenAt`
+    /// on a single-task read. Built in SQL so every query that returns a task
+    /// carries it without a second round trip.
     pub delegate: Option<serde_json::Value>,
     /// bug, feature, feedback, question or chore; set at intake or by any
     /// writer later.
@@ -341,7 +342,7 @@ macro_rules! delegate_column {
                  'runtime', a.runtime, 'ownerName', (SELECT name FROM person WHERE id = a.owner_id), \
                  'ownerEmail', (SELECT email FROM person WHERE id = a.owner_id), \
                  'state', agent_state, 'now', agent_now, 'nowAt', agent_now_at, \
-                 'delegatedAt', delegated_at, 'lastSeenAt', a.last_seen_at) \
+                 'delegatedAt', delegated_at) \
             FROM agent a WHERE a.id = delegate_agent_id) AS delegate"
     };
 }

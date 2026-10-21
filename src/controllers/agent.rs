@@ -862,6 +862,7 @@ pub async fn update(
 ) -> AppResult<TaskRow> {
     let now = now.map(now_line).transpose()?;
     let mut d = delegated(state, agent, task_id).await?;
+    awaiting_owner(d.agent_state.as_deref())?;
     if let Some(status) = status {
         if !UPDATE_TARGETS.contains(&status.as_str()) {
             return Err(AppError::BadRequest(format!(
@@ -921,6 +922,11 @@ pub async fn now(state: &AppState, agent: Uuid, task_id: Uuid, text: &str) -> Ap
                 "this task is waiting on your owner's review; post a now line if they send it back".into(),
             ))
         }
+        Some("plan_review") => {
+            return Err(AppError::Conflict(
+                "this task is waiting on your owner's approval of your plan; post a now line once they decide".into(),
+            ))
+        }
         Some("working") => {}
         _ => set_state(&mut d.tx, task_id, "working", None).await?,
     }
@@ -969,8 +975,20 @@ pub async fn log(
     Ok(json!({ "appended": lines.len(), "lastSeq": last }))
 }
 
+fn awaiting_owner(agent_state: Option<&str>) -> AppResult<()> {
+    let what = match agent_state {
+        Some("in_review") => "your submission",
+        Some("plan_review") => "your plan",
+        _ => return Ok(()),
+    };
+    Err(AppError::Conflict(format!(
+        "this task is waiting on your owner's decision on {what}; wait for it, or use task_note for an FYI"
+    )))
+}
+
 pub async fn ask(state: &AppState, agent: Uuid, task_id: Uuid, body: &str) -> AppResult<TaskRow> {
     let mut d = delegated(state, agent, task_id).await?;
+    awaiting_owner(d.agent_state.as_deref())?;
     note::insert(&mut d.tx, task_id, Author::Agent(agent), "question", body).await?;
     set_state(&mut d.tx, task_id, "needs_input", None).await?;
     d.tx.commit().await?;
@@ -1830,11 +1848,11 @@ pub async fn review(
     task::get(state, task_id, Some(person)).await
 }
 
-/// Questions and submissions waiting on this person, for the home screen.
+/// Questions, plans and submissions waiting on this person, for the home screen.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Attention {
-    /// question, review or triage.
+    /// question, plan, review or triage.
     pub kind: String,
     pub task_id: Uuid,
     pub title: String,
@@ -1845,16 +1863,21 @@ pub struct Attention {
 pub async fn needs_attention(state: &AppState, person: Uuid) -> AppResult<Vec<Attention>> {
     Ok(sqlx::query_as(&format!(
         "SELECT kind, task_id, title, agent_name, body FROM (
-         SELECT CASE t.agent_state WHEN 'needs_input' THEN 'question' ELSE 'review' END AS kind,
+         SELECT CASE t.agent_state WHEN 'needs_input' THEN 'question'
+                                   WHEN 'plan_review' THEN 'plan' ELSE 'review' END AS kind,
                 t.id AS task_id, t.title, a.name AS agent_name,
-                coalesce((SELECT n.body FROM note n
-                           WHERE n.task_id = t.id AND n.agent_id = a.id
-                             AND n.kind = CASE t.agent_state WHEN 'needs_input' THEN 'question'
-                                                             ELSE 'submission' END
-                           ORDER BY n.created_at DESC LIMIT 1), '') AS body,
+                coalesce(CASE WHEN t.agent_state = 'plan_review'
+                              THEN (SELECT p.summary FROM task_plan p
+                                     WHERE p.task_id = t.id AND p.agent_id = a.id AND p.decision IS NULL
+                                     ORDER BY p.created_at DESC LIMIT 1)
+                              ELSE (SELECT n.body FROM note n
+                                     WHERE n.task_id = t.id AND n.agent_id = a.id
+                                       AND n.kind = CASE t.agent_state WHEN 'needs_input' THEN 'question'
+                                                                       ELSE 'submission' END
+                                     ORDER BY n.created_at DESC LIMIT 1) END, '') AS body,
                 t.updated_at
            FROM task t JOIN agent a ON a.id = t.delegate_agent_id
-          WHERE t.assignee_person_id = $1 AND t.agent_state IN ('needs_input', 'in_review')
+          WHERE t.assignee_person_id = $1 AND t.agent_state IN ('needs_input', 'plan_review', 'in_review')
          UNION ALL
          -- What an intake agent filed for me; `body` is its category.
          SELECT 'triage', t.id, t.title, a.name, coalesce(t.category, ''), t.updated_at

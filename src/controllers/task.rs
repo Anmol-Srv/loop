@@ -369,12 +369,23 @@ pub async fn assign(
 /// whole board to render a single task; this is that request.
 /// Archived or not; `viewer` is who `canArchive` is worked out for.
 pub async fn get(state: &AppState, id: Uuid, viewer: Option<Uuid>) -> AppResult<TaskRow> {
-    sqlx::query_as(&format!("{} WHERE t.id = $1", task_row_select("$2")))
+    let mut row: TaskRow = sqlx::query_as(&format!("{} WHERE t.id = $1", task_row_select("$2")))
         .bind(id)
         .bind(viewer)
         .fetch_optional(&state.db)
         .await?
-        .ok_or_else(|| AppError::NotFound("task not found".into()))
+        .ok_or_else(|| AppError::NotFound("task not found".into()))?;
+    if let Some(serde_json::Value::Object(delegate)) = row.task.delegate.as_mut() {
+        let seen: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT coalesce(to_json(a.last_seen_at), 'null') FROM task t JOIN agent a ON a.id = t.delegate_agent_id
+              WHERE t.id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+        delegate.insert("lastSeenAt".into(), seen.unwrap_or_default());
+    }
+    Ok(row)
 }
 
 /// Attach a file to a task by hand — a screenshot for the agent, a markdown
